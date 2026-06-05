@@ -119,3 +119,36 @@ func TestRunRuleRejectsEvaluatorIDWithInline(t *testing.T) {
 		t.Fatal("expected validateRunRulePlan to reject evaluator_id combined with inline code_evaluators_json")
 	}
 }
+
+// TestRunRuleEvaluatorIDFollowsPriorState is a regression test for the inconsistent-result
+// error on inline-evaluator rules. smith-backend assigns a generated evaluator_id even when
+// the config leaves it unset; evaluator_id is Optional (not Computed), so writing that
+// generated id into state when the user didn't configure one fails apply with
+// "provider produced inconsistent result after apply" (planned null, got a string).
+// modelFromRunRuleAPI must keep evaluator_id null unless the user actually set it.
+func TestRunRuleEvaluatorIDFollowsPriorState(t *testing.T) {
+	genID := "generated-by-backend"
+
+	// Inline rule: user left evaluator_id unset (prior null); backend returns a generated
+	// id. It must NOT be imported into state.
+	inline := runRuleAPI{ID: "rule-1", EvaluatorID: &genID}
+	next, diags := modelFromRunRuleAPI(inline, runRuleModel{})
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if !next.EvaluatorID.IsNull() {
+		t.Errorf("evaluator_id = %q, want null when the user did not configure evaluator_id", next.EvaluatorID.ValueString())
+	}
+
+	// Saved-evaluator rule: user set evaluator_id (prior non-null); the API value is reflected.
+	savedID := "eval-1"
+	prior := runRuleModel{EvaluatorID: types.StringValue(savedID)}
+	saved := runRuleAPI{ID: "rule-2", EvaluatorID: &savedID}
+	next, diags = modelFromRunRuleAPI(saved, prior)
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if next.EvaluatorID.ValueString() != savedID {
+		t.Errorf("evaluator_id = %q, want %q reflected when the user configured it", next.EvaluatorID.ValueString(), savedID)
+	}
+}
