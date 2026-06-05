@@ -115,7 +115,7 @@ Use a Terraform CLI development override:
 ```hcl
 provider_installation {
   dev_overrides {
-    "langchain-ai/langsmith" = "/Users/mukil/langchain/deployments/terraform-provider-langsmith/bin"
+    "langchain-ai/langsmith" = "/absolute/path/to/terraform-provider-langsmith/bin"
   }
   direct {}
 }
