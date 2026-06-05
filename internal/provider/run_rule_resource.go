@@ -680,7 +680,16 @@ func modelFromRunRuleAPI(api runRuleAPI, previous runRuleModel) (runRuleModel, d
 	next.UseCorrectionsDataset = types.BoolValue(api.UseCorrectionsDataset)
 	next.NumFewShotExamples = optionalIntFromPtr(api.NumFewShotExamples)
 	next.CorrectionsDatasetID = optionalStringFromPtr(api.CorrectionsDatasetID)
-	next.EvaluatorID = optionalStringFromPtr(api.EvaluatorID)
+	// smith-backend assigns a generated evaluator_id even to inline-evaluator rules
+	// (where the config leaves evaluator_id unset). evaluator_id is Optional, not
+	// Computed, so importing that generated id when the user didn't configure one
+	// produces a "provider produced inconsistent result" error (planned null, got a
+	// string). Only reflect the API value when the user actually set evaluator_id.
+	if previous.EvaluatorID.IsNull() {
+		next.EvaluatorID = types.StringNull()
+	} else {
+		next.EvaluatorID = optionalStringFromPtr(api.EvaluatorID)
+	}
 	next.EvaluatorVersion = optionalIntFromPtr(api.EvaluatorVersion)
 	next.ExtendOnly = types.BoolValue(api.ExtendOnly)
 	next.Transient = types.BoolValue(api.Transient)
