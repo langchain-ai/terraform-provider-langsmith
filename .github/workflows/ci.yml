@@ -4,40 +4,48 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
   test:
-    name: build / vet / fmt / test
-    runs-on: ubuntu-latest
+    name: test
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
 
-      - name: gofmt
-        run: |
-          unformatted="$(gofmt -l .)"
-          if [ -n "$unformatted" ]; then
-            echo "::error::These files are not gofmt-formatted:"
-            echo "$unformatted"
-            exit 1
-          fi
-
-      - name: go vet
+      - name: Vet
         run: go vet ./...
-
-      - name: Build
-        run: go build ./...
 
       # Acceptance tests are gated behind LANGSMITH_PROVIDER_ACC=1, so this runs
       # the offline unit tests only — no LangSmith credentials required.
       - name: Test
-        run: go test ./... -count=1
+        run: go test ./...
+
+      - name: Build
+        run: go build ./...
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+      - name: Run lint
+        run: golangci-lint run
