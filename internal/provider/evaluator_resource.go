@@ -34,24 +34,24 @@ type EvaluatorResource struct {
 }
 
 type evaluatorModel struct {
-	ID                      types.String         `tfsdk:"id"`
-	WorkspaceID             types.String         `tfsdk:"workspace_id"`
-	Name                    types.String         `tfsdk:"name"`
-	Type                    types.String         `tfsdk:"type"`
-	LLMEvaluator            *llmEvaluatorModel   `tfsdk:"llm_evaluator"`
-	CodeEvaluator           *codeEvaluatorModel  `tfsdk:"code_evaluator"`
-	FeedbackKeys            types.List           `tfsdk:"feedback_keys"`
-	DeleteRunRulesOnDestroy types.Bool           `tfsdk:"delete_run_rules_on_destroy"`
-	CreatedAt               types.String         `tfsdk:"created_at"`
-	UpdatedAt               types.String         `tfsdk:"updated_at"`
+	ID                      types.String        `tfsdk:"id"`
+	WorkspaceID             types.String        `tfsdk:"workspace_id"`
+	Name                    types.String        `tfsdk:"name"`
+	Type                    types.String        `tfsdk:"type"`
+	LLMEvaluator            *llmEvaluatorModel  `tfsdk:"llm_evaluator"`
+	CodeEvaluator           *codeEvaluatorModel `tfsdk:"code_evaluator"`
+	FeedbackKeys            types.List          `tfsdk:"feedback_keys"`
+	DeleteRunRulesOnDestroy types.Bool          `tfsdk:"delete_run_rules_on_destroy"`
+	CreatedAt               types.String        `tfsdk:"created_at"`
+	UpdatedAt               types.String        `tfsdk:"updated_at"`
 }
 
 type llmEvaluatorModel struct {
-	PromptRepoHandle      types.String  `tfsdk:"prompt_repo_handle"`
-	VariableMappingJSON   types.String  `tfsdk:"variable_mapping_json"`
-	CommitHashOrTag       types.String  `tfsdk:"commit_hash_or_tag"`
-	UseCorrectionsDataset types.Bool    `tfsdk:"use_corrections_dataset"`
-	NumFewShotExamples    types.Int64   `tfsdk:"num_few_shot_examples"`
+	PromptRepoHandle      types.String `tfsdk:"prompt_repo_handle"`
+	VariableMappingJSON   types.String `tfsdk:"variable_mapping_json"`
+	CommitHashOrTag       types.String `tfsdk:"commit_hash_or_tag"`
+	UseCorrectionsDataset types.Bool   `tfsdk:"use_corrections_dataset"`
+	NumFewShotExamples    types.Int64  `tfsdk:"num_few_shot_examples"`
 }
 
 type codeEvaluatorModel struct {
@@ -60,14 +60,14 @@ type codeEvaluatorModel struct {
 }
 
 type evaluatorAPI struct {
-	ID            string             `json:"id,omitempty"`
-	Name          string             `json:"name"`
-	Type          string             `json:"type"`
-	FeedbackKeys  []string           `json:"feedback_keys,omitempty"`
-	LLMEvaluator  *llmEvaluatorAPI   `json:"llm_evaluator,omitempty"`
-	CodeEvaluator *codeEvaluatorAPI  `json:"code_evaluator,omitempty"`
-	CreatedAt     string             `json:"created_at,omitempty"`
-	UpdatedAt     string             `json:"updated_at,omitempty"`
+	ID            string            `json:"id,omitempty"`
+	Name          string            `json:"name"`
+	Type          string            `json:"type"`
+	FeedbackKeys  []string          `json:"feedback_keys,omitempty"`
+	LLMEvaluator  *llmEvaluatorAPI  `json:"llm_evaluator,omitempty"`
+	CodeEvaluator *codeEvaluatorAPI `json:"code_evaluator,omitempty"`
+	CreatedAt     string            `json:"created_at,omitempty"`
+	UpdatedAt     string            `json:"updated_at,omitempty"`
 }
 
 type llmEvaluatorAPI struct {
