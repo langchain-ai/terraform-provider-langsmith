@@ -18,34 +18,15 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # GPG signing material from the CI secrets 1Password vault.
-      - name: Load GPG signing material from 1Password
-        id: op
-        uses: 1password/load-secrets-action@2ebe1bc766ed99dcfc292ae0308a9492144563c8 # v2
-        with:
-          export-env: false
-        env:
-          OP_CONNECT_HOST: ${{ secrets.OP_CONNECT_HOST }}
-          OP_CONNECT_TOKEN: ${{ secrets.OP_CONNECT_TOKEN_CI }}
-          GPG_PRIVATE_KEY: op://CI secrets/terraform-provider-gpg/private_key
-          GPG_PASSPHRASE: op://CI secrets/terraform-provider-gpg/passphrase
-
-      # Stored passphrase carries a trailing newline (secrets tooling appends one); strip it.
-      - name: Normalize passphrase
-        id: pass
-        env:
-          RAW: ${{ steps.op.outputs.GPG_PASSPHRASE }}
-        run: |
-          trimmed="$(printf '%s' "$RAW" | tr -d '\n')"
-          echo "::add-mask::$trimmed"
-          printf 'value=%s\n' "$trimmed" >> "$GITHUB_OUTPUT"
-
+      # GPG_PRIVATE_KEY / GPG_PASSPHRASE are managed as repo Actions secrets by
+      # Terraform (langchain-ai/deployments: environments/github/langchain-ai).
+      # The passphrase is stored already-trimmed, so no normalization is needed.
       - name: Import GPG key
         id: import_gpg
         uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
         with:
-          gpg_private_key: ${{ steps.op.outputs.GPG_PRIVATE_KEY }}
-          passphrase: ${{ steps.pass.outputs.value }}
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
