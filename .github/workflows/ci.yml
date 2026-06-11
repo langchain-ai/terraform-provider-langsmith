@@ -49,3 +49,21 @@ jobs:
 
       - name: Run lint
         run: golangci-lint run
+
+  generate:
+    name: generate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      - name: Generate docs
+        run: make generate
+
+      - name: Check docs are up to date
+        run: |
+          git diff --compact-summary --exit-code || \
+            (echo "::error::docs/ is stale — run 'make generate' and commit the result." && exit 1)
