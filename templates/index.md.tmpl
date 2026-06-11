@@ -10,15 +10,23 @@ The LangSmith provider manages [LangSmith](https://www.langchain.com/langsmith)
 resources as code — workspaces, roles, organization and workspace memberships,
 evaluators, run rules, and alert rules.
 
-Authenticate with the LangSmith SDK's environment/profile configuration
-(`LANGSMITH_API_KEY`, `LANGSMITH_PROFILE`) or the provider's `api_key` / `profile`
-arguments.
-
 For LangSmith concepts, setup, and product documentation, see the
 **[LangSmith documentation](https://docs.smith.langchain.com)**.
 
 ## Example Usage
 
 {{ tffile "examples/provider/main.tf" }}
+
+## Authentication
+
+The provider resolves credentials the same way as the LangSmith SDK and CLI:
+
+- **Provider arguments** — `api_key`, `api_url`, `workspace_id`, `profile`.
+- **Profile** — set `profile` (or `LANGSMITH_PROFILE`) to select a LangSmith CLI profile.
+- **Environment** — `LANGSMITH_API_KEY`, `LANGSMITH_ENDPOINT` (API URL), `LANGSMITH_WORKSPACE_ID`.
+
+Create an API key in your LangSmith workspace settings. Prefer environment or profile
+configuration over hardcoding `api_key`; if you set it inline, mark it sensitive and
+source it from a secret store.
 
 {{ .SchemaMarkdown | trimspace }}
