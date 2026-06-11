@@ -355,7 +355,7 @@ func alertRuleIdentityForUpdate(plan alertRuleModel, state alertRuleModel) (aler
 	return plan, sessionID, alertID, nil
 }
 
-func alertRulePayloadFromModel(data alertRuleModel, includeSecretURLs bool) (alertRulePayload, error) {
+func alertRulePayloadFromModel(data alertRuleModel, includeSecretURLs bool) (alertRulePayload, error) { //nolint:unparam // always true today; kept as an explicit secret-URL redaction toggle.
 	rule := alertRuleAPI{
 		ID:            stringValue(data.ID),
 		Name:          data.Name.ValueString(),

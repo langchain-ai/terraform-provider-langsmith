@@ -363,14 +363,14 @@ func parseWorkspaceMembershipImportID(value string) (string, string, error) {
 	if strings.HasPrefix(value, "workspace/") {
 		workspaceID, email, ok := strings.Cut(strings.TrimPrefix(value, "workspace/"), "/email/")
 		if !ok {
-			return "", "", errors.New("Use import ID format `<workspace_id>/<email>` or `workspace/<workspace_id>/email/<email>`.")
+			return "", "", errors.New("use import ID format `<workspace_id>/<email>` or `workspace/<workspace_id>/email/<email>`")
 		}
 		return normalizedWorkspaceMembershipImportID(workspaceID, email)
 	}
 
 	workspaceID, email, ok := strings.Cut(value, "/")
 	if !ok {
-		return "", "", errors.New("Use import ID format `<workspace_id>/<email>` or `workspace/<workspace_id>/email/<email>`.")
+		return "", "", errors.New("use import ID format `<workspace_id>/<email>` or `workspace/<workspace_id>/email/<email>`")
 	}
 	return normalizedWorkspaceMembershipImportID(workspaceID, email)
 }
@@ -379,7 +379,7 @@ func normalizedWorkspaceMembershipImportID(workspaceID string, email string) (st
 	workspaceID = strings.TrimSpace(workspaceID)
 	email = normalizeMembershipEmail(email)
 	if workspaceID == "" || email == "" {
-		return "", "", errors.New("Use import ID format `<workspace_id>/<email>` or `workspace/<workspace_id>/email/<email>`.")
+		return "", "", errors.New("use import ID format `<workspace_id>/<email>` or `workspace/<workspace_id>/email/<email>`")
 	}
 	return workspaceID, email, nil
 }

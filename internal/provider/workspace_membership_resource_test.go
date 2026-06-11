@@ -341,7 +341,7 @@ func newWorkspaceMembershipResourceWithServer(t *testing.T, handler http.Handler
 	}
 }
 
-func assertWorkspaceTenantHeader(t *testing.T, r *http.Request, workspaceID string) {
+func assertWorkspaceTenantHeader(t *testing.T, r *http.Request, workspaceID string) { //nolint:unparam // fixed in current tests; kept for future workspace cases.
 	t.Helper()
 	if got := r.Header.Get("X-Tenant-Id"); got != workspaceID {
 		t.Fatalf("X-Tenant-Id = %q, want %q", got, workspaceID)
