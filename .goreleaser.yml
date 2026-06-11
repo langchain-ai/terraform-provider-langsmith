@@ -43,6 +43,12 @@ archives:
 checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_SHA256SUMS'
   algorithm: sha256
+  # Checksum the registry manifest too — the Terraform Registry requires a SHA256SUMS
+  # entry for terraform-provider-langsmith_<version>_manifest.json (it's also a
+  # release asset via the `release.extra_files` block below).
+  extra_files:
+    - glob: 'terraform-registry-manifest.json'
+      name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
 
 # Detached-sign the SHA256SUMS with the registry signing key. GPG_FINGERPRINT is
 # exported by crazy-max/ghaction-import-gpg in the release workflow.
