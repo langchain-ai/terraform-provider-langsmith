@@ -31,7 +31,7 @@ func TestAlertRulePayloadFromModelResolvesURLEnv(t *testing.T) {
 			ConfigJSON: types.StringValue(`{"headers":"{\"Content-Type\":\"application/json\"}"}`),
 			URLEnv:     types.StringValue("TEST_LANGSMITH_WEBHOOK_URL"),
 		}},
-	}, true)
+	})
 	if err != nil {
 		t.Fatalf("alertRulePayloadFromModel returned error: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestAccAlertRuleCRUDLocal(t *testing.T) {
 		}},
 	}
 
-	createPayload, err := alertRulePayloadFromModel(model, true)
+	createPayload, err := alertRulePayloadFromModel(model)
 	if err != nil {
 		t.Fatalf("build create payload: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestAccAlertRuleCRUDLocal(t *testing.T) {
 
 	model.ID = types.StringValue(created.Rule.ID)
 	model.Threshold = types.Float64Value(12)
-	updatePayload, err := alertRulePayloadFromModel(model, true)
+	updatePayload, err := alertRulePayloadFromModel(model)
 	if err != nil {
 		t.Fatalf("build update payload: %v", err)
 	}

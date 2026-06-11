@@ -118,10 +118,10 @@ func TestWorkspaceMembershipEnsureRequiresAcceptedOrgMembership(t *testing.T) {
 				AccessScope: accessScopeWorkspace,
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces/current/members/active":
-			assertWorkspaceTenantHeader(t, r, "workspace-id")
+			assertWorkspaceTenantHeader(t, r)
 			writeJSON(t, w, []memberIdentityAPI{})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces/current/members/pending":
-			assertWorkspaceTenantHeader(t, r, "workspace-id")
+			assertWorkspaceTenantHeader(t, r)
 			writeJSON(t, w, []pendingIdentityAPI{})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/orgs/current/members/active":
 			writeJSON(t, w, []memberIdentityAPI{})
@@ -162,7 +162,7 @@ func TestWorkspaceMembershipEnsureCreatesActiveMembershipForAcceptedOrgMember(t 
 				AccessScope: accessScopeWorkspace,
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces/current/members/active":
-			assertWorkspaceTenantHeader(t, r, "workspace-id")
+			assertWorkspaceTenantHeader(t, r)
 			if created {
 				writeJSON(t, w, []memberIdentityAPI{{
 					ID:       "workspace-identity-id",
@@ -175,7 +175,7 @@ func TestWorkspaceMembershipEnsureCreatesActiveMembershipForAcceptedOrgMember(t 
 			}
 			writeJSON(t, w, []memberIdentityAPI{})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces/current/members/pending":
-			assertWorkspaceTenantHeader(t, r, "workspace-id")
+			assertWorkspaceTenantHeader(t, r)
 			writeJSON(t, w, []pendingIdentityAPI{})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/orgs/current/members/active":
 			writeJSON(t, w, []memberIdentityAPI{{
@@ -187,7 +187,7 @@ func TestWorkspaceMembershipEnsureCreatesActiveMembershipForAcceptedOrgMember(t 
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/orgs/current/members/pending":
 			writeJSON(t, w, []pendingIdentityAPI{})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspaces/current/members":
-			assertWorkspaceTenantHeader(t, r, "workspace-id")
+			assertWorkspaceTenantHeader(t, r)
 			var payload workspaceMemberPayload
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode workspace member payload: %v", err)
@@ -243,7 +243,7 @@ func TestWorkspaceMembershipEnsurePatchesActiveRole(t *testing.T) {
 				AccessScope: accessScopeWorkspace,
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces/current/members/active":
-			assertWorkspaceTenantHeader(t, r, "workspace-id")
+			assertWorkspaceTenantHeader(t, r)
 			writeJSON(t, w, []memberIdentityAPI{{
 				ID:       "workspace-identity-id",
 				Email:    "alice@langchain.dev",
@@ -251,10 +251,10 @@ func TestWorkspaceMembershipEnsurePatchesActiveRole(t *testing.T) {
 				RoleName: "Workspace Role",
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces/current/members/pending":
-			assertWorkspaceTenantHeader(t, r, "workspace-id")
+			assertWorkspaceTenantHeader(t, r)
 			writeJSON(t, w, []pendingIdentityAPI{})
 		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/workspaces/current/members/workspace-identity-id":
-			assertWorkspaceTenantHeader(t, r, "workspace-id")
+			assertWorkspaceTenantHeader(t, r)
 			var payload map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode patch payload: %v", err)
@@ -296,7 +296,7 @@ func TestWorkspaceMembershipDeleteUsesPendingEndpoint(t *testing.T) {
 	requests := make([]string, 0, 3)
 	resource := newWorkspaceMembershipResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
-		assertWorkspaceTenantHeader(t, r, "workspace-id")
+		assertWorkspaceTenantHeader(t, r)
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces/current/members/active":
 			writeJSON(t, w, []memberIdentityAPI{})
@@ -341,9 +341,9 @@ func newWorkspaceMembershipResourceWithServer(t *testing.T, handler http.Handler
 	}
 }
 
-func assertWorkspaceTenantHeader(t *testing.T, r *http.Request, workspaceID string) {
+func assertWorkspaceTenantHeader(t *testing.T, r *http.Request) {
 	t.Helper()
-	if got := r.Header.Get("X-Tenant-Id"); got != workspaceID {
-		t.Fatalf("X-Tenant-Id = %q, want %q", got, workspaceID)
+	if got := r.Header.Get("X-Tenant-Id"); got != "workspace-id" {
+		t.Fatalf("X-Tenant-Id = %q, want %q", got, "workspace-id")
 	}
 }

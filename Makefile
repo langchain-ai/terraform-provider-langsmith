@@ -1,13 +1,26 @@
-.PHONY: build test docs
+default: fmt lint install generate
 
 build:
-	go build -o bin/terraform-provider-langsmith .
+	go build -v ./...
+
+install: build
+	go install -v ./...
+
+lint:
+	golangci-lint run
+
+# Generate Terraform Registry docs from the provider schema + examples/.
+# Pinned so the docs-drift CI check is deterministic.
+generate:
+	go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@v0.25.0 generate --provider-name langsmith
+
+fmt:
+	gofmt -s -w -e .
 
 test:
-	go test ./...
+	go test -v -cover -timeout=120s -parallel=10 ./...
 
-# Generate Terraform Registry documentation from the provider schema and
-# examples/. Run before tagging a release — the registry rejects providers
-# without a docs/ tree.
-docs:
-	go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@latest generate --provider-name langsmith
+testacc:
+	TF_ACC=1 go test -v -cover -timeout 120m ./...
+
+.PHONY: fmt lint test testacc build install generate

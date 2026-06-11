@@ -324,7 +324,7 @@ func parseOrgMembershipImportID(value string) (string, error) {
 	value = strings.TrimPrefix(value, "org/current/email/")
 	email := normalizeMembershipEmail(value)
 	if email == "" {
-		return "", errors.New("Use import ID format `<email>` or `org/current/email/<email>`.")
+		return "", errors.New("use import ID format `<email>` or `org/current/email/<email>`")
 	}
 	return email, nil
 }
