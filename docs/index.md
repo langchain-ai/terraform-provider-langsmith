@@ -1,10 +1,10 @@
 ---
-page_title: "langsmith Provider"
+page_title: "LangSmith Provider"
 description: |-
   Manage LangSmith workspaces, roles, members, evaluators, run rules, and alert rules with Terraform.
 ---
 
-# langsmith Provider
+# LangSmith Provider
 
 The LangSmith provider manages [LangSmith](https://www.langchain.com/langsmith)
 resources as code — workspaces, roles, organization and workspace memberships,
