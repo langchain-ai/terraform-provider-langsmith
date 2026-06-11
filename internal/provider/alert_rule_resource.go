@@ -215,7 +215,7 @@ func (r *AlertRuleResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	payload, err := alertRulePayloadFromModel(plan, true)
+	payload, err := alertRulePayloadFromModel(plan)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid LangSmith Alert Rule", err.Error())
 		return
@@ -280,7 +280,7 @@ func (r *AlertRuleResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	payload, err := alertRulePayloadFromModel(nextPlan, true)
+	payload, err := alertRulePayloadFromModel(nextPlan)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid LangSmith Alert Rule", err.Error())
 		return
@@ -355,7 +355,7 @@ func alertRuleIdentityForUpdate(plan alertRuleModel, state alertRuleModel) (aler
 	return plan, sessionID, alertID, nil
 }
 
-func alertRulePayloadFromModel(data alertRuleModel, includeSecretURLs bool) (alertRulePayload, error) { //nolint:unparam // always true today; kept as an explicit secret-URL redaction toggle.
+func alertRulePayloadFromModel(data alertRuleModel) (alertRulePayload, error) {
 	rule := alertRuleAPI{
 		ID:            stringValue(data.ID),
 		Name:          data.Name.ValueString(),
@@ -390,7 +390,7 @@ func alertRulePayloadFromModel(data alertRuleModel, includeSecretURLs bool) (ale
 				return alertRulePayload{}, fmt.Errorf("actions config_json must be a JSON object: %w", err)
 			}
 		}
-		if includeSecretURLs && !action.URLEnv.IsNull() && action.URLEnv.ValueString() != "" {
+		if !action.URLEnv.IsNull() && action.URLEnv.ValueString() != "" {
 			url := strings.TrimSpace(os.Getenv(action.URLEnv.ValueString()))
 			if url == "" {
 				return alertRulePayload{}, fmt.Errorf("environment variable %s is not set or is empty", action.URLEnv.ValueString())
