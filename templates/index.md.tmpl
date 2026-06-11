@@ -1,0 +1,24 @@
+---
+page_title: "langsmith Provider"
+description: |-
+  Manage LangSmith workspaces, roles, members, evaluators, run rules, and alert rules with Terraform.
+---
+
+# langsmith Provider
+
+The LangSmith provider manages [LangSmith](https://www.langchain.com/langsmith)
+resources as code — workspaces, roles, organization and workspace memberships,
+evaluators, run rules, and alert rules.
+
+Authenticate with the LangSmith SDK's environment/profile configuration
+(`LANGSMITH_API_KEY`, `LANGSMITH_PROFILE`) or the provider's `api_key` / `profile`
+arguments.
+
+For LangSmith concepts, setup, and product documentation, see the
+**[LangSmith documentation](https://docs.smith.langchain.com)**.
+
+## Example Usage
+
+{{ tffile "examples/provider/main.tf" }}
+
+{{ .SchemaMarkdown | trimspace }}
