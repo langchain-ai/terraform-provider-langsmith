@@ -21,6 +21,7 @@ import (
 var (
 	_ resource.Resource                = &AlertRuleResource{}
 	_ resource.ResourceWithImportState = &AlertRuleResource{}
+	_ resource.ResourceWithModifyPlan  = &AlertRuleResource{}
 )
 
 func NewAlertRuleResource() resource.Resource {
@@ -50,6 +51,7 @@ type alertRuleModel struct {
 	ThresholdWindowMinutes types.Int64        `tfsdk:"threshold_window_minutes"`
 	CreatedAt              types.String       `tfsdk:"created_at"`
 	UpdatedAt              types.String       `tfsdk:"updated_at"`
+	URLEnvFingerprint      types.String       `tfsdk:"url_env_fingerprint"`
 }
 
 type alertActionModel struct {
@@ -191,6 +193,11 @@ func (r *AlertRuleResource) Schema(ctx context.Context, req resource.SchemaReque
 				Computed:            true,
 				MarkdownDescription: "Last update timestamp.",
 			},
+			"url_env_fingerprint": schema.StringAttribute{
+				Computed:            true,
+				Sensitive:           true,
+				MarkdownDescription: "Internal fingerprint of the webhook URL(s) resolved from `url_env`, used to detect out-of-band secret rotations so a changed URL triggers an update. This is a non-reversible digest, not the URL itself; the URL is never stored in state.",
+			},
 		},
 	}
 }
@@ -206,6 +213,58 @@ func (r *AlertRuleResource) Configure(ctx context.Context, req resource.Configur
 		return
 	}
 	r.client = client
+}
+
+// ModifyPlan records a fingerprint of the webhook URLs resolved from url_env so
+// that rotating the secret behind that env var is detected as a change. The
+// resolved URL is never stored in state (see modelFromAlertRuleResponse), which
+// otherwise means a rotation produces no plan diff and is never re-sent to
+// LangSmith. A changed fingerprint triggers Update, which re-reads the env var.
+func (r *AlertRuleResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// Nothing to fingerprint when the resource is being destroyed.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var actions []alertActionModel
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("actions"), &actions)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	fp, hasURLEnv, resolved := urlEnvFingerprint(actionURLEnvs(actions))
+	var value types.String
+	switch {
+	case !hasURLEnv:
+		// No url_env-sourced webhook to track.
+		value = types.StringNull()
+	case !resolved:
+		// The secret isn't available at plan time (e.g. a local plan without the
+		// env var set). Keep the prior value so we don't force a spurious diff.
+		if req.State.Raw.IsNull() {
+			value = types.StringNull()
+		} else {
+			resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("url_env_fingerprint"), &value)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+		}
+	default:
+		value = types.StringValue(fp)
+	}
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("url_env_fingerprint"), value)...)
+}
+
+// actionURLEnvs returns the url_env name for each action slot ("" when an action
+// has no url_env), positionally aligned to the actions list.
+func actionURLEnvs(actions []alertActionModel) []string {
+	names := make([]string, len(actions))
+	for i, a := range actions {
+		if !a.URLEnv.IsNull() && !a.URLEnv.IsUnknown() {
+			names[i] = a.URLEnv.ValueString()
+		}
+	}
+	return names
 }
 
 func (r *AlertRuleResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

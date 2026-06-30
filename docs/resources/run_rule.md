@@ -132,6 +132,7 @@ resource "langsmith_run_rule" "notify" {
 - `session_name` (String) Tracing project name (resolved by the API).
 - `tenant_id` (String) Workspace (tenant) ID that owns this rule, as returned by the API.
 - `updated_at` (String) Last update timestamp.
+- `url_env_fingerprint` (String, Sensitive) Internal fingerprint of the webhook URL(s) resolved from `url_env`, used to detect out-of-band secret rotations so a changed URL triggers an update. This is a non-reversible digest, not the URL itself; the URL is never stored in state.
 
 <a id="nestedatt--spend_limit"></a>
 ### Nested Schema for `spend_limit`

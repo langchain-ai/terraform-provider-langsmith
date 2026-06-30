@@ -104,6 +104,34 @@ func TestModelFromAlertRuleResponsePreservesURLEnvAndDropsURL(t *testing.T) {
 	}
 }
 
+// TestModelFromAlertRuleResponsePreservesURLEnvFingerprint guards the invariant
+// that webhook-rotation detection relies on: the url_env fingerprint carried in
+// the prior plan/state must survive a response decode (the API never returns it).
+func TestModelFromAlertRuleResponsePreservesURLEnvFingerprint(t *testing.T) {
+	response := alertRulePayload{
+		Rule: alertRuleAPI{
+			ID:            "alert-id",
+			Name:          "example alert",
+			Description:   "example description",
+			Type:          "threshold",
+			Attribute:     "error_count",
+			Aggregation:   "sum",
+			WindowMinutes: 15,
+			Operator:      "gte",
+		},
+	}
+
+	state, err := modelFromAlertRuleResponse(response, alertRuleModel{
+		URLEnvFingerprint: types.StringValue("fingerprint-123"),
+	})
+	if err != nil {
+		t.Fatalf("modelFromAlertRuleResponse returned error: %v", err)
+	}
+	if got, want := state.URLEnvFingerprint.ValueString(), "fingerprint-123"; got != want {
+		t.Fatalf("URLEnvFingerprint = %q, want %q", got, want)
+	}
+}
+
 func TestAlertRuleIdentityForUpdateUsesStateForComputedID(t *testing.T) {
 	plan := alertRuleModel{
 		ID:        types.StringUnknown(),

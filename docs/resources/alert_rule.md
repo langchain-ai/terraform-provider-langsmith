@@ -66,6 +66,7 @@ resource "langsmith_alert_rule" "example" {
 - `created_at` (String) Creation timestamp.
 - `id` (String) Alert rule ID.
 - `updated_at` (String) Last update timestamp.
+- `url_env_fingerprint` (String, Sensitive) Internal fingerprint of the webhook URL(s) resolved from `url_env`, used to detect out-of-band secret rotations so a changed URL triggers an update. This is a non-reversible digest, not the URL itself; the URL is never stored in state.
 
 <a id="nestedatt--actions"></a>
 ### Nested Schema for `actions`

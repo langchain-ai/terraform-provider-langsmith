@@ -152,3 +152,19 @@ func TestRunRuleEvaluatorIDFollowsPriorState(t *testing.T) {
 		t.Errorf("evaluator_id = %q, want %q reflected when the user configured it", next.EvaluatorID.ValueString(), savedID)
 	}
 }
+
+// TestModelFromRunRuleAPIPreservesURLEnvFingerprint guards the invariant that
+// webhook-rotation detection relies on: the url_env fingerprint carried in the
+// prior plan/state must survive a response decode (the API never returns it).
+func TestModelFromRunRuleAPIPreservesURLEnvFingerprint(t *testing.T) {
+	api := runRuleAPI{ID: "rule-1", DisplayName: "example", SamplingRate: 1}
+	next, diags := modelFromRunRuleAPI(api, runRuleModel{
+		URLEnvFingerprint: types.StringValue("fingerprint-123"),
+	})
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if got, want := next.URLEnvFingerprint.ValueString(), "fingerprint-123"; got != want {
+		t.Fatalf("URLEnvFingerprint = %q, want %q", got, want)
+	}
+}
