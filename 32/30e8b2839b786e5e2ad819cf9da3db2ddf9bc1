@@ -1,0 +1,40 @@
+internal/provider/url_env_fingerprint.go
+  s_ef7efa8bbad446::t_9983fb122ca426 1-32,36-46,48-51,54
+  s_ef7efa8bbad446::t_03c14725692506 33-35,47,52-53
+internal/provider/alert_rule_resource_test.go
+  s_ef7efa8bbad446::t_6538d4291c8fb6 107-134
+internal/provider/run_rule_resource_test.go
+  s_ef7efa8bbad446::t_1cc11102e4be18 155-170
+internal/provider/run_rule_resource.go
+  s_ef7efa8bbad446::t_887b2c8ce3c373 79
+  s_ef7efa8bbad446::t_a8c7d6b60afee2 368-372
+  s_ef7efa8bbad446::t_a6ca827eb81dcc 26
+  s_ef7efa8bbad446::t_2cbcf6a2bf3c89 389-440
+internal/provider/url_env_fingerprint_test.go
+  s_ef7efa8bbad446::t_3eb5886d806f69 1-74
+internal/provider/alert_rule_resource.go
+  s_ef7efa8bbad446::t_28b0adb3912a34 24
+  s_ef7efa8bbad446::t_e7ad50042175a0 54
+  s_ef7efa8bbad446::t_6f52f7ec7d0d28 196-200
+  s_ef7efa8bbad446::t_9b1f487f5ad8fd 218-269
+docs/resources/alert_rule.md
+  s_ef7efa8bbad446::t_2c36cb3af7a785 69
+docs/resources/run_rule.md
+  s_ef7efa8bbad446::t_5dec7957213ec3 135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.4",
+  "base_commit_sha": "3230e8b2839b786e5e2ad819cf9da3db2ddf9bc1",
+  "prompts": {},
+  "sessions": {
+    "s_ef7efa8bbad446": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "10063440-91b3-48f4-be34-624513617779",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Bagatur Askaryan <baskaryan@gmail.com>"
+    }
+  }
+}
