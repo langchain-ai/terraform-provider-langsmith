@@ -128,6 +128,9 @@ func TestWorkspaceResourceUpdatePatchesDisplayNameAndReadsWorkspace(t *testing.T
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		switch {
 		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/workspaces/workspace-id":
+			if got, want := r.Header.Get("X-Tenant-Id"), "workspace-id"; got != want {
+				t.Fatalf("X-Tenant-Id = %q, want %q", got, want)
+			}
 			var payload map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode update payload: %v", err)
@@ -137,6 +140,9 @@ func TestWorkspaceResourceUpdatePatchesDisplayNameAndReadsWorkspace(t *testing.T
 			}
 			writeJSON(t, w, langsmith.WorkspaceUpdateResponse{ID: "workspace-id"})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces":
+			if got, want := r.Header.Get("X-Tenant-Id"), "configured-workspace-id"; got != want {
+				t.Fatalf("X-Tenant-Id = %q, want %q", got, want)
+			}
 			writeJSON(t, w, []langsmith.WorkspaceListResponse{{
 				ID:             "workspace-id",
 				CreatedAt:      createdAt,
@@ -148,7 +154,7 @@ func TestWorkspaceResourceUpdatePatchesDisplayNameAndReadsWorkspace(t *testing.T
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
-	}))
+	}), option.WithTenantID("configured-workspace-id"))
 
 	model, err := resource.updateWorkspace(context.Background(), "workspace-id", workspaceResourceModel{
 		DisplayName: types.StringValue("Renamed Workspace"),
@@ -167,16 +173,49 @@ func TestWorkspaceResourceUpdatePatchesDisplayNameAndReadsWorkspace(t *testing.T
 	}
 }
 
-func newWorkspaceResourceWithServer(t *testing.T, handler http.Handler) *WorkspaceResource {
+func TestWorkspaceResourceDeleteUsesWorkspaceTenant(t *testing.T) {
+	resource := newWorkspaceResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Method, http.MethodDelete; got != want {
+			t.Fatalf("method = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Path, "/api/v1/workspaces/workspace-id"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+		if got, want := r.Header.Get("X-Tenant-Id"), "workspace-id"; got != want {
+			t.Fatalf("X-Tenant-Id = %q, want %q", got, want)
+		}
+		writeJSON(t, w, map[string]string{"id": "workspace-id"})
+	}), option.WithTenantID("configured-workspace-id"))
+
+	if err := resource.deleteWorkspace(context.Background(), "workspace-id"); err != nil {
+		t.Fatalf("deleteWorkspace returned error: %v", err)
+	}
+}
+
+func TestWorkspaceResourceDeleteReturnsNotFound(t *testing.T) {
+	resource := newWorkspaceResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"detail":"workspace not found"}`, http.StatusNotFound)
+	}))
+
+	err := resource.deleteWorkspace(context.Background(), "workspace-id")
+	if !isLangSmithNotFound(err) {
+		t.Fatalf("deleteWorkspace error = %v, want not found", err)
+	}
+}
+
+func newWorkspaceResourceWithServer(t *testing.T, handler http.Handler, opts ...option.RequestOption) *WorkspaceResource {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
+	clientOptions := []option.RequestOption{
+		option.WithBaseURL(server.URL),
+		option.WithAPIKey("test-key"),
+	}
+	clientOptions = append(clientOptions, opts...)
+
 	return &WorkspaceResource{
-		client: langsmith.NewClient(
-			option.WithBaseURL(server.URL),
-			option.WithAPIKey("test-key"),
-		),
+		client: langsmith.NewClient(clientOptions...),
 	}
 }
 
