@@ -21,6 +21,7 @@ import (
 var (
 	_ resource.Resource                = &AlertRuleResource{}
 	_ resource.ResourceWithImportState = &AlertRuleResource{}
+	_ resource.ResourceWithModifyPlan  = &AlertRuleResource{}
 )
 
 func NewAlertRuleResource() resource.Resource {
@@ -143,7 +144,7 @@ func (r *AlertRuleResource) Schema(ctx context.Context, req resource.SchemaReque
 			},
 			"actions": schema.ListNestedAttribute{
 				Required:            true,
-				MarkdownDescription: "Alert delivery actions. Use `url_env` for webhook URLs so they are sent to LangSmith without being stored in Terraform state.",
+				MarkdownDescription: "Alert delivery actions. Use `url_env` for webhook URLs so they are sent to LangSmith without being stored in Terraform state. Changes to the referenced environment-variable values are detected during planning.",
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"target": schema.StringAttribute{
@@ -157,7 +158,7 @@ func (r *AlertRuleResource) Schema(ctx context.Context, req resource.SchemaReque
 						},
 						"url_env": schema.StringAttribute{
 							Optional:            true,
-							MarkdownDescription: "Environment variable containing a webhook URL. The value is sent to LangSmith but not stored in Terraform state.",
+							MarkdownDescription: "Environment variable containing a webhook URL. The value is sent to LangSmith but not stored in Terraform state; rotations are detected during planning.",
 						},
 					},
 				},
@@ -193,6 +194,23 @@ func (r *AlertRuleResource) Schema(ctx context.Context, req resource.SchemaReque
 			},
 		},
 	}
+}
+
+func (r *AlertRuleResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var actions types.List
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("actions"), &actions)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	refs, err := urlEnvReferencesFromNestedList(actions)
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to Inspect Alert Rule Webhooks", err.Error())
+		return
+	}
+	modifyPlanForURLEnv(ctx, req, resp, refs)
 }
 
 func (r *AlertRuleResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {

@@ -23,6 +23,7 @@ import (
 var (
 	_ resource.Resource                = &RunRuleResource{}
 	_ resource.ResourceWithImportState = &RunRuleResource{}
+	_ resource.ResourceWithModifyPlan  = &RunRuleResource{}
 )
 
 func NewRunRuleResource() resource.Resource {
@@ -269,7 +270,7 @@ func (r *RunRuleResource) Schema(ctx context.Context, req resource.SchemaRequest
 			},
 			"webhooks": schema.ListNestedAttribute{
 				Optional:            true,
-				MarkdownDescription: "Webhooks invoked when the rule applies. Use `url_env` to source the URL from an environment variable so it stays out of Terraform state.",
+				MarkdownDescription: "Webhooks invoked when the rule applies. Use `url_env` to source the URL from an environment variable so it stays out of Terraform state. Changes to referenced environment-variable values are detected during planning.",
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"url": schema.StringAttribute{
@@ -278,7 +279,7 @@ func (r *RunRuleResource) Schema(ctx context.Context, req resource.SchemaRequest
 						},
 						"url_env": schema.StringAttribute{
 							Optional:            true,
-							MarkdownDescription: "Environment variable containing a webhook URL. The value is sent to LangSmith but not stored in Terraform state.",
+							MarkdownDescription: "Environment variable containing a webhook URL. The value is sent to LangSmith but not stored in Terraform state; rotations are detected during planning.",
 						},
 						"headers_json": schema.StringAttribute{
 							Optional:            true,
@@ -365,6 +366,23 @@ func (r *RunRuleResource) Schema(ctx context.Context, req resource.SchemaRequest
 			},
 		},
 	}
+}
+
+func (r *RunRuleResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var webhooks types.List
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("webhooks"), &webhooks)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	refs, err := urlEnvReferencesFromNestedList(webhooks)
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to Inspect Run Rule Webhooks", err.Error())
+		return
+	}
+	modifyPlanForURLEnv(ctx, req, resp, refs)
 }
 
 func (r *RunRuleResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
