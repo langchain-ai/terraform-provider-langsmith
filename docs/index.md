@@ -1,14 +1,14 @@
 ---
 page_title: "LangSmith Provider"
 description: |-
-  Manage LangSmith workspaces, roles, members, evaluators, run rules, and alert rules with Terraform.
+  Manage LangSmith workspaces, roles, members, resource tags, ABAC policies, evaluators, run rules, and alert rules with Terraform.
 ---
 
 # LangSmith Provider
 
 The LangSmith provider manages [LangSmith](https://www.langchain.com/langsmith)
 resources as code — workspaces, roles, organization and workspace memberships,
-evaluators, run rules, and alert rules.
+resource tags, ABAC policies, evaluators, run rules, and alert rules.
 
 For LangSmith concepts, setup, and product documentation, see the
 **[LangSmith documentation](https://docs.smith.langchain.com)**.

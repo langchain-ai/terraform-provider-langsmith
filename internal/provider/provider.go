@@ -125,8 +125,13 @@ func (p *LangSmithProvider) DataSources(ctx context.Context) []func() datasource
 func (p *LangSmithProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewAlertRuleResource,
+		NewAccessPolicyResource,
 		NewEvaluatorResource,
 		NewRunRuleResource,
+		NewTagResource,
+		NewTagKeyResource,
+		NewTagValueResource,
+		NewTaggingResource,
 		NewOrgMembershipResource,
 		NewSandboxRegistryResource,
 		NewWorkspaceMembershipResource,

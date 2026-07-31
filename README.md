@@ -17,6 +17,15 @@ The provider currently includes:
 - `langsmith_alert_rule`, with create/read/update/delete/import support for `/v1/platform/alerts/{session_id}`.
 - `langsmith_org_membership`, which manages desired org membership by email and org role.
 - `langsmith_workspace_membership`, which manages desired workspace membership by workspace, email, and workspace role.
+- `langsmith_tag_key`, `langsmith_tag_value`, and `langsmith_tagging`, which manage the independent resource-tag lifecycles.
+- `langsmith_tag`, a convenience resource that owns one tag key and one value.
+- `langsmith_access_policy`, which manages ABAC access policies and their workspace-role attachments.
+
+## Resource Tags and ABAC
+
+Use the independent resources when tag keys or values are shared. `langsmith_tag` is a convenience lifecycle for a dedicated key and value; taggings remain separate so changing the tagged resource does not recreate the key or value.
+
+Access policies are organization-scoped, while tag keys, values, and taggings are scoped to the workspace selected by the provider. Access policies can attach to multiple custom workspace roles through `role_ids`.
 
 ## Access Management Resources
 
