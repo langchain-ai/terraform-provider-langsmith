@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -14,6 +15,34 @@ import (
 // {int64,string}planmodifier.UseStateForUnknown(). We match on it to assert the
 // right plan modifier is wired up without depending on framework internals.
 const useStateForUnknownDescription = "Once set, the value of this attribute in state will not change."
+
+func TestRunRuleImplementsModifyPlanAndExtractsURLEnvReferences(t *testing.T) {
+	if _, ok := NewRunRuleResource().(resource.ResourceWithModifyPlan); !ok {
+		t.Fatal("NewRunRuleResource does not implement resource.ResourceWithModifyPlan")
+	}
+
+	objectType := types.ObjectType{AttrTypes: map[string]attr.Type{
+		"url":          types.StringType,
+		"url_env":      types.StringType,
+		"headers_json": types.StringType,
+	}}
+	webhooks := types.ListValueMust(objectType, []attr.Value{
+		types.ObjectValueMust(objectType.AttrTypes, map[string]attr.Value{
+			"url":          types.StringNull(),
+			"url_env":      types.StringValue("RUN_RULE_WEBHOOK_URL"),
+			"headers_json": types.StringNull(),
+		}),
+		types.ObjectUnknown(objectType.AttrTypes),
+	})
+
+	refs, err := urlEnvReferencesFromNestedList(webhooks)
+	if err != nil {
+		t.Fatalf("urlEnvReferencesFromNestedList returned error: %v", err)
+	}
+	if len(refs) != 2 || refs[0].ValueString() != "RUN_RULE_WEBHOOK_URL" || !refs[1].IsUnknown() {
+		t.Fatalf("refs = %#v, want RUN_RULE_WEBHOOK_URL followed by unknown", refs)
+	}
+}
 
 // TestRunRuleEvaluatorVersionUsesStateForUnknown is a regression test for the
 // run-rule apply failure:

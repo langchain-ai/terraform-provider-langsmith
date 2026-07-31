@@ -42,7 +42,7 @@ resource "langsmith_alert_rule" "example" {
 
 ### Required
 
-- `actions` (Attributes List) Alert delivery actions. Use `url_env` for webhook URLs so they are sent to LangSmith without being stored in Terraform state. (see [below for nested schema](#nestedatt--actions))
+- `actions` (Attributes List) Alert delivery actions. Use `url_env` for webhook URLs so they are sent to LangSmith without being stored in Terraform state. Changes to the referenced environment-variable values are detected during planning. (see [below for nested schema](#nestedatt--actions))
 - `aggregation` (String) Metric aggregation, such as `avg`, `sum`, or `pct`.
 - `attribute` (String) Metric attribute to monitor.
 - `description` (String) Alert rule description.
@@ -77,4 +77,4 @@ Required:
 Optional:
 
 - `config_json` (String) JSON-encoded action config.
-- `url_env` (String) Environment variable containing a webhook URL. The value is sent to LangSmith but not stored in Terraform state.
+- `url_env` (String) Environment variable containing a webhook URL. The value is sent to LangSmith but not stored in Terraform state; rotations are detected during planning.

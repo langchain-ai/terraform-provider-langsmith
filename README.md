@@ -143,7 +143,7 @@ With those variables set, the provider can be empty:
 provider "langsmith" {}
 ```
 
-Webhook actions can include non-sensitive URLs directly in `config_json`. Use `url_env` when a webhook URL should be kept out of Terraform state; the provider reads that environment variable during create/update and removes `url` from state after reads.
+Webhook actions can include non-sensitive URLs directly in `config_json`. Use `url_env` when a webhook URL should be kept out of Terraform state; the provider reads that environment variable during create/update, removes `url` from state after reads, and detects rotations of the referenced value during planning.
 
 Run the opt-in local CRUD smoke test with a LangSmith CLI profile:
 

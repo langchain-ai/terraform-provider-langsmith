@@ -8,9 +8,43 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
 )
+
+func TestAlertRuleImplementsModifyPlanAndExtractsURLEnvReferences(t *testing.T) {
+	if _, ok := NewAlertRuleResource().(resource.ResourceWithModifyPlan); !ok {
+		t.Fatal("NewAlertRuleResource does not implement resource.ResourceWithModifyPlan")
+	}
+
+	objectType := types.ObjectType{AttrTypes: map[string]attr.Type{
+		"target":      types.StringType,
+		"config_json": types.StringType,
+		"url_env":     types.StringType,
+	}}
+	actions := types.ListValueMust(objectType, []attr.Value{
+		types.ObjectValueMust(objectType.AttrTypes, map[string]attr.Value{
+			"target":      types.StringValue("webhook"),
+			"config_json": types.StringNull(),
+			"url_env":     types.StringValue("ALERT_WEBHOOK_URL"),
+		}),
+		types.ObjectValueMust(objectType.AttrTypes, map[string]attr.Value{
+			"target":      types.StringValue("pagerduty"),
+			"config_json": types.StringValue(`{"key":"value"}`),
+			"url_env":     types.StringNull(),
+		}),
+	})
+
+	refs, err := urlEnvReferencesFromNestedList(actions)
+	if err != nil {
+		t.Fatalf("urlEnvReferencesFromNestedList returned error: %v", err)
+	}
+	if len(refs) != 2 || refs[0].ValueString() != "ALERT_WEBHOOK_URL" || !refs[1].IsNull() {
+		t.Fatalf("refs = %#v, want ALERT_WEBHOOK_URL followed by null", refs)
+	}
+}
 
 func TestAlertRulePayloadFromModelResolvesURLEnv(t *testing.T) {
 	t.Setenv("TEST_LANGSMITH_WEBHOOK_URL", "https://example.com/webhook")

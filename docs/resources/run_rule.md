@@ -112,7 +112,7 @@ resource "langsmith_run_rule" "notify" {
 - `transient` (Boolean) When true, mark the rule as transient (one-shot).
 - `tree_filter` (String) Run-tree filter expression.
 - `use_corrections_dataset` (Boolean) Whether to write to a corrections dataset.
-- `webhooks` (Attributes List) Webhooks invoked when the rule applies. Use `url_env` to source the URL from an environment variable so it stays out of Terraform state. (see [below for nested schema](#nestedatt--webhooks))
+- `webhooks` (Attributes List) Webhooks invoked when the rule applies. Use `url_env` to source the URL from an environment variable so it stays out of Terraform state. Changes to referenced environment-variable values are detected during planning. (see [below for nested schema](#nestedatt--webhooks))
 - `workspace_id` (String) LangSmith workspace (tenant) ID that owns this rule. When unset, the resource uses the workspace configured on the provider block.
 
 ### Read-Only
@@ -149,4 +149,4 @@ Optional:
 
 - `headers_json` (String, Sensitive) JSON-encoded `{header: value}` map sent with each webhook call. Values are redacted from Terraform plan/show output. Note that they are still written to the Terraform state file, so prefer state backends with at-rest encryption and access control.
 - `url` (String) Webhook URL. Prefer `url_env` for secret webhook URLs.
-- `url_env` (String) Environment variable containing a webhook URL. The value is sent to LangSmith but not stored in Terraform state.
+- `url_env` (String) Environment variable containing a webhook URL. The value is sent to LangSmith but not stored in Terraform state; rotations are detected during planning.
