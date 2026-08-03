@@ -13,6 +13,7 @@ import (
 	frameworkvalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
+	"github.com/langchain-ai/langsmith-go/option"
 )
 
 var (
@@ -140,7 +141,7 @@ func (r *TagKeyResource) ImportState(ctx context.Context, req resource.ImportSta
 
 func (r *TagKeyResource) createTagKey(ctx context.Context, plan tagKeyResourceModel) (tagKeyResourceModel, error) {
 	var result tagKeyAPI
-	if err := r.client.Post(ctx, tagKeysPath, tagKeyPayloadFromModel(plan), &result); err != nil {
+	if err := r.client.Post(ctx, tagKeysPath, tagKeyPayloadFromModel(plan), &result, option.WithMaxRetries(0)); err != nil {
 		return tagKeyResourceModel{}, err
 	}
 	if result.ID == "" {

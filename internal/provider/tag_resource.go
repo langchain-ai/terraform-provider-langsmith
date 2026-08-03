@@ -87,13 +87,13 @@ func (r *TagResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	model, err := r.readTag(ctx, state.TagKeyID.ValueString(), state.TagValueID.ValueString())
+	model, remove, err := r.readTagForRefresh(ctx, state.TagKeyID.ValueString(), state.TagValueID.ValueString())
 	if err != nil {
-		if isLangSmithNotFound(err) {
-			resp.State.RemoveResource(ctx)
-			return
-		}
 		resp.Diagnostics.AddError("Unable to Read LangSmith Tag", err.Error())
+		return
+	}
+	if remove {
+		resp.State.RemoveResource(ctx)
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
@@ -162,6 +162,27 @@ func (r *TagResource) readTag(ctx context.Context, keyID, valueID string) (tagRe
 		return tagResourceModel{}, err
 	}
 	return tagModelFromParts(key, value), nil
+}
+
+func (r *TagResource) readTagForRefresh(ctx context.Context, keyID, valueID string) (tagResourceModel, bool, error) {
+	key, err := (&TagKeyResource{client: r.client}).readTagKey(ctx, keyID)
+	if err != nil {
+		if isLangSmithNotFound(err) {
+			return tagResourceModel{}, true, nil
+		}
+		return tagResourceModel{}, false, err
+	}
+	value, err := (&TagValueResource{client: r.client}).readTagValue(ctx, keyID, valueID)
+	if err != nil {
+		if !isLangSmithNotFound(err) {
+			return tagResourceModel{}, false, err
+		}
+		if cleanupErr := (&TagKeyResource{client: r.client}).deleteTagKey(ctx, keyID); cleanupErr != nil {
+			return tagResourceModel{}, false, fmt.Errorf("tag value no longer exists; delete surviving tag key before recreation: %w", cleanupErr)
+		}
+		return tagResourceModel{}, true, nil
+	}
+	return tagModelFromParts(key, value), false, nil
 }
 
 func (r *TagResource) updateTag(ctx context.Context, keyID, valueID string, plan tagResourceModel) (tagResourceModel, error) {

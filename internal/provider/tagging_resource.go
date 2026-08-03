@@ -15,6 +15,7 @@ import (
 	frameworkvalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
+	"github.com/langchain-ai/langsmith-go/option"
 )
 
 var (
@@ -137,7 +138,7 @@ func (r *TaggingResource) ImportState(ctx context.Context, req resource.ImportSt
 
 func (r *TaggingResource) createTagging(ctx context.Context, plan taggingResourceModel) (taggingResourceModel, error) {
 	var result taggingAPI
-	if err := r.client.Post(ctx, taggingsPath, taggingPayloadFromModel(plan), &result); err != nil {
+	if err := r.client.Post(ctx, taggingsPath, taggingPayloadFromModel(plan), &result, option.WithMaxRetries(0)); err != nil {
 		return taggingResourceModel{}, err
 	}
 	if result.ID == "" {

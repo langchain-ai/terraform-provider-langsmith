@@ -181,6 +181,69 @@ func TestTagResourceConvenienceLifecycle(t *testing.T) {
 	}
 }
 
+func TestTagResourceRefreshRemovesSurvivingKeyWhenValueIsMissing(t *testing.T) {
+	requests := []string{}
+	resource := newTagResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests = append(requests, req.Method+" "+req.URL.Path)
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/workspaces/current/tag-keys/key-id":
+			writeJSON(t, w, tagKeyAPI{ID: "key-id", Key: "Environment"})
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/workspaces/current/tag-keys/key-id/tag-values/value-id":
+			http.NotFound(w, req)
+		case req.Method == http.MethodDelete && req.URL.Path == "/api/v1/workspaces/current/tag-keys/key-id":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+	}))
+
+	_, remove, err := resource.readTagForRefresh(context.Background(), "key-id", "value-id")
+	if err != nil || !remove {
+		t.Fatalf("readTagForRefresh() remove = %t, err = %v", remove, err)
+	}
+	want := []string{
+		"GET /api/v1/workspaces/current/tag-keys/key-id",
+		"GET /api/v1/workspaces/current/tag-keys/key-id/tag-values/value-id",
+		"DELETE /api/v1/workspaces/current/tag-keys/key-id",
+	}
+	if len(requests) != len(want) {
+		t.Fatalf("requests = %#v, want %#v", requests, want)
+	}
+	for i := range want {
+		if requests[i] != want[i] {
+			t.Fatalf("requests = %#v, want %#v", requests, want)
+		}
+	}
+}
+
+func TestTagCreatesDoNotRetry(t *testing.T) {
+	counts := map[string]int{}
+	client := newTagTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		counts[req.URL.Path]++
+		http.Error(w, "temporary failure", http.StatusInternalServerError)
+	}))
+
+	if _, err := (&TagKeyResource{client: client}).createTagKey(context.Background(), tagKeyResourceModel{Key: types.StringValue("Environment")}); err == nil {
+		t.Fatal("createTagKey() error = nil")
+	}
+	if _, err := (&TagValueResource{client: client}).createTagValue(context.Background(), tagValueResourceModel{TagKeyID: types.StringValue("key-id"), Value: types.StringValue("production")}); err == nil {
+		t.Fatal("createTagValue() error = nil")
+	}
+	if _, err := (&TaggingResource{client: client}).createTagging(context.Background(), taggingResourceModel{TagValueID: types.StringValue("value-id"), ResourceType: types.StringValue("project"), ResourceID: types.StringValue("project-id")}); err == nil {
+		t.Fatal("createTagging() error = nil")
+	}
+
+	for _, path := range []string{
+		"/api/v1/workspaces/current/tag-keys",
+		"/api/v1/workspaces/current/tag-keys/key-id/tag-values",
+		"/api/v1/workspaces/current/taggings",
+	} {
+		if counts[path] != 1 {
+			t.Fatalf("requests to %s = %d, want 1", path, counts[path])
+		}
+	}
+}
+
 func newTagKeyResourceWithServer(t *testing.T, handler http.Handler) *TagKeyResource {
 	return &TagKeyResource{client: newTagTestClient(t, handler)}
 }

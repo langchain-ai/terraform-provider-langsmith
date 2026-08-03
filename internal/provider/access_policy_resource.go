@@ -14,6 +14,7 @@ import (
 	frameworkvalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
+	"github.com/langchain-ai/langsmith-go/option"
 )
 
 var (
@@ -177,6 +178,7 @@ func (r *AccessPolicyResource) Read(ctx context.Context, req resource.ReadReques
 		resp.Diagnostics.AddError("Unable to Read LangSmith Access Policy", err.Error())
 		return
 	}
+	model = preserveAccessPolicyOptionalShape(model, state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
 }
 
@@ -187,8 +189,11 @@ func (r *AccessPolicyResource) Update(ctx context.Context, req resource.UpdateRe
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	model, err := r.updateAccessPolicy(ctx, state.ID.ValueString(), state.RoleIDs, plan)
+	model, err := r.updateAccessPolicy(ctx, state.ID.ValueString(), plan)
 	if err != nil {
+		if !model.ID.IsNull() && !model.ID.IsUnknown() {
+			resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
+		}
 		resp.Diagnostics.AddError("Unable to Update LangSmith Access Policy", err.Error())
 		return
 	}
@@ -212,13 +217,17 @@ func (r *AccessPolicyResource) ImportState(ctx context.Context, req resource.Imp
 
 func (r *AccessPolicyResource) createAccessPolicy(ctx context.Context, plan accessPolicyResourceModel) (accessPolicyResourceModel, error) {
 	var result accessPolicyCreateResponse
-	if err := r.client.Post(ctx, accessPoliciesPath, accessPolicyPayloadFromModel(plan, true), &result); err != nil {
+	if err := r.client.Post(ctx, accessPoliciesPath, accessPolicyPayloadFromModel(plan, true), &result, option.WithMaxRetries(0)); err != nil {
 		return accessPolicyResourceModel{}, err
 	}
 	if result.ID == "" {
 		return accessPolicyResourceModel{}, errors.New("LangSmith did not return an access policy ID")
 	}
-	return r.readAccessPolicy(ctx, result.ID)
+	model, err := r.readAccessPolicy(ctx, result.ID)
+	if err != nil {
+		return accessPolicyResourceModel{}, err
+	}
+	return preserveAccessPolicyOptionalShape(model, plan), nil
 }
 
 func (r *AccessPolicyResource) readAccessPolicy(ctx context.Context, id string) (accessPolicyResourceModel, error) {
@@ -229,20 +238,28 @@ func (r *AccessPolicyResource) readAccessPolicy(ctx context.Context, id string) 
 	return accessPolicyModelFromAPI(result), nil
 }
 
-func (r *AccessPolicyResource) updateAccessPolicy(ctx context.Context, id string, currentRoleIDs []string, plan accessPolicyResourceModel) (accessPolicyResourceModel, error) {
+func (r *AccessPolicyResource) updateAccessPolicy(ctx context.Context, id string, plan accessPolicyResourceModel) (accessPolicyResourceModel, error) {
 	var result accessPolicyAPI
 	if err := r.client.Patch(ctx, accessPolicyPath(id), accessPolicyPayloadFromModel(plan, false), &result); err != nil {
 		return accessPolicyResourceModel{}, err
 	}
-	if err := r.reconcileAccessPolicyRoles(ctx, id, currentRoleIDs, plan.RoleIDs); err != nil {
+	if err := r.reconcileAccessPolicyRoles(ctx, id, result.RoleIDs, plan.RoleIDs); err != nil {
+		live, readErr := r.readAccessPolicy(ctx, id)
+		if readErr != nil {
+			return accessPolicyResourceModel{}, errors.Join(err, fmt.Errorf("read partially updated access policy: %w", readErr))
+		}
+		return preserveAccessPolicyOptionalShape(live, plan), err
+	}
+	model, err := r.readAccessPolicy(ctx, id)
+	if err != nil {
 		return accessPolicyResourceModel{}, err
 	}
-	return r.readAccessPolicy(ctx, id)
+	return preserveAccessPolicyOptionalShape(model, plan), nil
 }
 
 func (r *AccessPolicyResource) reconcileAccessPolicyRoles(ctx context.Context, policyID string, current, desired []string) error {
 	for _, roleID := range stringSetDifference(desired, current) {
-		if err := r.client.Post(ctx, accessPolicyRolePath(roleID), accessPolicyAttachmentPayload{AccessPolicyIDs: []string{policyID}}, nil); err != nil {
+		if err := r.client.Post(ctx, accessPolicyRolePath(roleID), accessPolicyAttachmentPayload{AccessPolicyIDs: []string{policyID}}, nil, option.WithMaxRetries(0)); err != nil {
 			return fmt.Errorf("attach access policy to role %s: %w", roleID, err)
 		}
 	}
@@ -295,6 +312,16 @@ func accessPolicyModelFromAPI(api accessPolicyAPI) accessPolicyResourceModel {
 			modelGroup.Conditions = append(modelGroup.Conditions, accessPolicyConditionModel{AttributeName: types.StringValue(condition.AttributeName), AttributeKey: types.StringValue(condition.AttributeKey), Operator: types.StringValue(condition.Operator), AttributeValue: types.StringValue(condition.AttributeValue)})
 		}
 		model.ConditionGroups = append(model.ConditionGroups, modelGroup)
+	}
+	return model
+}
+
+func preserveAccessPolicyOptionalShape(model, configured accessPolicyResourceModel) accessPolicyResourceModel {
+	if model.Description.IsNull() && !configured.Description.IsNull() && !configured.Description.IsUnknown() && configured.Description.ValueString() == "" {
+		model.Description = types.StringValue("")
+	}
+	if model.RoleIDs == nil && configured.RoleIDs != nil {
+		model.RoleIDs = []string{}
 	}
 	return model
 }
