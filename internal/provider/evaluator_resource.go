@@ -472,9 +472,9 @@ func modelFromEvaluatorAPI(ctx context.Context, api evaluatorAPI, previous evalu
 }
 
 func evaluatorCollectionPath() string {
-	return "v1/platform/evaluators"
+	return "api/v1/platform/evaluators"
 }
 
 func evaluatorResourcePath(id string) string {
-	return "v1/platform/evaluators/" + id
+	return "api/v1/platform/evaluators/" + id
 }
