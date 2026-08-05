@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
 	github.com/hashicorp/terraform-plugin-log v0.10.0
-	github.com/langchain-ai/langsmith-go v0.23.0
+	github.com/langchain-ai/langsmith-go v0.25.4
 )
 
 require (
