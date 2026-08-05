@@ -20,7 +20,7 @@ var (
 	_ resource.ResourceWithImportState = &SandboxRegistryResource{}
 )
 
-const sandboxRegistriesPath = "v2/sandboxes/registries"
+const sandboxRegistriesPath = "api/v2/sandboxes/registries"
 
 func sandboxRegistryResourcePath(name string) string {
 	return fmt.Sprintf("%s/%s", sandboxRegistriesPath, name)

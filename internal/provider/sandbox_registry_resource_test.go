@@ -106,7 +106,7 @@ func TestSandboxRegistryResourceCreatePostsPayloadAndCapturesID(t *testing.T) {
 	res := newSandboxRegistryResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/v2/sandboxes/registries":
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/sandboxes/registries":
 			var payload sandboxRegistryPayload
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode: %v", err)
@@ -137,14 +137,14 @@ func TestSandboxRegistryResourceCreatePostsPayloadAndCapturesID(t *testing.T) {
 	if model.Password.ValueString() != "s3cret" {
 		t.Fatalf("Password not stored from config")
 	}
-	if !reflect.DeepEqual(requests, []string{"POST /v2/sandboxes/registries"}) {
+	if !reflect.DeepEqual(requests, []string{"POST /api/v2/sandboxes/registries"}) {
 		t.Fatalf("requests = %#v", requests)
 	}
 }
 
 func TestSandboxRegistryResourceReadByNamePreservesCredentials(t *testing.T) {
 	res := newSandboxRegistryResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v2/sandboxes/registries/docker-hub" {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v2/sandboxes/registries/docker-hub" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		writeJSON(t, w, sandboxRegistryAPI{ID: "reg-id", Name: "docker-hub", URL: "https://updated.example.com", UpdatedAt: "2026-06-24T01:00:00Z"})
@@ -180,7 +180,7 @@ func TestSandboxRegistryResourceUpdateRenamesUsingOldNameInPath(t *testing.T) {
 	res := newSandboxRegistryResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		switch {
-		case r.Method == http.MethodPatch && r.URL.Path == "/v2/sandboxes/registries/old-name":
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v2/sandboxes/registries/old-name":
 			var payload sandboxRegistryPayload
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode: %v", err)
@@ -213,14 +213,14 @@ func TestSandboxRegistryResourceUpdateRenamesUsingOldNameInPath(t *testing.T) {
 	if model.Password.ValueString() != "s3cret" {
 		t.Fatalf("credentials not preserved")
 	}
-	if !reflect.DeepEqual(requests, []string{"PATCH /v2/sandboxes/registries/old-name"}) {
+	if !reflect.DeepEqual(requests, []string{"PATCH /api/v2/sandboxes/registries/old-name"}) {
 		t.Fatalf("requests = %#v", requests)
 	}
 }
 
 func TestSandboxRegistryResourceDeleteTreatsNotFoundAsSuccess(t *testing.T) {
 	res := newSandboxRegistryResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.URL.Path != "/v2/sandboxes/registries/docker-hub" {
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/v2/sandboxes/registries/docker-hub" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		http.NotFound(w, r)

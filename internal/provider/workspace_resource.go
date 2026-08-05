@@ -177,7 +177,7 @@ func (r *WorkspaceResource) Delete(ctx context.Context, req resource.DeleteReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if _, err := r.client.Workspaces.Delete(ctx, state.ID.ValueString()); err != nil {
+	if err := r.deleteWorkspace(ctx, state.ID.ValueString()); err != nil {
 		if isLangSmithNotFound(err) {
 			return
 		}
@@ -209,10 +209,15 @@ func (r *WorkspaceResource) readWorkspace(ctx context.Context, workspaceID strin
 func (r *WorkspaceResource) updateWorkspace(ctx context.Context, workspaceID string, plan workspaceResourceModel) (workspaceResourceModel, error) {
 	if _, err := r.client.Workspaces.Update(ctx, workspaceID, langsmith.WorkspaceUpdateParams{
 		DisplayName: langsmith.F(plan.DisplayName.ValueString()),
-	}); err != nil {
+	}, workspaceTenantOption(workspaceID)); err != nil {
 		return workspaceResourceModel{}, err
 	}
 	return r.readWorkspace(ctx, workspaceID, plan)
+}
+
+func (r *WorkspaceResource) deleteWorkspace(ctx context.Context, workspaceID string) error {
+	_, err := r.client.Workspaces.Delete(ctx, workspaceID, workspaceTenantOption(workspaceID))
+	return err
 }
 
 func workspaceNewParamsFromModel(data workspaceResourceModel) langsmith.WorkspaceNewParams {

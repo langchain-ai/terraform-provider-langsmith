@@ -479,11 +479,11 @@ func modelFromAlertRuleResponse(result alertRulePayload, previous alertRuleModel
 }
 
 func alertRuleCollectionPath(sessionID string) string {
-	return fmt.Sprintf("v1/platform/alerts/%s", sessionID)
+	return fmt.Sprintf("api/v1/platform/alerts/%s", sessionID)
 }
 
 func alertRuleResourcePath(sessionID string, alertID string) string {
-	return fmt.Sprintf("v1/platform/alerts/%s/%s", sessionID, alertID)
+	return fmt.Sprintf("api/v1/platform/alerts/%s/%s", sessionID, alertID)
 }
 
 func encodeActionConfigForAPI(config map[string]any) (json.RawMessage, error) {
