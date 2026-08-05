@@ -31,6 +31,19 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Set up Terraform for offline acceptance tests
+        if: matrix.os == 'ubuntu-latest'
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.11.2
+          terraform_wrapper: false
+
+      - name: Test offline Terraform resource lifecycles
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          TF_ACC: '1'
+        run: go test ./internal/provider -run '^TestAccABACResourcesOffline$' -count=1 -v
+
       - name: Build
         run: go build ./...
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -64,6 +65,13 @@ type accessPolicyPayload struct {
 	Effect          string                       `json:"effect"`
 	ConditionGroups []accessPolicyConditionGroup `json:"condition_groups"`
 	RoleIDs         []string                     `json:"role_ids,omitempty"`
+}
+
+type accessPolicyUpdatePayload struct {
+	Name            string                       `json:"name"`
+	Description     *string                      `json:"description"`
+	Effect          string                       `json:"effect"`
+	ConditionGroups []accessPolicyConditionGroup `json:"condition_groups"`
 }
 
 type accessPolicyConditionGroup struct {
@@ -240,7 +248,7 @@ func (r *AccessPolicyResource) readAccessPolicy(ctx context.Context, id string) 
 
 func (r *AccessPolicyResource) updateAccessPolicy(ctx context.Context, id string, plan accessPolicyResourceModel) (accessPolicyResourceModel, error) {
 	var result accessPolicyAPI
-	if err := r.client.Patch(ctx, accessPolicyPath(id), accessPolicyPayloadFromModel(plan, false), &result); err != nil {
+	if err := r.client.Patch(ctx, accessPolicyPath(id), accessPolicyUpdatePayloadFromModel(plan), &result); err != nil {
 		return accessPolicyResourceModel{}, err
 	}
 	if err := r.reconcileAccessPolicyRoles(ctx, id, result.RoleIDs, plan.RoleIDs); err != nil {
@@ -264,7 +272,8 @@ func (r *AccessPolicyResource) reconcileAccessPolicyRoles(ctx context.Context, p
 		}
 	}
 	for _, roleID := range stringSetDifference(current, desired) {
-		if err := r.client.Delete(ctx, accessPolicyRolePath(roleID), accessPolicyAttachmentPayload{AccessPolicyIDs: []string{policyID}}, nil); err != nil {
+		params := url.Values{"access_policy_ids": []string{policyID}}
+		if err := r.client.Delete(ctx, accessPolicyRolePath(roleID)+"?"+params.Encode(), nil, nil); err != nil {
 			return fmt.Errorf("detach access policy from role %s: %w", roleID, err)
 		}
 	}
@@ -280,7 +289,7 @@ func (r *AccessPolicyResource) deleteAccessPolicy(ctx context.Context, id string
 
 func accessPolicyPath(id string) string { return fmt.Sprintf("%s/%s", accessPoliciesPath, id) }
 func accessPolicyRolePath(roleID string) string {
-	return fmt.Sprintf("%s/roles/%s/access-policies", accessPoliciesPath, roleID)
+	return fmt.Sprintf("api/v1/platform/orgs/current/roles/%s/access-policies", roleID)
 }
 
 func accessPolicyPayloadFromModel(model accessPolicyResourceModel, includeRoles bool) accessPolicyPayload {
@@ -299,6 +308,21 @@ func accessPolicyPayloadFromModel(model accessPolicyResourceModel, includeRoles 
 		payload.ConditionGroups = append(payload.ConditionGroups, apiGroup)
 	}
 	return payload
+}
+
+func accessPolicyUpdatePayloadFromModel(model accessPolicyResourceModel) accessPolicyUpdatePayload {
+	payload := accessPolicyPayloadFromModel(model, false)
+	var description *string
+	if !model.Description.IsNull() && !model.Description.IsUnknown() {
+		value := model.Description.ValueString()
+		description = &value
+	}
+	return accessPolicyUpdatePayload{
+		Name:            payload.Name,
+		Description:     description,
+		Effect:          payload.Effect,
+		ConditionGroups: payload.ConditionGroups,
+	}
 }
 
 func accessPolicyModelFromAPI(api accessPolicyAPI) accessPolicyResourceModel {

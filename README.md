@@ -161,3 +161,11 @@ LANGSMITH_PROVIDER_ACC=1 LANGSMITH_PROFILE=local TEST_LANGSMITH_WEBHOOK_URL=http
 ```
 
 The smoke test creates, updates, deletes, and then cleans up a temporary local tracing project/session and alert rule.
+
+Run the ABAC and resource-tag acceptance lifecycle entirely offline with Terraform 1.11.2:
+
+```shell
+TF_ACC=1 go test ./internal/provider -run '^TestAccABACResourcesOffline$' -count=1 -v
+```
+
+This test uses an in-process contract server and exercises Terraform create, update, optional-description clearing, access-policy role attach/detach, no-op planning, and destroy for `langsmith_tag_key`, `langsmith_tag_value`, `langsmith_tagging`, `langsmith_tag`, and `langsmith_access_policy`. It does not use LangSmith credentials or contact a deployed environment.

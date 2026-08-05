@@ -46,23 +46,23 @@ func TestAccessPolicyResourceCreateAndRead(t *testing.T) {
 func TestAccessPolicyResourceUpdateReconcilesRoleAttachments(t *testing.T) {
 	requests := []string{}
 	resource := newAccessPolicyResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		requests = append(requests, req.Method+" "+req.URL.Path)
+		requests = append(requests, req.Method+" "+req.URL.RequestURI())
 		switch {
 		case req.Method == http.MethodPatch:
-			var payload accessPolicyPayload
+			var payload accessPolicyUpdatePayload
 			decodeJSON(t, req, &payload)
-			if payload.Name != "Production readers" || payload.RoleIDs != nil {
+			if payload.Name != "Production readers" || payload.Description == nil || *payload.Description != "Read production projects" {
 				t.Fatalf("update payload = %#v", payload)
 			}
 			writeJSON(t, w, accessPolicyAPI{ID: "policy-id", RoleIDs: []string{"role-a", "role-b", "role-x"}})
-		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/platform/orgs/current/access-policies/roles/role-c/access-policies":
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/platform/orgs/current/roles/role-c/access-policies":
 			assertAccessPolicyAttachmentPayload(t, req, "policy-id")
 			w.WriteHeader(http.StatusNoContent)
-		case req.Method == http.MethodDelete && req.URL.Path == "/api/v1/platform/orgs/current/access-policies/roles/role-a/access-policies":
-			assertAccessPolicyAttachmentPayload(t, req, "policy-id")
+		case req.Method == http.MethodDelete && req.URL.Path == "/api/v1/platform/orgs/current/roles/role-a/access-policies":
+			assertAccessPolicyDetachQuery(t, req, "policy-id")
 			w.WriteHeader(http.StatusNoContent)
-		case req.Method == http.MethodDelete && req.URL.Path == "/api/v1/platform/orgs/current/access-policies/roles/role-x/access-policies":
-			assertAccessPolicyAttachmentPayload(t, req, "policy-id")
+		case req.Method == http.MethodDelete && req.URL.Path == "/api/v1/platform/orgs/current/roles/role-x/access-policies":
+			assertAccessPolicyDetachQuery(t, req, "policy-id")
 			w.WriteHeader(http.StatusNoContent)
 		case req.Method == http.MethodGet:
 			writeJSON(t, w, accessPolicyAPI{ID: "policy-id", Name: "Production readers", Effect: "allow", ConditionGroups: sampleAccessPolicyGroups(), RoleIDs: []string{"role-b", "role-c"}})
@@ -80,9 +80,9 @@ func TestAccessPolicyResourceUpdateReconcilesRoleAttachments(t *testing.T) {
 	}
 	if !reflect.DeepEqual(requests, []string{
 		"PATCH /api/v1/platform/orgs/current/access-policies/policy-id",
-		"POST /api/v1/platform/orgs/current/access-policies/roles/role-c/access-policies",
-		"DELETE /api/v1/platform/orgs/current/access-policies/roles/role-a/access-policies",
-		"DELETE /api/v1/platform/orgs/current/access-policies/roles/role-x/access-policies",
+		"POST /api/v1/platform/orgs/current/roles/role-c/access-policies",
+		"DELETE /api/v1/platform/orgs/current/roles/role-a/access-policies?access_policy_ids=policy-id",
+		"DELETE /api/v1/platform/orgs/current/roles/role-x/access-policies?access_policy_ids=policy-id",
 		"GET /api/v1/platform/orgs/current/access-policies/policy-id",
 	}) {
 		t.Fatalf("requests = %#v", requests)
@@ -92,13 +92,13 @@ func TestAccessPolicyResourceUpdateReconcilesRoleAttachments(t *testing.T) {
 func TestAccessPolicyResourceUpdateReturnsLiveStateAfterReconcileFailure(t *testing.T) {
 	requests := []string{}
 	resource := newAccessPolicyResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		requests = append(requests, req.Method+" "+req.URL.Path)
+		requests = append(requests, req.Method+" "+req.URL.RequestURI())
 		switch {
 		case req.Method == http.MethodPatch:
 			writeJSON(t, w, accessPolicyAPI{ID: "policy-id", RoleIDs: []string{"role-a"}})
-		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/platform/orgs/current/access-policies/roles/role-c/access-policies":
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/platform/orgs/current/roles/role-c/access-policies":
 			w.WriteHeader(http.StatusNoContent)
-		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/platform/orgs/current/access-policies/roles/role-d/access-policies":
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/platform/orgs/current/roles/role-d/access-policies":
 			http.Error(w, "temporary failure", http.StatusInternalServerError)
 		case req.Method == http.MethodGet:
 			writeJSON(t, w, accessPolicyAPI{ID: "policy-id", Name: "Production readers", Effect: "allow", ConditionGroups: sampleAccessPolicyGroups(), RoleIDs: []string{"role-a", "role-c"}})
@@ -116,8 +116,8 @@ func TestAccessPolicyResourceUpdateReturnsLiveStateAfterReconcileFailure(t *test
 	}
 	want := []string{
 		"PATCH /api/v1/platform/orgs/current/access-policies/policy-id",
-		"POST /api/v1/platform/orgs/current/access-policies/roles/role-c/access-policies",
-		"POST /api/v1/platform/orgs/current/access-policies/roles/role-d/access-policies",
+		"POST /api/v1/platform/orgs/current/roles/role-c/access-policies",
+		"POST /api/v1/platform/orgs/current/roles/role-d/access-policies",
 		"GET /api/v1/platform/orgs/current/access-policies/policy-id",
 	}
 	if !reflect.DeepEqual(requests, want) {
@@ -139,6 +139,15 @@ func TestPreserveAccessPolicyOptionalShape(t *testing.T) {
 	got = preserveAccessPolicyOptionalShape(model, accessPolicyResourceModel{Description: types.StringNull()})
 	if !got.Description.IsNull() || got.RoleIDs != nil {
 		t.Fatalf("optional null shape was not preserved: %#v", got)
+	}
+}
+
+func TestAccessPolicyUpdateClearsDescriptionWithJSONNull(t *testing.T) {
+	payload := accessPolicyUpdatePayloadFromModel(accessPolicyResourceModel{
+		Name: types.StringValue("Readers"), Description: types.StringNull(), Effect: types.StringValue("allow"),
+	})
+	if payload.Description != nil {
+		t.Fatalf("Description = %#v, want nil so JSON encodes null", payload.Description)
 	}
 }
 
@@ -184,6 +193,16 @@ func assertAccessPolicyAttachmentPayload(t *testing.T, req *http.Request, policy
 	decodeJSON(t, req, &payload)
 	if !reflect.DeepEqual(payload.AccessPolicyIDs, []string{policyID}) {
 		t.Fatalf("attachment payload = %#v", payload)
+	}
+}
+
+func assertAccessPolicyDetachQuery(t *testing.T, req *http.Request, policyID string) {
+	t.Helper()
+	if got := req.URL.Query()["access_policy_ids"]; !reflect.DeepEqual(got, []string{policyID}) {
+		t.Fatalf("access_policy_ids query = %#v", got)
+	}
+	if req.Body != nil && req.ContentLength > 0 {
+		t.Fatal("detach request unexpectedly has a body")
 	}
 }
 
