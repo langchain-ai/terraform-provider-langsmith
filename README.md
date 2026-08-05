@@ -19,13 +19,14 @@ The provider currently includes:
 - `langsmith_workspace_membership`, which manages desired workspace membership by workspace, email, and workspace role.
 - `langsmith_tag_key`, `langsmith_tag_value`, and `langsmith_tagging`, which manage the independent resource-tag lifecycles.
 - `langsmith_tag`, a convenience resource that owns one tag key and one value.
-- `langsmith_access_policy`, which manages ABAC access policies and their workspace-role attachments.
+- `langsmith_access_policy`, which manages ABAC access policies.
+- `langsmith_access_policy_attachment`, which attaches an access policy to a workspace role.
 
 ## Resource Tags and ABAC
 
 Use the independent resources when tag keys or values are shared. `langsmith_tag` is a convenience lifecycle for a dedicated key and value; taggings remain separate so changing the tagged resource does not recreate the key or value.
 
-Access policies are organization-scoped, while tag keys, values, and taggings are scoped to the workspace selected by the provider. Access policies can attach to multiple custom workspace roles through `role_ids`.
+Access policies are organization-scoped, while tag keys, values, and taggings are scoped to the workspace selected by the provider. Manage each workspace-role association independently with `langsmith_access_policy_attachment`.
 
 ## Access Management Resources
 
@@ -168,4 +169,4 @@ Run the ABAC and resource-tag acceptance lifecycle entirely offline with Terrafo
 TF_ACC=1 go test ./internal/provider -run '^TestAccABACResourcesOffline$' -count=1 -v
 ```
 
-This test uses an in-process contract server and exercises Terraform create, update, optional-description clearing, access-policy role attach/detach, no-op planning, and destroy for `langsmith_tag_key`, `langsmith_tag_value`, `langsmith_tagging`, `langsmith_tag`, and `langsmith_access_policy`. It does not use LangSmith credentials or contact a deployed environment.
+This test uses an in-process contract server and exercises Terraform create, update, optional-description clearing, access-policy attachment replacement/removal, no-op planning, and destroy for `langsmith_tag_key`, `langsmith_tag_value`, `langsmith_tagging`, `langsmith_tag`, `langsmith_access_policy`, and `langsmith_access_policy_attachment`. It does not use LangSmith credentials or contact a deployed environment.

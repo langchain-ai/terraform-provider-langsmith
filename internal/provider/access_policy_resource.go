@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
-	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -41,7 +39,6 @@ type accessPolicyResourceModel struct {
 	Description     types.String                      `tfsdk:"description"`
 	Effect          types.String                      `tfsdk:"effect"`
 	ConditionGroups []accessPolicyConditionGroupModel `tfsdk:"condition_groups"`
-	RoleIDs         []string                          `tfsdk:"role_ids"`
 	CreatedAt       types.String                      `tfsdk:"created_at"`
 	UpdatedAt       types.String                      `tfsdk:"updated_at"`
 }
@@ -64,7 +61,6 @@ type accessPolicyPayload struct {
 	Description     string                       `json:"description"`
 	Effect          string                       `json:"effect"`
 	ConditionGroups []accessPolicyConditionGroup `json:"condition_groups"`
-	RoleIDs         []string                     `json:"role_ids,omitempty"`
 }
 
 type accessPolicyUpdatePayload struct {
@@ -102,17 +98,13 @@ type accessPolicyCreateResponse struct {
 	ID string `json:"id"`
 }
 
-type accessPolicyAttachmentPayload struct {
-	AccessPolicyIDs []string `json:"access_policy_ids"`
-}
-
 func (r *AccessPolicyResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_access_policy"
 }
 
 func (r *AccessPolicyResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages an organization-scoped LangSmith ABAC access policy and its workspace-role attachments.",
+		MarkdownDescription: "Manages an organization-scoped LangSmith ABAC access policy.",
 		Attributes: map[string]schema.Attribute{
 			"id":          schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, MarkdownDescription: "Access policy ID."},
 			"name":        schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}, MarkdownDescription: "Access policy name."},
@@ -138,7 +130,6 @@ func (r *AccessPolicyResource) Schema(ctx context.Context, req resource.SchemaRe
 					},
 				}},
 			},
-			"role_ids":   schema.SetAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Workspace role IDs to attach to this policy."},
 			"created_at": schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, MarkdownDescription: "Creation timestamp."},
 			"updated_at": schema.StringAttribute{Computed: true, MarkdownDescription: "Last update timestamp."},
 		},
@@ -225,7 +216,7 @@ func (r *AccessPolicyResource) ImportState(ctx context.Context, req resource.Imp
 
 func (r *AccessPolicyResource) createAccessPolicy(ctx context.Context, plan accessPolicyResourceModel) (accessPolicyResourceModel, error) {
 	var result accessPolicyCreateResponse
-	if err := r.client.Post(ctx, accessPoliciesPath, accessPolicyPayloadFromModel(plan, true), &result, option.WithMaxRetries(0)); err != nil {
+	if err := r.client.Post(ctx, accessPoliciesPath, accessPolicyPayloadFromModel(plan), &result, option.WithMaxRetries(0)); err != nil {
 		return accessPolicyResourceModel{}, err
 	}
 	if result.ID == "" {
@@ -251,33 +242,11 @@ func (r *AccessPolicyResource) updateAccessPolicy(ctx context.Context, id string
 	if err := r.client.Patch(ctx, accessPolicyPath(id), accessPolicyUpdatePayloadFromModel(plan), &result); err != nil {
 		return accessPolicyResourceModel{}, err
 	}
-	if err := r.reconcileAccessPolicyRoles(ctx, id, result.RoleIDs, plan.RoleIDs); err != nil {
-		live, readErr := r.readAccessPolicy(ctx, id)
-		if readErr != nil {
-			return accessPolicyResourceModel{}, errors.Join(err, fmt.Errorf("read partially updated access policy: %w", readErr))
-		}
-		return preserveAccessPolicyOptionalShape(live, plan), err
-	}
 	model, err := r.readAccessPolicy(ctx, id)
 	if err != nil {
 		return accessPolicyResourceModel{}, err
 	}
 	return preserveAccessPolicyOptionalShape(model, plan), nil
-}
-
-func (r *AccessPolicyResource) reconcileAccessPolicyRoles(ctx context.Context, policyID string, current, desired []string) error {
-	for _, roleID := range stringSetDifference(desired, current) {
-		if err := r.client.Post(ctx, accessPolicyRolePath(roleID), accessPolicyAttachmentPayload{AccessPolicyIDs: []string{policyID}}, nil, option.WithMaxRetries(0)); err != nil {
-			return fmt.Errorf("attach access policy to role %s: %w", roleID, err)
-		}
-	}
-	for _, roleID := range stringSetDifference(current, desired) {
-		params := url.Values{"access_policy_ids": []string{policyID}}
-		if err := r.client.Delete(ctx, accessPolicyRolePath(roleID)+"?"+params.Encode(), nil, nil); err != nil {
-			return fmt.Errorf("detach access policy from role %s: %w", roleID, err)
-		}
-	}
-	return nil
 }
 
 func (r *AccessPolicyResource) deleteAccessPolicy(ctx context.Context, id string) error {
@@ -288,17 +257,11 @@ func (r *AccessPolicyResource) deleteAccessPolicy(ctx context.Context, id string
 }
 
 func accessPolicyPath(id string) string { return fmt.Sprintf("%s/%s", accessPoliciesPath, id) }
-func accessPolicyRolePath(roleID string) string {
-	return fmt.Sprintf("api/v1/platform/orgs/current/roles/%s/access-policies", roleID)
-}
 
-func accessPolicyPayloadFromModel(model accessPolicyResourceModel, includeRoles bool) accessPolicyPayload {
+func accessPolicyPayloadFromModel(model accessPolicyResourceModel) accessPolicyPayload {
 	payload := accessPolicyPayload{
 		Name: model.Name.ValueString(), Description: model.Description.ValueString(), Effect: model.Effect.ValueString(),
 		ConditionGroups: make([]accessPolicyConditionGroup, 0, len(model.ConditionGroups)),
-	}
-	if includeRoles {
-		payload.RoleIDs = sortedStrings(model.RoleIDs)
 	}
 	for _, group := range model.ConditionGroups {
 		apiGroup := accessPolicyConditionGroup{Permission: group.Permission.ValueString(), ResourceType: group.ResourceType.ValueString(), Conditions: make([]accessPolicyCondition, 0, len(group.Conditions))}
@@ -311,7 +274,7 @@ func accessPolicyPayloadFromModel(model accessPolicyResourceModel, includeRoles 
 }
 
 func accessPolicyUpdatePayloadFromModel(model accessPolicyResourceModel) accessPolicyUpdatePayload {
-	payload := accessPolicyPayloadFromModel(model, false)
+	payload := accessPolicyPayloadFromModel(model)
 	var description *string
 	if !model.Description.IsNull() && !model.Description.IsUnknown() {
 		value := model.Description.ValueString()
@@ -328,7 +291,7 @@ func accessPolicyUpdatePayloadFromModel(model accessPolicyResourceModel) accessP
 func accessPolicyModelFromAPI(api accessPolicyAPI) accessPolicyResourceModel {
 	model := accessPolicyResourceModel{
 		ID: types.StringValue(api.ID), Name: types.StringValue(api.Name), Description: nullableString(api.Description), Effect: types.StringValue(api.Effect),
-		ConditionGroups: make([]accessPolicyConditionGroupModel, 0, len(api.ConditionGroups)), RoleIDs: sortedStrings(api.RoleIDs), CreatedAt: nullableString(api.CreatedAt), UpdatedAt: nullableString(api.UpdatedAt),
+		ConditionGroups: make([]accessPolicyConditionGroupModel, 0, len(api.ConditionGroups)), CreatedAt: nullableString(api.CreatedAt), UpdatedAt: nullableString(api.UpdatedAt),
 	}
 	for _, group := range api.ConditionGroups {
 		modelGroup := accessPolicyConditionGroupModel{Permission: types.StringValue(group.Permission), ResourceType: types.StringValue(group.ResourceType), Conditions: make([]accessPolicyConditionModel, 0, len(group.Conditions))}
@@ -344,33 +307,7 @@ func preserveAccessPolicyOptionalShape(model, configured accessPolicyResourceMod
 	if model.Description.IsNull() && !configured.Description.IsNull() && !configured.Description.IsUnknown() && configured.Description.ValueString() == "" {
 		model.Description = types.StringValue("")
 	}
-	if model.RoleIDs == nil && configured.RoleIDs != nil {
-		model.RoleIDs = []string{}
-	}
 	return model
-}
-
-func stringSetDifference(left, right []string) []string {
-	rightSet := make(map[string]struct{}, len(right))
-	for _, value := range right {
-		rightSet[value] = struct{}{}
-	}
-	var result []string
-	for _, value := range left {
-		if _, exists := rightSet[value]; !exists {
-			result = append(result, value)
-		}
-	}
-	return sortedStrings(result)
-}
-
-func sortedStrings(values []string) []string {
-	if values == nil {
-		return nil
-	}
-	result := append([]string(nil), values...)
-	sort.Strings(result)
-	return result
 }
 
 type nonEmptySetValidator struct{}

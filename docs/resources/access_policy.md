@@ -3,22 +3,16 @@
 page_title: "langsmith_access_policy Resource - langsmith"
 subcategory: ""
 description: |-
-  Manages an organization-scoped LangSmith ABAC access policy and its workspace-role attachments.
+  Manages an organization-scoped LangSmith ABAC access policy.
 ---
 
 # langsmith_access_policy (Resource)
 
-Manages an organization-scoped LangSmith ABAC access policy and its workspace-role attachments.
+Manages an organization-scoped LangSmith ABAC access policy.
 
 ## Example Usage
 
 ```terraform
-resource "langsmith_workspace_role" "production_reader" {
-  display_name = "Production Reader"
-  description  = "Can read production projects"
-  permissions  = ["projects:read"]
-}
-
 resource "langsmith_access_policy" "production_readers" {
   name        = "Production readers"
   description = "Read access to production projects"
@@ -34,8 +28,6 @@ resource "langsmith_access_policy" "production_readers" {
       attribute_value = "production"
     }]
   }]
-
-  role_ids = [langsmith_workspace_role.production_reader.id]
 }
 ```
 
@@ -51,7 +43,6 @@ resource "langsmith_access_policy" "production_readers" {
 ### Optional
 
 - `description` (String) Access policy description.
-- `role_ids` (Set of String) Workspace role IDs to attach to this policy.
 
 ### Read-Only
 

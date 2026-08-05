@@ -26,8 +26,8 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # Acceptance tests are gated behind LANGSMITH_PROVIDER_ACC=1, so this runs
-      # the offline unit tests only — no LangSmith credentials required.
+      # Live acceptance tests require LANGSMITH_PROVIDER_ACC=1 and the offline
+      # Terraform lifecycle test requires TF_ACC=1, so this runs unit tests only.
       - name: Test
         run: go test ./...
 
@@ -38,11 +38,9 @@ jobs:
           terraform_version: 1.11.2
           terraform_wrapper: false
 
-      - name: Test offline Terraform resource lifecycles
+      - name: Test full Terraform acceptance suite
         if: matrix.os == 'ubuntu-latest'
-        env:
-          TF_ACC: '1'
-        run: go test ./internal/provider -run '^TestAccABACResourcesOffline$' -count=1 -v
+        run: make testacc
 
       - name: Build
         run: go build ./...

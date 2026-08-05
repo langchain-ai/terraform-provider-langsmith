@@ -34,7 +34,8 @@ func TestAccABACResourcesOffline(t *testing.T) {
 				Config: abacAcceptanceConfig(server.URL, "created", []string{"role-a"}),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrSet("langsmith_access_policy.test", "id"),
-					resource.TestCheckResourceAttr("langsmith_access_policy.test", "role_ids.#", "1"),
+					resource.TestCheckResourceAttrSet("langsmith_access_policy_attachment.test.0", "id"),
+					resource.TestCheckResourceAttr("langsmith_access_policy_attachment.test.0", "role_id", "role-a"),
 					resource.TestCheckResourceAttrSet("langsmith_tag_key.test", "id"),
 					resource.TestCheckResourceAttrSet("langsmith_tag_value.test", "id"),
 					resource.TestCheckResourceAttrSet("langsmith_tagging.test", "id"),
@@ -42,11 +43,17 @@ func TestAccABACResourcesOffline(t *testing.T) {
 				),
 			},
 			{
+				ResourceName:      "langsmith_access_policy_attachment.test[0]",
+				ImportState:       true,
+				ImportStateId:     "role-a/policy-1",
+				ImportStateVerify: true,
+			},
+			{
 				Config: abacAcceptanceConfig(server.URL, "updated", []string{"role-b"}),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("langsmith_access_policy.test", "name", "Offline policy updated"),
 					resource.TestCheckResourceAttr("langsmith_access_policy.test", "description", "policy updated"),
-					resource.TestCheckResourceAttr("langsmith_access_policy.test", "role_ids.0", "role-b"),
+					resource.TestCheckResourceAttr("langsmith_access_policy_attachment.test.0", "role_id", "role-b"),
 					resource.TestCheckResourceAttr("langsmith_tag_key.test", "description", "key updated"),
 					resource.TestCheckResourceAttr("langsmith_tag_value.test", "description", "value updated"),
 				),
@@ -55,7 +62,6 @@ func TestAccABACResourcesOffline(t *testing.T) {
 				Config: abacAcceptanceConfig(server.URL, "cleared", []string{}),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckNoResourceAttr("langsmith_access_policy.test", "description"),
-					resource.TestCheckResourceAttr("langsmith_access_policy.test", "role_ids.#", "0"),
 					resource.TestCheckNoResourceAttr("langsmith_tag_key.test", "description"),
 					resource.TestCheckNoResourceAttr("langsmith_tag_value.test", "description"),
 					resource.TestCheckNoResourceAttr("langsmith_tag.convenience", "key_description"),
@@ -138,9 +144,14 @@ resource "langsmith_access_policy" "test" {
       attribute_value = %q
     }]
   }]
-  role_ids = [%s]
 }
-`, apiURL, keyDescription, valueDescription, convenienceDescriptions, policyName, policyDescription, conditionValue, strings.Join(quotedRoles, ", "))
+
+resource "langsmith_access_policy_attachment" "test" {
+  count            = %d
+  role_id          = [%s][count.index]
+  access_policy_id = langsmith_access_policy.test.id
+}
+`, apiURL, keyDescription, valueDescription, convenienceDescriptions, policyName, policyDescription, conditionValue, len(roleIDs), strings.Join(quotedRoles, ", "))
 }
 
 type abacContractBackend struct {
@@ -313,7 +324,7 @@ func (b *abacContractBackend) createPolicy(w http.ResponseWriter, req *http.Requ
 	}
 	b.policy = accessPolicyAPI{
 		ID: "policy-1", Name: payload.Name, Description: payload.Description, Effect: payload.Effect,
-		ConditionGroups: payload.ConditionGroups, RoleIDs: slices.Clone(payload.RoleIDs), CreatedAt: "created", UpdatedAt: "created",
+		ConditionGroups: payload.ConditionGroups, CreatedAt: "created", UpdatedAt: "created",
 	}
 	b.policyExists = true
 	writeJSON(b.t, w, accessPolicyCreateResponse{ID: b.policy.ID})

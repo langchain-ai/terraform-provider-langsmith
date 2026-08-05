@@ -127,6 +127,7 @@ func (p *LangSmithProvider) Resources(ctx context.Context) []func() resource.Res
 	return []func() resource.Resource{
 		NewAlertRuleResource,
 		NewAccessPolicyResource,
+		NewAccessPolicyAttachmentResource,
 		NewEvaluatorResource,
 		NewRunRuleResource,
 		NewTagResource,
