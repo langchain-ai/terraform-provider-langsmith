@@ -17,6 +17,16 @@ The provider currently includes:
 - `langsmith_alert_rule`, with create/read/update/delete/import support for `/v1/platform/alerts/{session_id}`.
 - `langsmith_org_membership`, which manages desired org membership by email and org role.
 - `langsmith_workspace_membership`, which manages desired workspace membership by workspace, email, and workspace role.
+- `langsmith_tag_key`, `langsmith_tag_value`, and `langsmith_tagging`, which manage the independent resource-tag lifecycles.
+- `langsmith_tag`, a convenience resource that owns one tag key and one value.
+- `langsmith_access_policy`, which manages ABAC access policies.
+- `langsmith_access_policy_attachment`, which attaches an access policy to a workspace role.
+
+## Resource Tags and ABAC
+
+Use the independent resources when tag keys or values are shared. `langsmith_tag` is a convenience lifecycle for a dedicated key and value; taggings remain separate so changing the tagged resource does not recreate the key or value.
+
+Access policies are organization-scoped, while tag keys, values, and taggings are scoped to the workspace selected by the provider. Manage each workspace-role association independently with `langsmith_access_policy_attachment`.
 
 ## Access Management Resources
 
@@ -152,3 +162,11 @@ LANGSMITH_PROVIDER_ACC=1 LANGSMITH_PROFILE=local TEST_LANGSMITH_WEBHOOK_URL=http
 ```
 
 The smoke test creates, updates, deletes, and then cleans up a temporary local tracing project/session and alert rule.
+
+Run the ABAC and resource-tag acceptance lifecycle entirely offline with Terraform 1.11.2:
+
+```shell
+TF_ACC=1 go test ./internal/provider -run '^TestAccABACResourcesOffline$' -count=1 -v
+```
+
+This test uses an in-process contract server and exercises Terraform create, update, optional-description clearing, access-policy attachment replacement/removal, no-op planning, and destroy for `langsmith_tag_key`, `langsmith_tag_value`, `langsmith_tagging`, `langsmith_tag`, `langsmith_access_policy`, and `langsmith_access_policy_attachment`. It does not use LangSmith credentials or contact a deployed environment.
