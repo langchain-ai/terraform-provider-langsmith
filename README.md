@@ -22,6 +22,10 @@ The provider currently includes:
 - `langsmith_access_policy`, which manages ABAC access policies.
 - `langsmith_access_policy_attachment`, which attaches an access policy to a workspace role.
 
+## Maintainer documentation
+
+- [Release process](.github/RELEASING.md)
+
 ## Resource Tags and ABAC
 
 Use the independent resources when tag keys or values are shared. `langsmith_tag` is a convenience lifecycle for a dedicated key and value; taggings remain separate so changing the tagged resource does not recreate the key or value.
