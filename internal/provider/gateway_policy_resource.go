@@ -1,0 +1,326 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/langchain-ai/langsmith-go"
+)
+
+// gatewayPolicyModel maps gateway policy terraform configuration data.
+type gatewayPolicyModel struct {
+	Action            types.String                       `tfsdk:"action"`
+	Config            *gatewayPolicyConfigModel          `tfsdk:"config"`
+	CreatedAt         types.String                       `tfsdk:"created_at"`
+	CreatedBy         types.String                       `tfsdk:"created_by"`
+	Description       types.String                       `tfsdk:"description"`
+	Enabled           types.Bool                         `tfsdk:"enabled"`
+	ID                types.String                       `tfsdk:"id"`
+	IsSystemGenerated types.Bool                         `tfsdk:"is_system_generated"`
+	Name              types.String                       `tfsdk:"name"`
+	OrganizationID    types.String                       `tfsdk:"organization_id"`
+	ParentPolicyID    types.String                       `tfsdk:"parent_policy_id"`
+	PolicyType        types.String                       `tfsdk:"policy_type"`
+	Priority          types.Int64                        `tfsdk:"priority"`
+	SubjectMatchers   []gatewayPolicySubjectMatcherModel `tfsdk:"subject_matchers"`
+	UpdatedAt         types.String                       `tfsdk:"updated_at"`
+}
+
+// gatewayPolicyConfigModel maps gateway policy config schema data for the terraform configuration.
+type gatewayPolicyConfigModel struct {
+	SpendCap *gatewayPolicySpendCapConfigModel `tfsdk:"spend_cap"`
+}
+
+// gatewayPolicySpendCapConfigModel maps gateway policy spend cap config schema data for the terraform configuration.
+type gatewayPolicySpendCapConfigModel struct {
+	LimitUSD types.Float64 `tfsdk:"limit_usd"`
+	Window   types.String  `tfsdk:"window"`
+}
+
+// gatewayPolicySubjectMatcherModel maps gateway policy subject matcher schema data for the terraform configuration.
+type gatewayPolicySubjectMatcherModel struct {
+	Key   types.String `tfsdk:"key"`
+	Value types.String `tfsdk:"value"`
+}
+
+// gatewayPolicyCreateAPI defines the request body for creating a gateway policy.
+type gatewayPolicyCreateAPI struct {
+	Action          string                           `json:"action"`
+	Config          json.RawMessage                  `json:"config"`
+	Description     *string                          `json:"description"`
+	Enabled         *bool                            `json:"enabled"`
+	Name            string                           `json:"name"`
+	PolicyType      string                           `json:"policy_type"`
+	Priority        *int64                           `json:"priority"`
+	SubjectMatchers []gatewayPolicySubjectMatcherAPI `json:"subject_matchers"`
+}
+
+// gatewayPolicySubjectMatcherAPI is the subject_matchers from the API.
+type gatewayPolicySubjectMatcherAPI struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// gatewayPolicySpendCapConfigAPI is the spend_cap config from the API.
+type gatewayPolicySpendCapConfigAPI struct {
+	LimitUSD float64 `json:"limit_usd"`
+	Window   string  `json:"window"`
+}
+
+// gatewayPolicyGetAPI maps a GatewayPolicyRecord from the admin API.
+type gatewayPolicyGetAPI struct {
+	ID                string                           `json:"id"`
+	OrganizationID    string                           `json:"organization_id"`
+	Name              string                           `json:"name"`
+	Description       *string                          `json:"description"`
+	SubjectMatchers   []gatewayPolicySubjectMatcherAPI `json:"subject_matchers"`
+	PolicyType        string                           `json:"policy_type"`
+	Config            json.RawMessage                  `json:"config"`
+	Action            string                           `json:"action"`
+	Priority          int                              `json:"priority"`
+	Enabled           bool                             `json:"enabled"`
+	CreatedAt         string                           `json:"created_at"`
+	UpdatedAt         string                           `json:"updated_at"`
+	CreatedBy         *string                          `json:"created_by"`
+	IsSystemGenerated bool                             `json:"is_system_generated"`
+	ParentPolicyID    *string                          `json:"parent_policy_id"`
+}
+
+// Ensure the implementation satisfies the expected interfaces.
+var (
+	_ resource.Resource              = &gatewayPolicyResource{}
+	_ resource.ResourceWithConfigure = &gatewayPolicyResource{}
+)
+
+// NewGatewayPolicyResource is a helper function to simplify the provider implementation.
+func NewGatewayPolicyResource() resource.Resource {
+	return &gatewayPolicyResource{}
+}
+
+// gatewayPolicyResource is the resource implementation.
+type gatewayPolicyResource struct {
+	client *langsmith.Client
+}
+
+// Metadata returns the resource type name.
+func (r *gatewayPolicyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_gateway_policy"
+}
+
+// Schema defines the schema for the resource.
+func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "Reads a LangSmith Gateway Policy",
+		Attributes: map[string]schema.Attribute{
+			"action": schema.StringAttribute{
+				Description: "The action to perform when the policy is violated",
+				Required:    true,
+			},
+			"config": schema.SingleNestedAttribute{
+				Description: "The config of the gateway policy. Exactly one typed child is set.",
+				Required:    true,
+				Attributes: map[string]schema.Attribute{
+					"spend_cap": schema.SingleNestedAttribute{
+						Description: "Spend-cap config when policy_type is spend_cap.",
+						Required:    true,
+						Attributes: map[string]schema.Attribute{
+							"window": schema.StringAttribute{
+								Description: "The time window for the spend cap",
+								Required:    true,
+							},
+							"limit_usd": schema.Float64Attribute{
+								Description: "The spend cap amount in USD",
+								Required:    true,
+							},
+						},
+					},
+				},
+			},
+			"created_at": schema.StringAttribute{
+				Description: "The timestamp of when the gateway policy was created",
+				Computed:    true,
+			},
+			"created_by": schema.StringAttribute{
+				Description: "The ID of the user who created the gateway policy",
+				Computed:    true,
+			},
+			// current_spend_usd is omitted
+			// current_usage is omitted
+			"description": schema.StringAttribute{
+				Description: "The description of the gateway policy",
+				Optional:    true,
+			},
+			"enabled": schema.BoolAttribute{
+				Description: "Whether the gateway policy is enabled",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(true),
+			},
+			"id": schema.StringAttribute{
+				Description: "The ID of the gateway policy",
+				Computed:    true,
+			},
+			"is_system_generated": schema.BoolAttribute{
+				Description: "Whether the gateway policy is system generated",
+				Computed:    true,
+			},
+			"name": schema.StringAttribute{
+				Description: "The name of the gateway policy",
+				Required:    true,
+			},
+			"organization_id": schema.StringAttribute{
+				Description: "The ID of the LangSmith organization to which the gateway policy belongs",
+				Computed:    true,
+			},
+			"parent_policy_id": schema.StringAttribute{
+				Description: "The ID of the parent policy",
+				Computed:    true,
+			},
+			"policy_type": schema.StringAttribute{
+				Description: "The type of the gateway policy. Must match the type with the config",
+				Required:    true,
+			},
+			"priority": schema.Int64Attribute{
+				Description: "The priority of the gateway policy",
+				Optional:    true,
+				Computed:    true,
+				Default:     int64default.StaticInt64(0),
+			},
+			"subject_matchers": schema.ListNestedAttribute{
+				Description: "The subject matchers of the gateway policy",
+				Required:    true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"key": schema.StringAttribute{
+							Description: "The key of the subject matcher",
+							Required:    true,
+						},
+						"value": schema.StringAttribute{
+							Description: "The value of the subject matcher",
+							Required:    true,
+						},
+					},
+				},
+			},
+			"updated_at": schema.StringAttribute{
+				Description: "The timestamp of when the gateway policy was last updated",
+				Computed:    true,
+			},
+		},
+	}
+}
+
+// Create creates the resource and sets the initial Terraform state.
+func (r *gatewayPolicyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	// Retrieve values from plan
+	var plan gatewayPolicyModel
+	diags := req.Plan.Get(ctx, &plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// Create the gateway policy
+	apiRequest, err := gatewayPolicyCreateAPIFromModel(plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to build gateway policy request", err.Error())
+		return
+	}
+	var apiResponse gatewayPolicyGetAPI
+	path := "api/v1/platform/gateway-policies"
+	if err := r.client.Post(ctx, path, apiRequest, &apiResponse); err != nil {
+		resp.Diagnostics.AddError("Failed to create gateway policy", err.Error())
+		return
+	}
+	// Map the API response to terraform state data
+	state, err := gatewayPolicyModelFromAPI(apiResponse)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to decode gateway policy", err.Error())
+		return
+	}
+	// Set the state data
+	diags = resp.State.Set(ctx, &state)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+}
+
+// gatewayPolicyCreateAPIFromModel converts the plan model to the API request.
+func gatewayPolicyCreateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyCreateAPI, error) {
+	var policyConfig any
+	switch plan.PolicyType.ValueString() {
+	case string(gatewayPolicyTypeSpendCap):
+		policyConfig = gatewayPolicySpendCapConfigAPI{
+			Window:   plan.Config.SpendCap.Window.ValueString(),
+			LimitUSD: plan.Config.SpendCap.LimitUSD.ValueFloat64(),
+		}
+	default:
+		return gatewayPolicyCreateAPI{}, fmt.Errorf("invalid policy type: %s", plan.PolicyType.ValueString())
+	}
+
+	policyConfigAPI, err := json.Marshal(policyConfig)
+	if err != nil {
+		return gatewayPolicyCreateAPI{}, fmt.Errorf("marshal config: %w", err)
+	}
+
+	subjectMatchers := make([]gatewayPolicySubjectMatcherAPI, 0, len(plan.SubjectMatchers))
+	for _, subjectMatcher := range plan.SubjectMatchers {
+		subjectMatchers = append(subjectMatchers, gatewayPolicySubjectMatcherAPI{
+			Key:   subjectMatcher.Key.ValueString(),
+			Value: subjectMatcher.Value.ValueString(),
+		})
+	}
+
+	return gatewayPolicyCreateAPI{
+		Action:          plan.Action.ValueString(),
+		Config:          policyConfigAPI,
+		Description:     stringPtr(plan.Description),
+		Enabled:         boolPtr(plan.Enabled),
+		Name:            plan.Name.ValueString(),
+		PolicyType:      plan.PolicyType.ValueString(),
+		Priority:        intPtr(plan.Priority),
+		SubjectMatchers: subjectMatchers,
+	}, nil
+}
+
+// Read refreshes the Terraform state with the latest data.
+func (r *gatewayPolicyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+}
+
+// Update updates the resource and sets the updated Terraform state on success.
+func (r *gatewayPolicyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+}
+
+// Delete deletes the resource and removes the Terraform state on success.
+func (r *gatewayPolicyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state gatewayPolicyModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	path := fmt.Sprintf("api/v1/platform/gateway-policies/%s", state.ID.ValueString())
+	if err := r.client.Delete(ctx, path, nil, nil); err != nil && !isLangSmithNotFound(err) {
+		resp.Diagnostics.AddError("Failed to delete gateway policy", err.Error())
+	}
+}
+
+// Configure adds the provider configured client to the resource.
+func (r *gatewayPolicyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	// Add a nil check when handling ProviderData because Terraform
+	// sets that data after it calls the ConfigureProvider RPC.
+	if req.ProviderData == nil {
+		return
+	}
+	client, ok := req.ProviderData.(*langsmith.Client)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *langsmith.Client, got %T", req.ProviderData))
+		return
+	}
+	r.client = client
+}

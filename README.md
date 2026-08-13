@@ -167,6 +167,12 @@ LANGSMITH_PROVIDER_ACC=1 LANGSMITH_PROFILE=local TEST_LANGSMITH_WEBHOOK_URL=http
 
 The smoke test creates, updates, deletes, and then cleans up a temporary local tracing project/session and alert rule.
 
+Run the spend_cap gateway policy create smoke against a live LangSmith (requires the `terraform` CLI and SDK auth via env/profile):
+
+```shell
+LANGSMITH_PROVIDER_ACC=1 TF_ACC=1 go test ./internal/provider -run TestAccGatewayPolicySpendCapCreate -count=1 -v
+```
+
 Run the ABAC and resource-tag acceptance lifecycle entirely offline with Terraform 1.11.2:
 
 ```shell

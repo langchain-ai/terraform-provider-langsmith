@@ -34,84 +34,6 @@ const (
 	gatewayPolicySpendCapWindowMonth gatewayPolicySpendCapWindow = "month"
 )
 
-// var (
-// 	gatewayPolicyActions         = stringTypeSlice(gatewayPolicyActionBlock)
-// 	gatewayPolicyTypes           = stringTypeSlice(gatewayPolicyTypeSpendCap)
-// 	gatewayPolicySpendCapWindows = stringTypeSlice(
-// 		gatewayPolicySpendCapWindowHour,
-// 		gatewayPolicySpendCapWindowDay,
-// 		gatewayPolicySpendCapWindowWeek,
-// 		gatewayPolicySpendCapWindowMonth,
-// 	)
-// )
-
-// gatewayPolicyModel maps gateway policy terraform configuration data.
-type gatewayPolicyModel struct {
-	Action            types.String                       `tfsdk:"action"`
-	Config            *gatewayPolicyConfigModel          `tfsdk:"config"`
-	CreatedAt         types.String                       `tfsdk:"created_at"`
-	CreatedBy         types.String                       `tfsdk:"created_by"`
-	Description       types.String                       `tfsdk:"description"`
-	Enabled           types.Bool                         `tfsdk:"enabled"`
-	ID                types.String                       `tfsdk:"id"`
-	IsSystemGenerated types.Bool                         `tfsdk:"is_system_generated"`
-	Name              types.String                       `tfsdk:"name"`
-	OrganizationID    types.String                       `tfsdk:"organization_id"`
-	ParentPolicyID    types.String                       `tfsdk:"parent_policy_id"`
-	PolicyType        types.String                       `tfsdk:"policy_type"`
-	Priority          types.Int64                        `tfsdk:"priority"`
-	SubjectMatchers   []gatewayPolicySubjectMatcherModel `tfsdk:"subject_matchers"`
-	UpdatedAt         types.String                       `tfsdk:"updated_at"`
-}
-
-// gatewayPolicyConfigModel maps gateway policy config schema data.
-type gatewayPolicyConfigModel struct {
-	SpendCap *gatewayPolicySpendCapConfigModel `tfsdk:"spend_cap"`
-}
-
-// gatewayPolicySpendCapConfigModel maps gateway policy spend cap config schema data.
-type gatewayPolicySpendCapConfigModel struct {
-	Window   types.String  `tfsdk:"window"`
-	LimitUSD types.Float64 `tfsdk:"limit_usd"`
-}
-
-// gatewayPolicySubjectMatcherModel maps gateway policy subject matcher schema data.
-type gatewayPolicySubjectMatcherModel struct {
-	Key   types.String `tfsdk:"key"`
-	Value types.String `tfsdk:"value"`
-}
-
-// gatewayPolicyAPI maps a GatewayPolicyRecord from the admin API.
-type gatewayPolicyAPI struct {
-	ID                string                           `json:"id"`
-	OrganizationID    string                           `json:"organization_id"`
-	Name              string                           `json:"name"`
-	Description       *string                          `json:"description"`
-	SubjectMatchers   []gatewayPolicySubjectMatcherAPI `json:"subject_matchers"`
-	PolicyType        string                           `json:"policy_type"`
-	Config            json.RawMessage                  `json:"config"`
-	Action            string                           `json:"action"`
-	Priority          int                              `json:"priority"`
-	Enabled           bool                             `json:"enabled"`
-	CreatedAt         string                           `json:"created_at"`
-	UpdatedAt         string                           `json:"updated_at"`
-	CreatedBy         *string                          `json:"created_by"`
-	IsSystemGenerated bool                             `json:"is_system_generated"`
-	ParentPolicyID    *string                          `json:"parent_policy_id"`
-}
-
-// gatewayPolicySubjectMatcherAPI is the subject_matchers from the API.
-type gatewayPolicySubjectMatcherAPI struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
-}
-
-// gatewayPolicySpendCapConfigAPI is the spend_cap config from the API.
-type gatewayPolicySpendCapConfigAPI struct {
-	Window   string  `json:"window"`
-	LimitUSD float64 `json:"limit_usd"`
-}
-
 // NewGatewayPolicyDataSource is a helper function to simplify the provider implementation.
 func NewGatewayPolicyDataSource() datasource.DataSource {
 	return &gatewayPolicyDataSource{}
@@ -236,7 +158,7 @@ func (d *gatewayPolicyDataSource) Read(ctx context.Context, req datasource.ReadR
 		return
 	}
 	// get the policy from the API by ID.
-	var apiData gatewayPolicyAPI
+	var apiData gatewayPolicyGetAPI
 	path := fmt.Sprintf("api/v1/platform/gateway-policies/%s", configData.ID.ValueString())
 	if err := d.client.Get(ctx, path, nil, &apiData); err != nil {
 		resp.Diagnostics.AddError("Failed to read gateway policy", err.Error())
@@ -253,7 +175,7 @@ func (d *gatewayPolicyDataSource) Read(ctx context.Context, req datasource.ReadR
 }
 
 // gatewayPolicyModelFromAPI maps the API data to the state data.
-func gatewayPolicyModelFromAPI(api gatewayPolicyAPI) (gatewayPolicyModel, error) {
+func gatewayPolicyModelFromAPI(api gatewayPolicyGetAPI) (gatewayPolicyModel, error) {
 	// unmarshal the subject matchers from the API.
 	matchers := make([]gatewayPolicySubjectMatcherModel, 0, len(api.SubjectMatchers))
 	for _, m := range api.SubjectMatchers {
@@ -313,13 +235,3 @@ func (d *gatewayPolicyDataSource) Configure(_ context.Context, req datasource.Co
 	}
 	d.client = client
 }
-
-// // stringTypeSlice converts a slice of types to a slice of strings.
-// func stringTypeSlice[
-// 	T gatewayPolicyType | gatewayPolicyAction | gatewayPolicySpendCapWindow,
-// ](t ...T) (s []string) {
-// 	for _, t := range t {
-// 		s = append(s, string(t))
-// 	}
-// 	return s
-// }

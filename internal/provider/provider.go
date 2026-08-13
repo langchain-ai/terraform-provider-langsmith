@@ -140,6 +140,7 @@ func (p *LangSmithProvider) Resources(ctx context.Context) []func() resource.Res
 		NewWorkspaceMembershipResource,
 		NewWorkspaceRoleResource,
 		NewWorkspaceResource,
+		NewGatewayPolicyResource,
 	}
 }
 
