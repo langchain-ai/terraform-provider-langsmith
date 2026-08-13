@@ -12,6 +12,7 @@ The provider currently includes:
 - `data.langsmith_org_role`, which looks up organization roles by `name` or `display_name`.
 - `data.langsmith_workspace_role`, which looks up workspace roles by `name` or `display_name`.
 - `data.langsmith_permissions`, which lists role permission names by access scope.
+- `data.langsmith_gateway_policies`, which lists LLM Gateway policies of every type, including the caps the gateway materializes from a default.
 - `langsmith_workspace`, which manages LangSmith workspaces.
 - `langsmith_workspace_role`, which manages custom workspace-scoped roles.
 - `langsmith_alert_rule`, with create/read/update/delete/import support for `/v1/platform/alerts/{session_id}`.
@@ -21,6 +22,7 @@ The provider currently includes:
 - `langsmith_tag`, a convenience resource that owns one tag key and one value.
 - `langsmith_access_policy`, which manages ABAC access policies.
 - `langsmith_access_policy_attachment`, which attaches an access policy to a workspace role.
+- `langsmith_gateway_spend_cap`, which manages LLM Gateway spend cap policies.
 
 ## Resource Tags and ABAC
 

@@ -19,6 +19,8 @@ func TestAPIPathsUsePublicPrefix(t *testing.T) {
 		evaluatorResourcePath("evaluator-id"),
 		sandboxRegistriesPath,
 		sandboxRegistryResourcePath("registry-name"),
+		gatewayPoliciesPath,
+		gatewayPolicyResourcePath("policy-id"),
 	}
 
 	for _, p := range paths {
