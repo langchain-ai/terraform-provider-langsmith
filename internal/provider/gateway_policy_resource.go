@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -94,8 +95,9 @@ type gatewayPolicyGetAPI struct {
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource              = &gatewayPolicyResource{}
-	_ resource.ResourceWithConfigure = &gatewayPolicyResource{}
+	_ resource.Resource                = &gatewayPolicyResource{}
+	_ resource.ResourceWithConfigure   = &gatewayPolicyResource{}
+	_ resource.ResourceWithImportState = &gatewayPolicyResource{}
 )
 
 // NewGatewayPolicyResource is a helper function to simplify the provider implementation.
@@ -291,6 +293,38 @@ func gatewayPolicyCreateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyCrea
 
 // Read refreshes the Terraform state with the latest data.
 func (r *gatewayPolicyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	// Get current currentState
+	var currentState gatewayPolicyModel
+	diags := req.State.Get(ctx, &currentState)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// fetch the refreshed policy from the API by ID.
+	var apiData gatewayPolicyGetAPI
+	path := fmt.Sprintf("api/v1/platform/gateway-policies/%s", currentState.ID.ValueString())
+	if err := r.client.Get(ctx, path, nil, &apiData); err != nil {
+		resp.Diagnostics.AddError("Failed to read gateway policy", err.Error())
+		return
+	}
+	// map the API response to state
+	newState, err := gatewayPolicyModelFromAPI(apiData)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to decode gateway policy", err.Error())
+		return
+	}
+	// save the refreshed state
+	diags = resp.State.Set(ctx, &newState)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+}
+
+// ImportState imports the resource state from an ID.
+func (r *gatewayPolicyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	// Retrieve import ID and save to id attribute
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
 // Update updates the resource and sets the updated Terraform state on success.
@@ -305,6 +339,7 @@ func (r *gatewayPolicyResource) Delete(ctx context.Context, req resource.DeleteR
 		return
 	}
 	path := fmt.Sprintf("api/v1/platform/gateway-policies/%s", state.ID.ValueString())
+	// idempotency: ignore 404 errors.
 	if err := r.client.Delete(ctx, path, nil, nil); err != nil && !isLangSmithNotFound(err) {
 		resp.Diagnostics.AddError("Failed to delete gateway policy", err.Error())
 	}
