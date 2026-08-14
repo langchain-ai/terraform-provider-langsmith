@@ -428,12 +428,10 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			// Updates to a materialized child take ownership of the child, so the API clears parent_policy_id if it is set.
 			"parent_policy_id": schema.StringAttribute{
 				Description: "The ID of the parent policy",
 				Computed:    true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
 			},
 			"policy_type": schema.StringAttribute{
 				Description: "The type of the gateway policy, inferred from which config block is set.",
@@ -532,6 +530,12 @@ func (r *gatewayPolicyResource) Read(ctx context.Context, req resource.ReadReque
 	var apiData gatewayPolicyGetAPI
 	apiPath := fmt.Sprintf("api/v1/platform/gateway-policies/%s", currentState.ID.ValueString())
 	if err := r.client.Get(ctx, apiPath, nil, &apiData); err != nil {
+		// The policy is gone; drop it from state so the next plan recreates it
+		// instead of every refresh failing.
+		if isLangSmithNotFound(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		resp.Diagnostics.AddError("Failed to read gateway policy", err.Error())
 		return
 	}
@@ -572,14 +576,15 @@ func (r *gatewayPolicyResource) Update(ctx context.Context, req resource.UpdateR
 		resp.Diagnostics.AddError("Failed to update gateway policy", err.Error())
 		return
 	}
-	// add the new updated_at value to the plan
-	plan.UpdatedAt = types.StringValue(apiResponse.UpdatedAt)
-	// save the updated state
-	diags = resp.State.Set(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	// Map the API response to terraform state data. The response is authoritative:
+	// a PATCH to the API also refreshes updated_at and potentially clears parent_policy_id.
+	state, err := gatewayPolicyModelFromAPI(apiResponse)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to decode gateway policy", err.Error())
 		return
 	}
+	// save the updated state
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 // Delete deletes the resource and removes the Terraform state on success.
