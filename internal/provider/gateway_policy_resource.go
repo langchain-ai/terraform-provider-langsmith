@@ -212,7 +212,14 @@ func gatewayPolicyConfigModelFromAPI(policyType string, raw json.RawMessage) (*g
 			},
 		}, nil
 	default:
-		return nil, nil
+		// The API serves policy types this provider cannot represent (guard,
+		// route_config, rate_limit, and the default_* variants). Reject them
+		// rather than returning a null config, which an import would otherwise
+		// write to state for a required attribute.
+		return nil, fmt.Errorf(
+			"policy_type %q is not supported by this provider; supported types: %s",
+			policyType, strings.Join(gatewayPolicyTypes, ", "),
+		)
 	}
 }
 
