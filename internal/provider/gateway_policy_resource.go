@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -39,13 +40,15 @@ type gatewayPolicyModel struct {
 	UpdatedAt         types.String                       `tfsdk:"updated_at"`
 }
 
-const (
-	gatewayPolicyActionBlock = "block"
-)
+var gatewayPolicyActions = []string{
+	"block",
+}
 
-const (
-	gatewayPolicyTypeSpendCap = "spend_cap"
-)
+const gatewayPolicyTypeSpendCap = "spend_cap"
+
+var gatewayPolicyTypes = []string{
+	gatewayPolicyTypeSpendCap,
+}
 
 // gatewayPolicyConfigModel maps gateway policy config schema data for the terraform configuration.
 type gatewayPolicyConfigModel struct {
@@ -99,12 +102,12 @@ type gatewayPolicySpendCapConfigAPI struct {
 	Window   string  `json:"window"`
 }
 
-const (
-	gatewayPolicySpendCapWindowHour  string = "hourly"
-	gatewayPolicySpendCapWindowDay   string = "daily"
-	gatewayPolicySpendCapWindowWeek  string = "weekly"
-	gatewayPolicySpendCapWindowMonth string = "monthly"
-)
+var gatewaySpendCapWindows = []string{
+	"hourly",
+	"daily",
+	"weekly",
+	"monthly",
+}
 
 // gatewayPolicyGetAPI maps a GatewayPolicyRecord from the admin API.
 type gatewayPolicyGetAPI struct {
@@ -237,7 +240,7 @@ func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (json.RawMessage, 
 	}
 	var policyConfig any
 	switch plan.PolicyType.ValueString() {
-	case string(gatewayPolicyTypeSpendCap):
+	case gatewayPolicyTypeSpendCap:
 		policyConfig = gatewayPolicySpendCapConfigAPI{
 			Window:   plan.Config.SpendCap.Window.ValueString(),
 			LimitUSD: plan.Config.SpendCap.LimitUSD.ValueFloat64(),
@@ -273,9 +276,10 @@ func gatewayPolicySubjectMatchersAPIFromModel(plan gatewayPolicyModel) ([]gatewa
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource                = &gatewayPolicyResource{}
-	_ resource.ResourceWithConfigure   = &gatewayPolicyResource{}
-	_ resource.ResourceWithImportState = &gatewayPolicyResource{}
+	_ resource.Resource                     = &gatewayPolicyResource{}
+	_ resource.ResourceWithConfigure        = &gatewayPolicyResource{}
+	_ resource.ResourceWithImportState      = &gatewayPolicyResource{}
+	_ resource.ResourceWithConfigValidators = &gatewayPolicyResource{}
 )
 
 // NewGatewayPolicyResource is a helper function to simplify the provider implementation.
@@ -303,9 +307,7 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 			"action": schema.StringAttribute{
 				Description: "The action to perform when the policy is violated",
 				Validators: []validator.String{
-					oneOfStringValidator{values: []string{
-						gatewayPolicyActionBlock,
-					}},
+					oneOfStringValidator{values: gatewayPolicyActions},
 				},
 				Required: true,
 			},
@@ -313,19 +315,14 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 				Description: "The config of the gateway policy. Exactly one typed child is set.",
 				Required:    true,
 				Attributes: map[string]schema.Attribute{
-					"spend_cap": schema.SingleNestedAttribute{
+					gatewayPolicyTypeSpendCap: schema.SingleNestedAttribute{
 						Description: "Spend-cap config when policy_type is spend_cap.",
-						Required:    true,
+						Required:    false,
 						Attributes: map[string]schema.Attribute{
 							"window": schema.StringAttribute{
 								Description: "The time window for the spend cap",
 								Validators: []validator.String{
-									oneOfStringValidator{values: []string{
-										gatewayPolicySpendCapWindowHour,
-										gatewayPolicySpendCapWindowDay,
-										gatewayPolicySpendCapWindowWeek,
-										gatewayPolicySpendCapWindowMonth,
-									}},
+									oneOfStringValidator{values: gatewaySpendCapWindows},
 								},
 								Required: true,
 							},
@@ -399,9 +396,7 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 			"policy_type": schema.StringAttribute{
 				Description: "The type of the gateway policy. Must match the type with the config",
 				Validators: []validator.String{
-					oneOfStringValidator{values: []string{
-						gatewayPolicyTypeSpendCap,
-					}},
+					oneOfStringValidator{values: gatewayPolicyTypes},
 				},
 				Required: true,
 			},
@@ -432,6 +427,16 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 				Computed:    true,
 			},
 		},
+	}
+}
+
+func (r *gatewayPolicyResource) ConfigValidators(ctx context.Context) []resource.ConfigValidator {
+	expressions := []path.Expression{}
+	for _, policyType := range gatewayPolicyTypes {
+		expressions = append(expressions, path.MatchRoot("config").AtName(policyType))
+	}
+	return []resource.ConfigValidator{
+		resourcevalidator.ExactlyOneOf(expressions...),
 	}
 }
 
