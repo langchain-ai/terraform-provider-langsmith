@@ -132,7 +132,7 @@ func TestAccGatewayPolicySpendCap(t *testing.T) {
 			},
 			// Delete testing automatically occurs in TestCase
 			// The API client will error if delete fails, and the Delete() method will add an error to the response,
-			// faling the test.
+			// failing the test.
 		},
 	})
 }

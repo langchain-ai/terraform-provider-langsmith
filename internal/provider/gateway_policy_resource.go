@@ -1,8 +1,8 @@
 package provider
 
-// Manages a LangSmith Gateway Policies.
+// Manages a LangSmith Gateway Policy.
 
-// Implemeted policy rtpes:
+// Implemented policy types:
 // - spend_cap policy
 
 // TODO: Future policy types:
@@ -16,13 +16,13 @@ package provider
 // but here are some notes concerning the materialized children:
 // - they appear on-demand as new users start using the gateway.
 // - they may be imported to and managed by the terraform state as a gateway policy resource.
-//     - Updating a materialized child directly does detatch it from the parent, but another child can be
+//     - Updating a materialized child directly does detach it from the parent, but another child can be
 //       auto-created if there is another gateway invocation with different subject matchers.
 //     - If updating the default_spend_cap policy, the materialized child will also inherit the changes.
 //       This means that the imported materialized child will have drift, and the terraform plan
 //       would cause an update to detach the child from the parent.
 // - it may become useful to have a list of all the materialized children in the terraform state,
-//   for visibility and management, so we may implement a terraform data source that l
+//   for visibility and management, so we may implement a terraform data source that
 //   lists the children of a given parent policy id. This would not be a list of
 //   gateway policy terraform resources, but rather a list of gateway data objects.
 
@@ -32,6 +32,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
@@ -109,7 +110,7 @@ type gatewayPolicyCreateAPI struct {
 	SubjectMatchers []gatewayPolicySubjectMatcherAPI `json:"subject_matchers"`
 }
 
-// gatewayPolicyUpdateRequest defines the request body for updating a gateway policy.
+// gatewayPolicyUpdateAPI defines the request body for updating a gateway policy.
 type gatewayPolicyUpdateAPI struct {
 	Action          *string                           `json:"action"`
 	Config          json.RawMessage                   `json:"config"`
@@ -196,7 +197,7 @@ func gatewayPolicyModelFromAPI(api gatewayPolicyGetAPI) (gatewayPolicyModel, err
 	}, nil
 }
 
-// gatewayPolicyConfigModelFromAPI maps the API policy's `config“ to `config` in the terraform configuration.
+// gatewayPolicyConfigModelFromAPI maps the API policy's `config` to `config` in the terraform configuration.
 func gatewayPolicyConfigModelFromAPI(policyType string, raw json.RawMessage) (*gatewayPolicyConfigModel, error) {
 	switch policyType {
 	case gatewayPolicyTypeSpendCap:
@@ -383,6 +384,10 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 			"description": schema.StringAttribute{
 				Description: "The description of the gateway policy",
 				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"enabled": schema.BoolAttribute{
 				Description: "Whether the gateway policy is enabled",
@@ -492,8 +497,8 @@ func (r *gatewayPolicyResource) Create(ctx context.Context, req resource.CreateR
 		return
 	}
 	var apiResponse gatewayPolicyGetAPI
-	path := "api/v1/platform/gateway-policies"
-	if err := r.client.Post(ctx, path, apiRequest, &apiResponse); err != nil {
+	apiPath := "api/v1/platform/gateway-policies"
+	if err := r.client.Post(ctx, apiPath, apiRequest, &apiResponse); err != nil {
 		resp.Diagnostics.AddError("Failed to create gateway policy", err.Error())
 		return
 	}
@@ -504,11 +509,7 @@ func (r *gatewayPolicyResource) Create(ctx context.Context, req resource.CreateR
 		return
 	}
 	// Set the state data
-	diags = resp.State.Set(ctx, &state)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 // Read refreshes the Terraform state with the latest data.
@@ -522,8 +523,8 @@ func (r *gatewayPolicyResource) Read(ctx context.Context, req resource.ReadReque
 	}
 	// fetch the refreshed policy from the API by ID.
 	var apiData gatewayPolicyGetAPI
-	path := fmt.Sprintf("api/v1/platform/gateway-policies/%s", currentState.ID.ValueString())
-	if err := r.client.Get(ctx, path, nil, &apiData); err != nil {
+	apiPath := fmt.Sprintf("api/v1/platform/gateway-policies/%s", currentState.ID.ValueString())
+	if err := r.client.Get(ctx, apiPath, nil, &apiData); err != nil {
 		resp.Diagnostics.AddError("Failed to read gateway policy", err.Error())
 		return
 	}
@@ -534,11 +535,7 @@ func (r *gatewayPolicyResource) Read(ctx context.Context, req resource.ReadReque
 		return
 	}
 	// save the refreshed state
-	diags = resp.State.Set(ctx, &newState)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
 // ImportState imports the resource state from an ID.
@@ -562,9 +559,9 @@ func (r *gatewayPolicyResource) Update(ctx context.Context, req resource.UpdateR
 		resp.Diagnostics.AddError("Failed to build gateway policy request", err.Error())
 		return
 	}
-	path := fmt.Sprintf("api/v1/platform/gateway-policies/%s", plan.ID.ValueString())
+	apiPath := fmt.Sprintf("api/v1/platform/gateway-policies/%s", plan.ID.ValueString())
 	var apiResponse gatewayPolicyGetAPI
-	if err := r.client.Patch(ctx, path, apiRequest, &apiResponse); err != nil {
+	if err := r.client.Patch(ctx, apiPath, apiRequest, &apiResponse); err != nil {
 		resp.Diagnostics.AddError("Failed to update gateway policy", err.Error())
 		return
 	}
@@ -585,9 +582,9 @@ func (r *gatewayPolicyResource) Delete(ctx context.Context, req resource.DeleteR
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	path := fmt.Sprintf("api/v1/platform/gateway-policies/%s", state.ID.ValueString())
+	apiPath := fmt.Sprintf("api/v1/platform/gateway-policies/%s", state.ID.ValueString())
 	// idempotency: ignore 404 errors.
-	if err := r.client.Delete(ctx, path, nil, nil); err != nil && !isLangSmithNotFound(err) {
+	if err := r.client.Delete(ctx, apiPath, nil, nil); err != nil && !isLangSmithNotFound(err) {
 		resp.Diagnostics.AddError("Failed to delete gateway policy", err.Error())
 	}
 }
