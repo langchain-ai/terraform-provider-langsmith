@@ -1,5 +1,31 @@
 package provider
 
+// Manages a LangSmith Gateway Policies.
+
+// Implemeted:
+// - spend_cap policy
+
+// Future:
+// - rate_limit policy
+// - default_spend_cap policy
+// - default_rate_limit policy
+// - ...
+
+// Regarding default_spend_cap and materialized children:
+// We can have the terraform resource to create the default_spend_cap policy,
+// but here are some notes concerning the materialized children:
+// - they appear on-demand as new users start using the gateway.
+// - they may be imported to and managed by the terraform state as a gateway policy resource.
+//     - Updating a materialized child directly does detatch it from the parent, but another child can be
+//       auto-created if there is another gateway invocation with different subject matchers.
+//     - If updating the default_spend_cap policy, the materialized child will also inherit the changes.
+//       This means that the imported materialized child will have drift, and the terraform plan
+//       would cause an update to detach the child from the parent.
+// - it may become useful to have a list of all the materialized children in the terraform state,
+//   for visibility and management, so we may implement a terraform data source that l
+//   lists the children of a given parent policy id. This would not be a list of
+//   gateway policy terraform resources, but rather a list of gateway data objects.
+
 import (
 	"context"
 	"encoding/json"
