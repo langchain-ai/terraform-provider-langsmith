@@ -17,23 +17,6 @@ var (
 	_ datasource.DataSourceWithConfigure = &gatewayPolicyDataSource{}
 )
 
-type (
-	gatewayPolicyAction         string
-	gatewayPolicyType           string
-	gatewayPolicySpendCapWindow string
-)
-
-const (
-	gatewayPolicyActionBlock gatewayPolicyAction = "block"
-
-	gatewayPolicyTypeSpendCap gatewayPolicyType = "spend_cap"
-
-	gatewayPolicySpendCapWindowHour  gatewayPolicySpendCapWindow = "hour"
-	gatewayPolicySpendCapWindowDay   gatewayPolicySpendCapWindow = "day"
-	gatewayPolicySpendCapWindowWeek  gatewayPolicySpendCapWindow = "week"
-	gatewayPolicySpendCapWindowMonth gatewayPolicySpendCapWindow = "month"
-)
-
 // NewGatewayPolicyDataSource is a helper function to simplify the provider implementation.
 func NewGatewayPolicyDataSource() datasource.DataSource {
 	return &gatewayPolicyDataSource{}

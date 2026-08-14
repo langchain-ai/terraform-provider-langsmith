@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
 )
@@ -35,6 +36,14 @@ type gatewayPolicyModel struct {
 	SubjectMatchers   []gatewayPolicySubjectMatcherModel `tfsdk:"subject_matchers"`
 	UpdatedAt         types.String                       `tfsdk:"updated_at"`
 }
+
+const (
+	gatewayPolicyActionBlock = "block"
+)
+
+const (
+	gatewayPolicyTypeSpendCap = "spend_cap"
+)
 
 // gatewayPolicyConfigModel maps gateway policy config schema data for the terraform configuration.
 type gatewayPolicyConfigModel struct {
@@ -88,6 +97,13 @@ type gatewayPolicySpendCapConfigAPI struct {
 	Window   string  `json:"window"`
 }
 
+const (
+	gatewayPolicySpendCapWindowHour  string = "hourly"
+	gatewayPolicySpendCapWindowDay   string = "daily"
+	gatewayPolicySpendCapWindowWeek  string = "weekly"
+	gatewayPolicySpendCapWindowMonth string = "monthly"
+)
+
 // gatewayPolicyGetAPI maps a GatewayPolicyRecord from the admin API.
 type gatewayPolicyGetAPI struct {
 	ID                string                           `json:"id"`
@@ -138,7 +154,12 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 		Attributes: map[string]schema.Attribute{
 			"action": schema.StringAttribute{
 				Description: "The action to perform when the policy is violated",
-				Required:    true,
+				Validators: []validator.String{
+					oneOfStringValidator{values: []string{
+						gatewayPolicyActionBlock,
+					}},
+				},
+				Required: true,
 			},
 			"config": schema.SingleNestedAttribute{
 				Description: "The config of the gateway policy. Exactly one typed child is set.",
@@ -150,7 +171,15 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 						Attributes: map[string]schema.Attribute{
 							"window": schema.StringAttribute{
 								Description: "The time window for the spend cap",
-								Required:    true,
+								Validators: []validator.String{
+									oneOfStringValidator{values: []string{
+										gatewayPolicySpendCapWindowHour,
+										gatewayPolicySpendCapWindowDay,
+										gatewayPolicySpendCapWindowWeek,
+										gatewayPolicySpendCapWindowMonth,
+									}},
+								},
+								Required: true,
 							},
 							"limit_usd": schema.Float64Attribute{
 								Description: "The spend cap amount in USD",
@@ -221,7 +250,12 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 			},
 			"policy_type": schema.StringAttribute{
 				Description: "The type of the gateway policy. Must match the type with the config",
-				Required:    true,
+				Validators: []validator.String{
+					oneOfStringValidator{values: []string{
+						gatewayPolicyTypeSpendCap,
+					}},
+				},
+				Required: true,
 			},
 			"priority": schema.Int64Attribute{
 				Description: "The priority of the gateway policy",
