@@ -194,8 +194,9 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 				},
 			},
 			"is_system_generated": schema.BoolAttribute{
-				Description: "Whether the gateway policy is system generated",
-				Computed:    true,
+				Description:        "Whether the gateway policy is system generated",
+				DeprecationMessage: "This field is deprecated and will be removed in a future version.",
+				Computed:           true,
 				PlanModifiers: []planmodifier.Bool{
 					boolplanmodifier.UseStateForUnknown(),
 				},
