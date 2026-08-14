@@ -1,7 +1,6 @@
 resource "langsmith_gateway_policy" "monthly_spend_cap" {
   name        = "monthly-spend-cap"
   description = "Block requests once workspace monthly spend exceeds the limit."
-  policy_type = "spend_cap"
   action      = "block"
 
   config = {

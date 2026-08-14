@@ -22,7 +22,6 @@ const gatewayPolicySpendCapConfig = `
 resource "langsmith_gateway_policy" "test" {
   name        = "tf-provider-gateway-policy-spend-cap"
   description = "created by TestAccGatewayPolicySpendCap"
-  policy_type = "spend_cap"
   action      = "block"
   # omit enabled/priority to exercise schema defaults
 
@@ -44,7 +43,6 @@ const gatewayPolicySpendCapConfigUpdated = `
 resource "langsmith_gateway_policy" "test" {
   name        = "tf-provider-gateway-policy-spend-cap-updated"
   description = "updated by TestAccGatewayPolicySpendCap"
-  policy_type = "spend_cap"
   action      = "block"
   enabled     = false
 
@@ -86,6 +84,7 @@ func TestAccGatewayPolicySpendCap(t *testing.T) {
 						return nil
 					}),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "description", "created by TestAccGatewayPolicySpendCap"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "policy_type", "spend_cap"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "enabled", "true"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "priority", "0"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.spend_cap.window", "monthly"),

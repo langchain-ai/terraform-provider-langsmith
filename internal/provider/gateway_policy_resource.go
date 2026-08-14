@@ -189,7 +189,7 @@ func gatewayPolicyConfigModelFromAPI(policyType string, raw json.RawMessage) (*g
 
 // gatewayPolicyCreateAPIFromModel converts the plan model to the create API request.
 func gatewayPolicyCreateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyCreateAPI, error) {
-	policyConfigAPI, err := gatewayPolicyConfigAPIFromModel(plan)
+	policyType, policyConfigAPI, err := gatewayPolicyConfigAPIFromModel(plan)
 	if err != nil {
 		return gatewayPolicyCreateAPI{}, err
 	}
@@ -205,7 +205,7 @@ func gatewayPolicyCreateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyCrea
 		Description:     stringPtr(plan.Description),
 		Enabled:         boolPtr(plan.Enabled),
 		Name:            plan.Name.ValueString(),
-		PolicyType:      plan.PolicyType.ValueString(),
+		PolicyType:      policyType,
 		Priority:        intPtr(plan.Priority),
 		SubjectMatchers: subjectMatchers,
 	}, nil
@@ -213,7 +213,7 @@ func gatewayPolicyCreateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyCrea
 
 // gatewayPolicyUpdateAPIFromModel converts the plan model to the update API request.
 func gatewayPolicyUpdateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyUpdateAPI, error) {
-	policyConfigAPI, err := gatewayPolicyConfigAPIFromModel(plan)
+	_, policyConfigAPI, err := gatewayPolicyConfigAPIFromModel(plan)
 	if err != nil {
 		return gatewayPolicyUpdateAPI{}, err
 	}
@@ -233,34 +233,34 @@ func gatewayPolicyUpdateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyUpda
 }
 
 // gatewayPolicyConfigAPIFromModel converts the plan model to the config API request.
-func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (json.RawMessage, error) {
-	// nil check
+func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (string, json.RawMessage, error) {
 	if plan.Config == nil {
-		return nil, nil
+		return "", nil, fmt.Errorf("config is required")
 	}
+	var policyType string
 	var policyConfig any
-	switch plan.PolicyType.ValueString() {
-	case gatewayPolicyTypeSpendCap:
+	switch {
+	case plan.Config.SpendCap != nil:
+		policyType = gatewayPolicyTypeSpendCap
 		policyConfig = gatewayPolicySpendCapConfigAPI{
 			Window:   plan.Config.SpendCap.Window.ValueString(),
 			LimitUSD: plan.Config.SpendCap.LimitUSD.ValueFloat64(),
 		}
 	default:
-		return nil, fmt.Errorf("invalid policy type: %s", plan.PolicyType.ValueString())
+		return "", nil, fmt.Errorf("invalid policy config")
 	}
 
 	policyConfigAPI, err := json.Marshal(policyConfig)
 	if err != nil {
-		return nil, fmt.Errorf("marshal config: %w", err)
+		return "", nil, fmt.Errorf("marshal config: %w", err)
 	}
-	return policyConfigAPI, nil
+	return policyType, policyConfigAPI, nil
 }
 
 // gatewayPolicySubjectMatchersAPIFromModel converts the plan model subjects matchers to the subject matchers for an API request.
 func gatewayPolicySubjectMatchersAPIFromModel(plan gatewayPolicyModel) ([]gatewayPolicySubjectMatcherAPI, error) {
-	// nil check
 	if plan.SubjectMatchers == nil {
-		return nil, nil
+		return nil, fmt.Errorf("subject matchers are required")
 	}
 	subjectMatchers := make([]gatewayPolicySubjectMatcherAPI, 0, len(plan.SubjectMatchers))
 	for _, subjectMatcher := range plan.SubjectMatchers {
@@ -317,7 +317,7 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 				Attributes: map[string]schema.Attribute{
 					gatewayPolicyTypeSpendCap: schema.SingleNestedAttribute{
 						Description: "Spend-cap config when policy_type is spend_cap.",
-						Required:    false,
+						Optional:    true,
 						Attributes: map[string]schema.Attribute{
 							"window": schema.StringAttribute{
 								Description: "The time window for the spend cap",
@@ -394,11 +394,11 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 				},
 			},
 			"policy_type": schema.StringAttribute{
-				Description: "The type of the gateway policy. Must match the type with the config",
-				Validators: []validator.String{
-					oneOfStringValidator{values: gatewayPolicyTypes},
+				Description: "The type of the gateway policy, inferred from which config block is set.",
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
 				},
-				Required: true,
 			},
 			"priority": schema.Int64Attribute{
 				Description: "The priority of the gateway policy",
