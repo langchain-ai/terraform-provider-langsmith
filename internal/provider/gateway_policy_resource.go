@@ -2,10 +2,10 @@ package provider
 
 // Manages a LangSmith Gateway Policies.
 
-// Implemeted:
+// Implemeted policy rtpes:
 // - spend_cap policy
 
-// Future:
+// TODO: Future policy types:
 // - rate_limit policy
 // - default_spend_cap policy
 // - default_rate_limit policy
@@ -25,6 +25,8 @@ package provider
 //   for visibility and management, so we may implement a terraform data source that l
 //   lists the children of a given parent policy id. This would not be a list of
 //   gateway policy terraform resources, but rather a list of gateway data objects.
+
+// TODO: validators for the subject_matchers, for each of the policy types.
 
 import (
 	"context"
