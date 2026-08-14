@@ -203,11 +203,11 @@ func gatewayPolicyCreateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyCrea
 	return gatewayPolicyCreateAPI{
 		Action:          plan.Action.ValueString(),
 		Config:          policyConfigAPI,
-		Description:     stringPtr(plan.Description),
-		Enabled:         boolPtr(plan.Enabled),
+		Description:     plan.Description.ValueStringPointer(),
+		Enabled:         plan.Enabled.ValueBoolPointer(),
 		Name:            plan.Name.ValueString(),
 		PolicyType:      policyType,
-		Priority:        intPtr(plan.Priority),
+		Priority:        plan.Priority.ValueInt64Pointer(),
 		SubjectMatchers: subjectMatchers,
 	}, nil
 }
@@ -223,12 +223,12 @@ func gatewayPolicyUpdateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyUpda
 		return gatewayPolicyUpdateAPI{}, err
 	}
 	return gatewayPolicyUpdateAPI{
-		Action:          stringPtr(plan.Action),
+		Action:          plan.Action.ValueStringPointer(),
 		Config:          policyConfigAPI,
-		Description:     stringPtr(plan.Description),
-		Enabled:         boolPtr(plan.Enabled),
-		Name:            stringPtr(plan.Name),
-		Priority:        intPtr(plan.Priority),
+		Description:     plan.Description.ValueStringPointer(),
+		Enabled:         plan.Enabled.ValueBoolPointer(),
+		Name:            plan.Name.ValueStringPointer(),
+		Priority:        plan.Priority.ValueInt64Pointer(),
 		SubjectMatchers: &subjectMatchers,
 	}, nil
 }
