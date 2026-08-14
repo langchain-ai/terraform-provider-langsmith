@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -307,7 +308,7 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 			"action": schema.StringAttribute{
 				Description: "The action to perform when the policy is violated",
 				Validators: []validator.String{
-					oneOfStringValidator{values: gatewayPolicyActions},
+					stringvalidator.OneOf(gatewayPolicyActions...),
 				},
 				Required: true,
 			},
@@ -322,7 +323,7 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 							"window": schema.StringAttribute{
 								Description: "The time window for the spend cap",
 								Validators: []validator.String{
-									oneOfStringValidator{values: gatewaySpendCapWindows},
+									stringvalidator.OneOf(gatewaySpendCapWindows...),
 								},
 								Required: true,
 							},
