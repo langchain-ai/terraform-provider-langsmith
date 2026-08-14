@@ -2,12 +2,10 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
 )
 
@@ -155,59 +153,6 @@ func (d *gatewayPolicyDataSource) Read(ctx context.Context, req datasource.ReadR
 	}
 	// set the state data.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-}
-
-// gatewayPolicyModelFromAPI maps the API data to the state data.
-func gatewayPolicyModelFromAPI(api gatewayPolicyGetAPI) (gatewayPolicyModel, error) {
-	// unmarshal the subject matchers from the API.
-	matchers := make([]gatewayPolicySubjectMatcherModel, 0, len(api.SubjectMatchers))
-	for _, m := range api.SubjectMatchers {
-		matchers = append(matchers, gatewayPolicySubjectMatcherModel{
-			Key:   types.StringValue(m.Key),
-			Value: types.StringValue(m.Value),
-		})
-	}
-	// unmarshal the config from the API.
-	config, err := gatewayPolicyConfigModelFromAPI(api.PolicyType, api.Config)
-	if err != nil {
-		return gatewayPolicyModel{}, err
-	}
-	return gatewayPolicyModel{
-		Action:            types.StringValue(api.Action),
-		Config:            config,
-		CreatedAt:         nullableString(api.CreatedAt),
-		CreatedBy:         nullableStringPointer(api.CreatedBy),
-		Description:       nullableStringPointer(api.Description),
-		Enabled:           types.BoolValue(api.Enabled),
-		ID:                types.StringValue(api.ID),
-		IsSystemGenerated: types.BoolValue(api.IsSystemGenerated),
-		Name:              types.StringValue(api.Name),
-		OrganizationID:    types.StringValue(api.OrganizationID),
-		ParentPolicyID:    nullableStringPointer(api.ParentPolicyID),
-		PolicyType:        types.StringValue(api.PolicyType),
-		Priority:          types.Int64Value(int64(api.Priority)),
-		SubjectMatchers:   matchers,
-		UpdatedAt:         nullableString(api.UpdatedAt),
-	}, nil
-}
-
-// gatewayPolicyConfigModelFromAPI maps the API policy's `config“ to `config` in the terraform configuration.
-func gatewayPolicyConfigModelFromAPI(policyType string, raw json.RawMessage) (*gatewayPolicyConfigModel, error) {
-	switch policyType {
-	case string(gatewayPolicyTypeSpendCap):
-		var cfg gatewayPolicySpendCapConfigAPI
-		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return nil, fmt.Errorf("decode spend_cap config: %w", err)
-		}
-		return &gatewayPolicyConfigModel{
-			SpendCap: &gatewayPolicySpendCapConfigModel{
-				Window:   types.StringValue(cfg.Window),
-				LimitUSD: types.Float64Value(cfg.LimitUSD),
-			},
-		}, nil
-	default:
-		return nil, nil
-	}
 }
 
 // Configure adds the provider configured client to the data source.
