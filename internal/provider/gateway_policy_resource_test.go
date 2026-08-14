@@ -117,12 +117,9 @@ func TestAccGatewayPolicySpendCap(t *testing.T) {
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.spend_cap.limit_usd", "25"),
 				),
 			},
-			// destroy. The API client will error if delete fails, and the Delete() method will add an error to the response,
-			// failing the test.
-			{
-				Config:  gatewayPolicySpendCapConfigUpdated,
-				Destroy: true,
-			},
+			// Delete testing automatically occurs in TestCase
+			// The API client will error if delete fails, and the Delete() method will add an error to the response,
+			// faling the test.
 		},
 	})
 }
