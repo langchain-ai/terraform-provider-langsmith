@@ -337,8 +337,6 @@ func (r *gatewayPolicyResource) Metadata(_ context.Context, req resource.Metadat
 
 // Schema defines the schema for the resource.
 func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
-	// UseStateForUnknown: Update() sets state from the plan, so keep computed attrs
-	// (especially id) known instead of showing in the plan "(known after apply)".
 	resp.Schema = schema.Schema{
 		Description: "Manages a LangSmith Gateway Policy",
 		Attributes: map[string]schema.Attribute{
