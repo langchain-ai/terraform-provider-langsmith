@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -438,15 +439,21 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 			"subject_matchers": schema.ListNestedAttribute{
 				Description: "The subject matchers of the gateway policy",
 				Required:    true,
+				Validators: []validator.List{
+					listvalidator.SizeBetween(1, 10), // API limit
+					listvalidator.UniqueValues(),
+				},
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"key": schema.StringAttribute{
-							Description: "The key of the subject matcher",
-							Required:    true,
+							MarkdownDescription: `Subject kind. Built-in: organization_id, workspace_id, user_id, or api_key_id.
+
+For a custom X-Gateway-* header, drop the "X-Gateway-" prefix and lowercase the rest, replacing any non [a-z0-9_] char with _ (e.g. header "X-Gateway-My-Internal-Team" matches as key "my_internal_team").`,
+							Required: true,
 						},
 						"value": schema.StringAttribute{
-							Description: "The value of the subject matcher",
-							Required:    true,
+							MarkdownDescription: `Subject id for that kind (e.g. workspace UUID), or the custom header value. Matched exactly (case-sensitive) against the request value.`,
+							Required:            true,
 						},
 					},
 				},

@@ -53,10 +53,16 @@ resource "langsmith_gateway_policy" "test" {
     }
   }
 
-  subject_matchers = [{
-    key   = "workspace_id"
-    value = "00000000-0000-4000-8000-000000000001"
-  }]
+  subject_matchers = [
+    {
+      key   = "workspace_id"
+      value = "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      key   = "workspace_id"
+      value = "00000000-0000-4000-8000-000000000002"
+    },
+  ]
 }
 `
 
@@ -89,6 +95,9 @@ func TestAccGatewayPolicySpendCap(t *testing.T) {
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "priority", "0"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.spend_cap.window", "monthly"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.spend_cap.limit_usd", "12.5"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.#", "1"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.key", "workspace_id"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.value", "00000000-0000-4000-8000-000000000001"),
 					resource.TestCheckResourceAttrSet("langsmith_gateway_policy.test", "created_by"),
 					resource.TestCheckNoResourceAttr("langsmith_gateway_policy.test", "parent_policy_id"),
 				),
@@ -114,6 +123,11 @@ func TestAccGatewayPolicySpendCap(t *testing.T) {
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "enabled", "false"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.spend_cap.window", "weekly"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.spend_cap.limit_usd", "25"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.#", "2"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.key", "workspace_id"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.value", "00000000-0000-4000-8000-000000000001"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.1.key", "workspace_id"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.1.value", "00000000-0000-4000-8000-000000000002"),
 				),
 			},
 			// Delete testing automatically occurs in TestCase

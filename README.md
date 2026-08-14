@@ -21,6 +21,7 @@ The provider currently includes:
 - `langsmith_tag`, a convenience resource that owns one tag key and one value.
 - `langsmith_access_policy`, which manages ABAC access policies.
 - `langsmith_access_policy_attachment`, which attaches an access policy to a workspace role.
+- `langsmith_gateway_policy`, which manages LLM Gateway policies.
 
 ## Maintainer documentation
 
