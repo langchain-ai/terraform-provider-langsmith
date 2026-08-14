@@ -9,7 +9,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
 )
@@ -60,6 +63,17 @@ type gatewayPolicyCreateAPI struct {
 	PolicyType      string                           `json:"policy_type"`
 	Priority        *int64                           `json:"priority"`
 	SubjectMatchers []gatewayPolicySubjectMatcherAPI `json:"subject_matchers"`
+}
+
+// gatewayPolicyUpdateRequest defines the request body for updating a gateway policy.
+type gatewayPolicyUpdateAPI struct {
+	Action          *string                           `json:"action"`
+	Config          json.RawMessage                   `json:"config"`
+	Description     *string                           `json:"description"`
+	Enabled         *bool                             `json:"enabled"`
+	Name            *string                           `json:"name"`
+	Priority        *int64                            `json:"priority"`
+	SubjectMatchers *[]gatewayPolicySubjectMatcherAPI `json:"subject_matchers"`
 }
 
 // gatewayPolicySubjectMatcherAPI is the subject_matchers from the API.
@@ -117,6 +131,8 @@ func (r *gatewayPolicyResource) Metadata(_ context.Context, req resource.Metadat
 
 // Schema defines the schema for the resource.
 func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	// UseStateForUnknown() allows Update() to maintain the current state for
+	// those values that won't be changed during an update.
 	resp.Schema = schema.Schema{
 		Description: "Reads a LangSmith Gateway Policy",
 		Attributes: map[string]schema.Attribute{
@@ -147,10 +163,16 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 			"created_at": schema.StringAttribute{
 				Description: "The timestamp of when the gateway policy was created",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"created_by": schema.StringAttribute{
 				Description: "The ID of the user who created the gateway policy",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			// current_spend_usd is omitted
 			// current_usage is omitted
@@ -167,10 +189,16 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 			"id": schema.StringAttribute{
 				Description: "The ID of the gateway policy",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"is_system_generated": schema.BoolAttribute{
 				Description: "Whether the gateway policy is system generated",
 				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"name": schema.StringAttribute{
 				Description: "The name of the gateway policy",
@@ -179,10 +207,16 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 			"organization_id": schema.StringAttribute{
 				Description: "The ID of the LangSmith organization to which the gateway policy belongs",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"parent_policy_id": schema.StringAttribute{
 				Description: "The ID of the parent policy",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"policy_type": schema.StringAttribute{
 				Description: "The type of the gateway policy. Must match the type with the config",
@@ -253,30 +287,16 @@ func (r *gatewayPolicyResource) Create(ctx context.Context, req resource.CreateR
 	}
 }
 
-// gatewayPolicyCreateAPIFromModel converts the plan model to the API request.
+// gatewayPolicyCreateAPIFromModel converts the plan model to the create API request.
 func gatewayPolicyCreateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyCreateAPI, error) {
-	var policyConfig any
-	switch plan.PolicyType.ValueString() {
-	case string(gatewayPolicyTypeSpendCap):
-		policyConfig = gatewayPolicySpendCapConfigAPI{
-			Window:   plan.Config.SpendCap.Window.ValueString(),
-			LimitUSD: plan.Config.SpendCap.LimitUSD.ValueFloat64(),
-		}
-	default:
-		return gatewayPolicyCreateAPI{}, fmt.Errorf("invalid policy type: %s", plan.PolicyType.ValueString())
-	}
-
-	policyConfigAPI, err := json.Marshal(policyConfig)
+	policyConfigAPI, err := gatewayPolicyConfigAPIFromModel(plan)
 	if err != nil {
-		return gatewayPolicyCreateAPI{}, fmt.Errorf("marshal config: %w", err)
+		return gatewayPolicyCreateAPI{}, err
 	}
 
-	subjectMatchers := make([]gatewayPolicySubjectMatcherAPI, 0, len(plan.SubjectMatchers))
-	for _, subjectMatcher := range plan.SubjectMatchers {
-		subjectMatchers = append(subjectMatchers, gatewayPolicySubjectMatcherAPI{
-			Key:   subjectMatcher.Key.ValueString(),
-			Value: subjectMatcher.Value.ValueString(),
-		})
+	subjectMatchers, err := gatewayPolicySubjectMatchersAPIFromModel(plan)
+	if err != nil {
+		return gatewayPolicyCreateAPI{}, err
 	}
 
 	return gatewayPolicyCreateAPI{
@@ -289,6 +309,46 @@ func gatewayPolicyCreateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyCrea
 		Priority:        intPtr(plan.Priority),
 		SubjectMatchers: subjectMatchers,
 	}, nil
+}
+
+// gatewayPolicyConfigAPIFromModel converts the plan model to the config API request.
+func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (json.RawMessage, error) {
+	// nil check
+	if plan.Config == nil {
+		return nil, nil
+	}
+	var policyConfig any
+	switch plan.PolicyType.ValueString() {
+	case string(gatewayPolicyTypeSpendCap):
+		policyConfig = gatewayPolicySpendCapConfigAPI{
+			Window:   plan.Config.SpendCap.Window.ValueString(),
+			LimitUSD: plan.Config.SpendCap.LimitUSD.ValueFloat64(),
+		}
+	default:
+		return nil, fmt.Errorf("invalid policy type: %s", plan.PolicyType.ValueString())
+	}
+
+	policyConfigAPI, err := json.Marshal(policyConfig)
+	if err != nil {
+		return nil, fmt.Errorf("marshal config: %w", err)
+	}
+	return policyConfigAPI, nil
+}
+
+// gatewayPolicySubjectMatchersAPIFromModel converts the plan model subjects matchers to the subject matchers for an API request.
+func gatewayPolicySubjectMatchersAPIFromModel(plan gatewayPolicyModel) ([]gatewayPolicySubjectMatcherAPI, error) {
+	// nil check
+	if plan.SubjectMatchers == nil {
+		return nil, nil
+	}
+	subjectMatchers := make([]gatewayPolicySubjectMatcherAPI, 0, len(plan.SubjectMatchers))
+	for _, subjectMatcher := range plan.SubjectMatchers {
+		subjectMatchers = append(subjectMatchers, gatewayPolicySubjectMatcherAPI{
+			Key:   subjectMatcher.Key.ValueString(),
+			Value: subjectMatcher.Value.ValueString(),
+		})
+	}
+	return subjectMatchers, nil
 }
 
 // Read refreshes the Terraform state with the latest data.
@@ -329,6 +389,54 @@ func (r *gatewayPolicyResource) ImportState(ctx context.Context, req resource.Im
 
 // Update updates the resource and sets the updated Terraform state on success.
 func (r *gatewayPolicyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	// Retrieve values from plan
+	var plan gatewayPolicyModel
+	diags := req.Plan.Get(ctx, &plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// Update the gateway policy
+	apiRequest, err := gatewayPolicyUpdateAPIFromModel(plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to build gateway policy request", err.Error())
+		return
+	}
+	path := fmt.Sprintf("api/v1/platform/gateway-policies/%s", plan.ID.ValueString())
+	var apiResponse gatewayPolicyGetAPI
+	if err := r.client.Patch(ctx, path, apiRequest, &apiResponse); err != nil {
+		resp.Diagnostics.AddError("Failed to update gateway policy", err.Error())
+		return
+	}
+	// add the new updated_at value to the plan
+	plan.UpdatedAt = types.StringValue(apiResponse.UpdatedAt)
+	// save the updated state
+	diags = resp.State.Set(ctx, &plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+}
+
+// gatewayPolicyUpdateAPIFromModel converts the plan model to the update API request.
+func gatewayPolicyUpdateAPIFromModel(plan gatewayPolicyModel) (gatewayPolicyUpdateAPI, error) {
+	configAPI, err := gatewayPolicyConfigAPIFromModel(plan)
+	if err != nil {
+		return gatewayPolicyUpdateAPI{}, err
+	}
+	subjectMatchers, err := gatewayPolicySubjectMatchersAPIFromModel(plan)
+	if err != nil {
+		return gatewayPolicyUpdateAPI{}, err
+	}
+	return gatewayPolicyUpdateAPI{
+		Action:          stringPtr(plan.Action),
+		Config:          configAPI,
+		Description:     stringPtr(plan.Description),
+		Enabled:         boolPtr(plan.Enabled),
+		Name:            stringPtr(plan.Name),
+		Priority:        intPtr(plan.Priority),
+		SubjectMatchers: &subjectMatchers,
+	}, nil
 }
 
 // Delete deletes the resource and removes the Terraform state on success.
