@@ -256,6 +256,17 @@ func TestAccServiceKeyUpdateRoles(t *testing.T) {
 		t.Fatalf("lookup ORGANIZATION_USER: %v", err)
 	}
 
+	const description = "tf-acc service key update_roles"
+	baseChecks := []resource.TestCheckFunc{
+		resource.TestCheckResourceAttrSet("langsmith_service_key.test", "id"),
+		resource.TestCheckResourceAttr("langsmith_service_key.test", "description", description),
+		resource.TestCheckResourceAttr("langsmith_service_key.test", "access_scope", accessScopeOrganization),
+		resource.TestCheckResourceAttrSet("langsmith_service_key.test", "short_key"),
+		resource.TestCheckResourceAttrSet("langsmith_service_key.test", "key"),
+		resource.TestCheckResourceAttrSet("langsmith_service_key.test", "created_at"),
+		resource.TestCheckNoResourceAttr("langsmith_service_key.test", "workspaces"),
+	}
+
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
 			"langsmith": providerserver.NewProtocol6WithError(New("test")()),
@@ -263,24 +274,23 @@ func TestAccServiceKeyUpdateRoles(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config: serviceKeyConfig(serviceKeyTestConfig{
-					Description: "tf-acc service key update_roles",
+					Description: description,
 				}),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttrSet("langsmith_service_key.test", "id"),
+				Check: resource.ComposeAggregateTestCheckFunc(append(baseChecks,
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "role_id", wsAdmin.ID),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "org_role_id", orgUser.ID),
-				),
+				)...),
 			},
 			{
 				Config: serviceKeyConfig(serviceKeyTestConfig{
-					Description: "tf-acc service key update_roles",
+					Description: description,
 					RoleID:      wsViewer.ID,
 					OrgRoleID:   orgViewer.ID,
 				}),
-				Check: resource.ComposeAggregateTestCheckFunc(
+				Check: resource.ComposeAggregateTestCheckFunc(append(baseChecks,
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "role_id", wsViewer.ID),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "org_role_id", orgViewer.ID),
-				),
+				)...),
 			},
 		},
 	})
