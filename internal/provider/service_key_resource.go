@@ -1,6 +1,7 @@
 package provider
 
 // Manages a LangSmith Service Key.
+// TODO: use the langsmith stainless client for native methods.
 
 import (
 	"context"
@@ -19,7 +20,7 @@ import (
 	"github.com/langchain-ai/langsmith-go"
 )
 
-// Data model
+// Terraform Data model
 
 type serviceKeyResourceModel struct {
 	AccessScope    string   `tfsdk:"access_scope"`
@@ -37,7 +38,55 @@ type serviceKeyResourceModel struct {
 	Workspaces     []string `tfsdk:"workspaces"`
 }
 
-// Terraform resource type name
+// API model
+
+// serviceKeyCreateAPIRequest is the request for the service key create API.
+type serviceKeyCreateAPIRequest struct {
+	Description string   `json:"description"`
+	ExpiresAt   *string  `json:"expires_at,omitempty"`
+	OrgRoleId   *string  `json:"org_role_id,omitempty"`
+	RoleId      *string  `json:"role_id,omitempty"`
+	Workspaces  []string `json:"workspaces,omitempty"`
+}
+
+// serviceKeyUpdateAPIRequest is the request for the service key update API.
+type serviceKeyUpdateAPIRequest struct {
+	OrgRoleID *string `json:"org_role_id,omitempty"`
+	RoleId    *string `json:"role_id,omitempty"`
+}
+
+// serviceKeyAPIResponse is the base response for the service key API responses.
+type serviceKeyAPIResponse struct {
+	ID             string   `json:"id"`
+	ShortKey       string   `json:"short_key"`
+	Description    string   `json:"description"`
+	CreatedAt      *string  `json:"created_at"`
+	LastUsedAt     *string  `json:"last_used_at"`
+	ExpiresAt      *string  `json:"expires_at"`
+	WorkspaceNames []string `json:"workspace_names"`
+	RoleID         *string  `json:"role_id"`
+	OrgRoleID      *string  `json:"org_role_id"`
+	AccessScope    *string  `json:"access_scope"`
+	CreatedBy      *string  `json:"created_by"`
+}
+
+// serviceKeyCreateResponse is the response for the service key create API.
+type serviceKeyCreateAPIResponse struct {
+	serviceKeyAPIResponse
+	Key string `json:"key"`
+}
+
+// serviceKeyListAPIResponse is the response for the service key list API.
+type serviceKeyListAPIResponse []serviceKeyAPIResponse
+
+// skipping definition for the delete API response.
+
+// serviceKeyUpdateResponse is the response for the service key update API.
+type serviceKeyUpdateResponse struct {
+	serviceKeyAPIResponse
+}
+
+// Terraform resource methods
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
@@ -179,6 +228,22 @@ func (r *serviceKeyResource) Schema(_ context.Context, _ resource.SchemaRequest,
 
 // Create creates the resource and sets the initial Terraform state.
 func (r *serviceKeyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	// Retrieve values from plan
+	var plan serviceKeyResourceModel
+	diags := req.Plan.Get(ctx, &plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Create the service key
+	serviceKey, err := r.client.CreateServiceKey(ctx, langsmith.CreateServiceKeyRequest{
+		Description: plan.Description,
+		ExpiresAt:   plan.ExpiresAt,
+		OrgRoleId:   plan.OrgRoleId,
+		RoleId:      plan.RoleId,
+		Workspaces:  plan.Workspaces,
+	})
 }
 
 // Read refreshes the Terraform state with the latest data.
