@@ -300,6 +300,17 @@ func (r *serviceKeyResource) Update(ctx context.Context, req resource.UpdateRequ
 
 // Delete deletes the resource and removes the Terraform state on success.
 func (r *serviceKeyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state serviceKeyResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	apiPath := fmt.Sprintf("api/v1/orgs/current/service-keys/%s", state.ID.ValueString())
+	if err := r.client.Delete(ctx, apiPath, nil, nil); err != nil && !isLangSmithNotFound(err) {
+		resp.Diagnostics.AddError("Failed to delete service key", err.Error())
+		return
+	}
 }
 
 // Configure adds the provider configured client to the resource.
