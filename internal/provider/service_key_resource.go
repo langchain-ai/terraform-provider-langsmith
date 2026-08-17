@@ -86,6 +86,31 @@ type serviceKeyUpdateResponse struct {
 	serviceKeyAPIResponse
 }
 
+// data model conversion functions
+
+// serviceKeyModelFromAPIResponse converts the API response to the data model.
+// `workspaces` is not returned by API, but `workspace_names` is.
+func serviceKeyModelFromAPIResponse(ctx context.Context, apiResponse serviceKeyCreateAPIResponse) (serviceKeyResourceModel, error) {
+	workspaceNames, diags := types.ListValueFrom(ctx, types.StringType, apiResponse.WorkspaceNames)
+	if diags.HasError() {
+		return serviceKeyResourceModel{}, fmt.Errorf("failed to convert workspace names to list: %v", diags.Errors())
+	}
+	return serviceKeyResourceModel{
+		AccessScope:    types.StringPointerValue(apiResponse.AccessScope),
+		CreatedAt:      types.StringPointerValue(apiResponse.CreatedAt),
+		CreatedBy:      types.StringPointerValue(apiResponse.CreatedBy),
+		Description:    types.StringValue(apiResponse.Description),
+		ExpiresAt:      types.StringPointerValue(apiResponse.ExpiresAt),
+		ID:             types.StringValue(apiResponse.ID),
+		Key:            types.StringValue(apiResponse.Key),
+		LastUsedAt:     types.StringPointerValue(apiResponse.LastUsedAt),
+		OrgRoleID:      types.StringPointerValue(apiResponse.OrgRoleID),
+		RoleID:         types.StringPointerValue(apiResponse.RoleID),
+		ShortKey:       types.StringValue(apiResponse.ShortKey),
+		WorkspaceNames: workspaceNames,
+	}, nil
+}
+
 // Terraform resource methods
 
 // Ensure the implementation satisfies the expected interfaces.
@@ -228,22 +253,41 @@ func (r *serviceKeyResource) Schema(_ context.Context, _ resource.SchemaRequest,
 
 // Create creates the resource and sets the initial Terraform state.
 func (r *serviceKeyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	// Retrieve values from plan
-	var plan serviceKeyResourceModel
-	diags := req.Plan.Get(ctx, &plan)
-	resp.Diagnostics.Append(diags...)
+	var config serviceKeyResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Create the service key
-	serviceKey, err := r.client.CreateServiceKey(ctx, langsmith.CreateServiceKeyRequest{
-		Description: plan.Description,
-		ExpiresAt:   plan.ExpiresAt,
-		OrgRoleId:   plan.OrgRoleId,
-		RoleId:      plan.RoleId,
-		Workspaces:  plan.Workspaces,
-	})
+	var workspaces []string
+	resp.Diagnostics.Append(config.Workspaces.ElementsAs(ctx, &workspaces, true)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	createRequest := serviceKeyCreateAPIRequest{
+		Description: config.Description.ValueString(),
+		ExpiresAt:   config.ExpiresAt.ValueStringPointer(),
+		OrgRoleId:   config.OrgRoleID.ValueStringPointer(),
+		RoleId:      config.RoleID.ValueStringPointer(),
+		Workspaces:  workspaces,
+	}
+
+	var apiResponse serviceKeyCreateAPIResponse
+	if err := r.client.Post(ctx, "api/v1/orgs/current/service-keys", createRequest, &apiResponse); err != nil {
+		resp.Diagnostics.AddError("Failed to create service key", err.Error())
+		return
+	}
+
+	plan, err := serviceKeyModelFromAPIResponse(ctx, apiResponse)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to convert API response to model", err.Error())
+		return
+	}
+	plan.Workspaces = config.Workspaces // set the workspaces from the config, since API doesn't return this value.
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 }
 
 // Read refreshes the Terraform state with the latest data.
