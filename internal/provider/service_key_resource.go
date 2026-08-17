@@ -57,17 +57,17 @@ type serviceKeyUpdateAPIRequest struct {
 
 // serviceKeyAPIResponse is the base response for the service key API responses.
 type serviceKeyAPIResponse struct {
-	ID             string   `json:"id"`
-	ShortKey       string   `json:"short_key"`
-	Description    string   `json:"description"`
-	CreatedAt      *string  `json:"created_at"`
-	LastUsedAt     *string  `json:"last_used_at"`
-	ExpiresAt      *string  `json:"expires_at"`
-	WorkspaceNames []string `json:"workspace_names"`
-	RoleID         *string  `json:"role_id"`
-	OrgRoleID      *string  `json:"org_role_id"`
 	AccessScope    *string  `json:"access_scope"`
+	CreatedAt      *string  `json:"created_at"`
 	CreatedBy      *string  `json:"created_by"`
+	Description    string   `json:"description"`
+	ExpiresAt      *string  `json:"expires_at"`
+	ID             string   `json:"id"`
+	LastUsedAt     *string  `json:"last_used_at"`
+	OrgRoleID      *string  `json:"org_role_id"`
+	RoleID         *string  `json:"role_id"`
+	ShortKey       string   `json:"short_key"`
+	WorkspaceNames []string `json:"workspace_names"`
 }
 
 // serviceKeyCreateResponse is the response for the service key create API.
