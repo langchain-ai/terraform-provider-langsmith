@@ -256,7 +256,32 @@ func TestAccServiceKeyUpdateRoles(t *testing.T) {
 		t.Fatalf("lookup ORGANIZATION_USER: %v", err)
 	}
 
+	// HCL (not JSON): ImportState uses a fresh working dir + Init; JSON configs
+	// hit a terraform-plugin-testing .tf/.tf.json filename bug on that path.
 	const description = "tf-acc service key update_roles"
+	const expiresAt = "2099-12-31T00:00:00Z"
+	createCfg := fmt.Sprintf(`
+resource "langsmith_service_key" "test" {
+  description = %q
+}
+`, description)
+	updateRolesCfg := fmt.Sprintf(`
+resource "langsmith_service_key" "test" {
+  description = %q
+  role_id     = %q
+  org_role_id = %q
+}
+`, description, wsViewer.ID, orgViewer.ID)
+	expiresAtCfg := fmt.Sprintf(`
+resource "langsmith_service_key" "test" {
+  description = %q
+  role_id     = %q
+  org_role_id = %q
+  expires_at  = %q
+}
+`, description, wsViewer.ID, orgViewer.ID, expiresAt)
+
+	var originalID string
 	baseChecks := []resource.TestCheckFunc{
 		resource.TestCheckResourceAttrSet("langsmith_service_key.test", "id"),
 		resource.TestCheckResourceAttr("langsmith_service_key.test", "description", description),
@@ -274,32 +299,58 @@ func TestAccServiceKeyUpdateRoles(t *testing.T) {
 		Steps: []resource.TestStep{
 			// create
 			{
-				Config: serviceKeyConfig(serviceKeyTestConfig{
-					Description: description,
-				}),
+				Config: createCfg,
 				Check: resource.ComposeAggregateTestCheckFunc(append(baseChecks,
+					resource.TestCheckResourceAttrWith("langsmith_service_key.test", "id", func(value string) error {
+						if value == "" {
+							return fmt.Errorf("id is empty")
+						}
+						originalID = value
+						return nil
+					}),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "role_id", wsAdmin.ID),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "org_role_id", orgUser.ID),
+					resource.TestCheckNoResourceAttr("langsmith_service_key.test", "expires_at"),
 				)...),
 			},
 			// import
 			{
 				ResourceName:            "langsmith_service_key.test",
 				ImportState:             true,
-				ImportStatePersist:      true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"key"},
+				ImportStateVerifyIgnore: []string{"key", "workspace_names"},
 			},
-			// update
+			// update roles in place
 			{
-				Config: serviceKeyConfig(serviceKeyTestConfig{
-					Description: description,
-					RoleID:      wsViewer.ID,
-					OrgRoleID:   orgViewer.ID,
-				}),
+				Config: updateRolesCfg,
 				Check: resource.ComposeAggregateTestCheckFunc(append(baseChecks,
+					resource.TestCheckResourceAttrWith("langsmith_service_key.test", "id", func(value string) error {
+						if value != originalID {
+							return fmt.Errorf("id = %q, want %q (in-place update)", value, originalID)
+						}
+						return nil
+					}),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "role_id", wsViewer.ID),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "org_role_id", orgViewer.ID),
+					resource.TestCheckNoResourceAttr("langsmith_service_key.test", "expires_at"),
+				)...),
+			},
+			// expires_at requires replace
+			{
+				Config: expiresAtCfg,
+				Check: resource.ComposeAggregateTestCheckFunc(append(baseChecks,
+					resource.TestCheckResourceAttrWith("langsmith_service_key.test", "id", func(value string) error {
+						if value == "" {
+							return fmt.Errorf("id is empty")
+						}
+						if value == originalID {
+							return fmt.Errorf("id = %q, want replace (new id)", value)
+						}
+						return nil
+					}),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "role_id", wsViewer.ID),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "org_role_id", orgViewer.ID),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "expires_at", expiresAt),
 				)...),
 			},
 		},

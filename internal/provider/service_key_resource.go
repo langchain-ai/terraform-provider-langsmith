@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -105,7 +106,7 @@ func serviceKeyModelFromAPIResponse(ctx context.Context, apiResponse serviceKeyA
 		CreatedAt:      types.StringPointerValue(apiResponse.CreatedAt),
 		CreatedBy:      types.StringPointerValue(apiResponse.CreatedBy),
 		Description:    types.StringValue(apiResponse.Description),
-		ExpiresAt:      types.StringPointerValue(apiResponse.ExpiresAt),
+		ExpiresAt:      rfc3339StringValue(apiResponse.ExpiresAt),
 		ID:             types.StringValue(apiResponse.ID),
 		Key:            types.StringNull(),
 		LastUsedAt:     types.StringPointerValue(apiResponse.LastUsedAt),
@@ -115,6 +116,19 @@ func serviceKeyModelFromAPIResponse(ctx context.Context, apiResponse serviceKeyA
 		WorkspaceNames: workspaceNames,
 		Workspaces:     types.ListNull(types.StringType),
 	}, nil
+}
+
+// rfc3339StringValue normalizes API timestamps to RFC3339 UTC (Z), so values like
+// "...+00:00" match config written with "...Z".
+func rfc3339StringValue(value *string) types.String {
+	if value == nil || *value == "" {
+		return types.StringNull()
+	}
+	t, err := time.Parse(time.RFC3339, *value)
+	if err != nil {
+		return types.StringValue(*value)
+	}
+	return types.StringValue(t.UTC().Format(time.RFC3339))
 }
 
 // Terraform resource methods
