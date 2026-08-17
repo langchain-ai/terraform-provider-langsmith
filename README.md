@@ -21,6 +21,7 @@ The provider currently includes:
 - `langsmith_tag`, a convenience resource that owns one tag key and one value.
 - `langsmith_access_policy`, which manages ABAC access policies.
 - `langsmith_access_policy_attachment`, which attaches an access policy to a workspace role.
+- `langsmith_gateway_policy`, which manages LLM Gateway policies.
 
 ## Maintainer documentation
 
@@ -166,6 +167,8 @@ LANGSMITH_PROVIDER_ACC=1 LANGSMITH_PROFILE=local TEST_LANGSMITH_WEBHOOK_URL=http
 ```
 
 The smoke test creates, updates, deletes, and then cleans up a temporary local tracing project/session and alert rule.
+
+Run the spend_cap gateway policy smoke against a live LangSmith (requires the `terraform` CLI and SDK auth via env/profile). Invocation is documented on `internal/provider/gateway_policy_resource_test.go`.
 
 Run the ABAC and resource-tag acceptance lifecycle entirely offline with Terraform 1.11.2:
 

@@ -120,7 +120,6 @@ func (p *LangSmithProvider) DataSources(ctx context.Context) []func() datasource
 		NewOrgRoleDataSource,
 		NewWorkspaceRoleDataSource,
 		NewPermissionsDataSource,
-		NewGatewayPolicyDataSource,
 	}
 }
 
@@ -141,6 +140,7 @@ func (p *LangSmithProvider) Resources(ctx context.Context) []func() resource.Res
 		NewWorkspaceMembershipResource,
 		NewWorkspaceRoleResource,
 		NewWorkspaceResource,
+		NewGatewayPolicyResource,
 	}
 }
 
