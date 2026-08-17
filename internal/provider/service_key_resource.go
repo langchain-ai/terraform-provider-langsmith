@@ -83,9 +83,19 @@ type serviceKeyListAPIResponse []serviceKeyAPIResponse
 
 // data model conversion functions
 
-// serviceKeyModelFromAPIResponse converts the API response to the data model.
+// serviceKeyModelFromCreateAPIResponse converts the create API response to the data model.
 // `workspaces` is not returned by API, but `workspace_names` is.
-func serviceKeyModelFromAPIResponse(ctx context.Context, apiResponse serviceKeyCreateAPIResponse) (serviceKeyResourceModel, error) {
+func serviceKeyModelFromCreateAPIResponse(ctx context.Context, apiResponse serviceKeyCreateAPIResponse) (serviceKeyResourceModel, error) {
+	model, err := serviceKeyModelFromAPIResponse(ctx, apiResponse.serviceKeyAPIResponse)
+	if err != nil {
+		return serviceKeyResourceModel{}, fmt.Errorf("failed to convert API response to model: %w", err)
+	}
+	model.Key = types.StringValue(apiResponse.Key)
+	return model, nil
+}
+
+// serviceKeyModelFromAPIResponse converts the API response to the data model.
+func serviceKeyModelFromAPIResponse(ctx context.Context, apiResponse serviceKeyAPIResponse) (serviceKeyResourceModel, error) {
 	workspaceNames, diags := types.ListValueFrom(ctx, types.StringType, apiResponse.WorkspaceNames)
 	if diags.HasError() {
 		return serviceKeyResourceModel{}, fmt.Errorf("failed to convert workspace names to list: %v", diags.Errors())
@@ -97,7 +107,6 @@ func serviceKeyModelFromAPIResponse(ctx context.Context, apiResponse serviceKeyC
 		Description:    types.StringValue(apiResponse.Description),
 		ExpiresAt:      types.StringPointerValue(apiResponse.ExpiresAt),
 		ID:             types.StringValue(apiResponse.ID),
-		Key:            types.StringValue(apiResponse.Key),
 		LastUsedAt:     types.StringPointerValue(apiResponse.LastUsedAt),
 		OrgRoleID:      types.StringPointerValue(apiResponse.OrgRoleID),
 		RoleID:         types.StringPointerValue(apiResponse.RoleID),
@@ -276,7 +285,7 @@ func (r *serviceKeyResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	plan, err := serviceKeyModelFromAPIResponse(ctx, apiResponse)
+	plan, err := serviceKeyModelFromCreateAPIResponse(ctx, apiResponse)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to convert API response to model", err.Error())
 		return
@@ -290,6 +299,38 @@ func (r *serviceKeyResource) Create(ctx context.Context, req resource.CreateRequ
 
 // Read refreshes the Terraform state with the latest data.
 func (r *serviceKeyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	// Get current state
+	var state serviceKeyResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	apiPath := "api/v1/orgs/current/service-keys"
+	var apiResponse serviceKeyListAPIResponse
+	if err := r.client.Get(ctx, apiPath, nil, &apiResponse); err != nil {
+		resp.Diagnostics.AddError("Failed to read service key", err.Error())
+		return
+	}
+	var apiKey *serviceKeyAPIResponse
+	for _, key := range apiResponse {
+		if key.ID == state.ID.ValueString() {
+			apiKey = &key
+			break
+		}
+	}
+	if apiKey == nil {
+		resp.Diagnostics.AddError("Service key not found", "Service key not found")
+		return
+	}
+	newState, err := serviceKeyModelFromAPIResponse(ctx, *apiKey)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to convert API response to model", err.Error())
+		return
+	}
+	newState.Workspaces = state.Workspaces // set the workspaces from the config, since API doesn't return this value.
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
 
 // Update updates the resource and sets the updated Terraform state on success.
