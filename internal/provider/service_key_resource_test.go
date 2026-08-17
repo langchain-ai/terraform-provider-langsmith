@@ -225,3 +225,63 @@ func TestAccServiceKeyRolePermutations(t *testing.T) {
 		})
 	}
 }
+
+// TestAccServiceKeyUpdateRoles changes both roles on an org-wide key in place.
+func TestAccServiceKeyUpdateRoles(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("LANGSMITH_PROVIDER_ACC") != "1" {
+		t.Skip("set LANGSMITH_PROVIDER_ACC=1 TF_ACC=1 to run service key update test")
+	}
+
+	ctx := context.Background()
+	client := langsmith.NewClient()
+	roles, err := listRoles(ctx, client)
+	if err != nil {
+		t.Fatalf("list roles: %v", err)
+	}
+	wsViewer, err := findRoleByLookup(roles, "WORKSPACE_VIEWER", "", accessScopeWorkspace)
+	if err != nil {
+		t.Fatalf("lookup WORKSPACE_VIEWER: %v", err)
+	}
+	wsAdmin, err := findRoleByLookup(roles, "WORKSPACE_ADMIN", "", accessScopeWorkspace)
+	if err != nil {
+		t.Fatalf("lookup WORKSPACE_ADMIN: %v", err)
+	}
+	orgViewer, err := findRoleByLookup(roles, "ORGANIZATION_VIEWER", "", accessScopeOrganization)
+	if err != nil {
+		t.Fatalf("lookup ORGANIZATION_VIEWER: %v", err)
+	}
+	orgUser, err := findRoleByLookup(roles, "ORGANIZATION_USER", "", accessScopeOrganization)
+	if err != nil {
+		t.Fatalf("lookup ORGANIZATION_USER: %v", err)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+			"langsmith": providerserver.NewProtocol6WithError(New("test")()),
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: serviceKeyConfig(serviceKeyTestConfig{
+					Description: "tf-acc service key update_roles",
+				}),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet("langsmith_service_key.test", "id"),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "role_id", wsAdmin.ID),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "org_role_id", orgUser.ID),
+				),
+			},
+			{
+				Config: serviceKeyConfig(serviceKeyTestConfig{
+					Description: "tf-acc service key update_roles",
+					RoleID:      wsViewer.ID,
+					OrgRoleID:   orgViewer.ID,
+				}),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "role_id", wsViewer.ID),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "org_role_id", orgViewer.ID),
+				),
+			},
+		},
+	})
+}
