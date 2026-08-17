@@ -19,6 +19,26 @@ import (
 	"github.com/langchain-ai/langsmith-go"
 )
 
+// Data model
+
+type serviceKeyResourceModel struct {
+	AccessScope    string   `tfsdk:"access_scope"`
+	CreatedAt      string   `tfsdk:"created_at"`
+	CreatedBy      string   `tfsdk:"created_by"`
+	Description    string   `tfsdk:"description"`
+	ExpiresAt      string   `tfsdk:"expires_at"`
+	Id             string   `tfsdk:"id"`
+	Key            string   `tfsdk:"key"`
+	LastUsedAt     string   `tfsdk:"last_used_at"`
+	OrgRoleId      string   `tfsdk:"org_role_id"`
+	RoleId         string   `tfsdk:"role_id"`
+	ShortKey       string   `tfsdk:"short_key"`
+	WorkspaceNames []string `tfsdk:"workspace_names"`
+	Workspaces     []string `tfsdk:"workspaces"`
+}
+
+// Terraform resource type name
+
 // Ensure the implementation satisfies the expected interfaces.
 var (
 	_ resource.Resource              = &serviceKeyResource{}
