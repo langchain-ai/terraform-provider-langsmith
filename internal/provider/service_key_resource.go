@@ -81,11 +81,6 @@ type serviceKeyListAPIResponse []serviceKeyAPIResponse
 
 // skipping definition for the delete API response.
 
-// serviceKeyUpdateResponse is the response for the service key update API.
-type serviceKeyUpdateResponse struct {
-	serviceKeyAPIResponse
-}
-
 // data model conversion functions
 
 // serviceKeyModelFromAPIResponse converts the API response to the data model.
@@ -200,6 +195,9 @@ func (r *serviceKeyResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			"last_used_at": schema.StringAttribute{
 				Description: "The timestamp when the service key was last used.",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"org_role_id": schema.StringAttribute{
 				Description: "The ID of the organization role for the service key. Omit for workspace-specific access.",
@@ -296,6 +294,23 @@ func (r *serviceKeyResource) Read(ctx context.Context, req resource.ReadRequest,
 
 // Update updates the resource and sets the updated Terraform state on success.
 func (r *serviceKeyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan serviceKeyResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	updateRequest := serviceKeyUpdateAPIRequest{
+		OrgRoleID: plan.OrgRoleID.ValueStringPointer(),
+		RoleId:    plan.RoleID.ValueStringPointer(),
+	}
+	apiPath := fmt.Sprintf("api/v1/orgs/current/service-keys/%s", plan.ID.ValueString())
+	if err := r.client.Patch(ctx, apiPath, updateRequest, nil); err != nil {
+		resp.Diagnostics.AddError("Failed to update service key", err.Error())
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 // Delete deletes the resource and removes the Terraform state on success.
