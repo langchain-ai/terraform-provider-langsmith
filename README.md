@@ -22,6 +22,7 @@ The provider currently includes:
 - `langsmith_access_policy`, which manages ABAC access policies.
 - `langsmith_access_policy_attachment`, which attaches an access policy to a workspace role.
 - `langsmith_gateway_policy`, which manages LLM Gateway policies.
+- `langsmith_service_key`, which manages organization service keys (org-wide or workspace-scoped).
 
 ## Maintainer documentation
 
@@ -115,6 +116,45 @@ The synthetic IDs are also accepted:
 ```shell
 terraform import langsmith_org_membership.alice org/current/email/alice@langchain.dev
 terraform import langsmith_workspace_membership.alice_dev workspace/<workspace_id>/email/alice@langchain.dev
+```
+
+## Service Keys
+
+`langsmith_service_key` manages LangSmith service keys via `/api/v1/orgs/current/service-keys`.
+
+- Omit `workspaces` for an organization-wide key; set `workspaces` for workspace-scoped access (`org_role_id` conflicts with `workspaces`).
+- `role_id` / `org_role_id` are optional; the API defaults to Workspace Admin and Organization User when omitted.
+- `description`, `expires_at`, and `workspaces` require replace; roles can be updated in place.
+- `key` is sensitive and only returned on create; import cannot recover it.
+
+```hcl
+data "langsmith_workspace_role" "viewer" {
+  name = "WORKSPACE_VIEWER"
+}
+
+data "langsmith_org_role" "viewer" {
+  name = "ORGANIZATION_VIEWER"
+}
+
+resource "langsmith_service_key" "org_wide" {
+  description = "CI / automation org-wide key"
+}
+
+resource "langsmith_service_key" "workspace" {
+  description = "workspace-scoped key"
+  workspaces  = ["11111111-1111-1111-1111-111111111111"]
+  role_id     = data.langsmith_workspace_role.viewer.id
+}
+
+resource "langsmith_service_key" "org_wide_custom_roles" {
+  description = "org-wide key with viewer roles"
+  role_id     = data.langsmith_workspace_role.viewer.id
+  org_role_id = data.langsmith_org_role.viewer.id
+}
+```
+
+```shell
+terraform import langsmith_service_key.org_wide <service_key_id>
 ```
 
 ## Local development
