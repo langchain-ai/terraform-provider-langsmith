@@ -23,19 +23,19 @@ import (
 // Terraform Data model
 
 type serviceKeyResourceModel struct {
-	AccessScope    string   `tfsdk:"access_scope"`
-	CreatedAt      string   `tfsdk:"created_at"`
-	CreatedBy      string   `tfsdk:"created_by"`
-	Description    string   `tfsdk:"description"`
-	ExpiresAt      string   `tfsdk:"expires_at"`
-	Id             string   `tfsdk:"id"`
-	Key            string   `tfsdk:"key"`
-	LastUsedAt     string   `tfsdk:"last_used_at"`
-	OrgRoleId      string   `tfsdk:"org_role_id"`
-	RoleId         string   `tfsdk:"role_id"`
-	ShortKey       string   `tfsdk:"short_key"`
-	WorkspaceNames []string `tfsdk:"workspace_names"`
-	Workspaces     []string `tfsdk:"workspaces"`
+	AccessScope    types.String `tfsdk:"access_scope"`
+	CreatedAt      types.String `tfsdk:"created_at"`
+	CreatedBy      types.String `tfsdk:"created_by"`
+	Description    types.String `tfsdk:"description"`
+	ExpiresAt      types.String `tfsdk:"expires_at"`
+	ID             types.String `tfsdk:"id"`
+	Key            types.String `tfsdk:"key"`
+	LastUsedAt     types.String `tfsdk:"last_used_at"`
+	OrgRoleID      types.String `tfsdk:"org_role_id"`
+	RoleID         types.String `tfsdk:"role_id"`
+	ShortKey       types.String `tfsdk:"short_key"`
+	WorkspaceNames types.List   `tfsdk:"workspace_names"`
+	Workspaces     types.List   `tfsdk:"workspaces"`
 }
 
 // API model
@@ -94,8 +94,8 @@ var (
 	_ resource.ResourceWithConfigure = &serviceKeyResource{}
 )
 
-// NewserviceKeyResource is a helper function to simplify the provider implementation.
-func NewserviceKeyResource() resource.Resource {
+// NewServiceKeyResource is a helper function to simplify the provider implementation.
+func NewServiceKeyResource() resource.Resource {
 	return &serviceKeyResource{}
 }
 
