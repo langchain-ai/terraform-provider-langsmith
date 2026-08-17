@@ -107,11 +107,13 @@ func serviceKeyModelFromAPIResponse(ctx context.Context, apiResponse serviceKeyA
 		Description:    types.StringValue(apiResponse.Description),
 		ExpiresAt:      types.StringPointerValue(apiResponse.ExpiresAt),
 		ID:             types.StringValue(apiResponse.ID),
+		Key:            types.StringNull(),
 		LastUsedAt:     types.StringPointerValue(apiResponse.LastUsedAt),
 		OrgRoleID:      types.StringPointerValue(apiResponse.OrgRoleID),
 		RoleID:         types.StringPointerValue(apiResponse.RoleID),
 		ShortKey:       types.StringValue(apiResponse.ShortKey),
 		WorkspaceNames: workspaceNames,
+		Workspaces:     types.ListNull(types.StringType),
 	}, nil
 }
 
@@ -119,8 +121,9 @@ func serviceKeyModelFromAPIResponse(ctx context.Context, apiResponse serviceKeyA
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource              = &serviceKeyResource{}
-	_ resource.ResourceWithConfigure = &serviceKeyResource{}
+	_ resource.Resource                = &serviceKeyResource{}
+	_ resource.ResourceWithConfigure   = &serviceKeyResource{}
+	_ resource.ResourceWithImportState = &serviceKeyResource{}
 )
 
 // NewServiceKeyResource is a helper function to simplify the provider implementation.
@@ -329,8 +332,15 @@ func (r *serviceKeyResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 	newState.Workspaces = state.Workspaces // set the workspaces from the config, since API doesn't return this value.
+	newState.Key = state.Key               // set the key to the state value, since API doesn't return this value.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
+}
+
+// ImportState imports the resource and sets the Terraform state on success.
+func (r *serviceKeyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	// Retrieve import ID and save to id attribute
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
 // Update updates the resource and sets the updated Terraform state on success.

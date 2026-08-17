@@ -272,6 +272,7 @@ func TestAccServiceKeyUpdateRoles(t *testing.T) {
 			"langsmith": providerserver.NewProtocol6WithError(New("test")()),
 		},
 		Steps: []resource.TestStep{
+			// create
 			{
 				Config: serviceKeyConfig(serviceKeyTestConfig{
 					Description: description,
@@ -281,6 +282,15 @@ func TestAccServiceKeyUpdateRoles(t *testing.T) {
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "org_role_id", orgUser.ID),
 				)...),
 			},
+			// import
+			{
+				ResourceName:            "langsmith_service_key.test",
+				ImportState:             true,
+				ImportStatePersist:      true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"key"},
+			},
+			// update
 			{
 				Config: serviceKeyConfig(serviceKeyTestConfig{
 					Description: description,
