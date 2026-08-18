@@ -163,12 +163,6 @@ func (r *serviceKeyResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			"access_scope": schema.StringAttribute{
 				Description: "The access scope of the service key.",
 				Computed:    true,
-				Validators: []frameworkvalidator.String{
-					stringvalidator.OneOf(
-						accessScopeOrganization,
-						accessScopeWorkspace,
-					),
-				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
