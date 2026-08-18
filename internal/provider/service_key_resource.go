@@ -126,6 +126,7 @@ func rfc3339StringValue(value *string) types.String {
 	}
 	t, err := time.Parse(time.RFC3339, *value)
 	if err != nil {
+		// could not parse the timestamp from the API, but return the value anyways.
 		return types.StringValue(*value)
 	}
 	return types.StringValue(t.UTC().Format(time.RFC3339))
