@@ -45,8 +45,8 @@ type serviceKeyResourceModel struct {
 type serviceKeyCreateAPIRequest struct {
 	Description string   `json:"description"`
 	ExpiresAt   *string  `json:"expires_at,omitempty"`
-	OrgRoleId   *string  `json:"org_role_id,omitempty"`
-	RoleId      *string  `json:"role_id,omitempty"`
+	OrgRoleID   *string  `json:"org_role_id,omitempty"`
+	RoleID      *string  `json:"role_id,omitempty"`
 	Workspaces  []string `json:"workspaces,omitempty"`
 }
 
@@ -71,7 +71,7 @@ type serviceKeyAPIResponse struct {
 	WorkspaceNames []string `json:"workspace_names"`
 }
 
-// serviceKeyCreateResponse is the response for the service key create API.
+// serviceKeyCreateAPIResponse is the response for the service key create API.
 type serviceKeyCreateAPIResponse struct {
 	serviceKeyAPIResponse
 	Key string `json:"key"`
@@ -291,8 +291,8 @@ func (r *serviceKeyResource) Create(ctx context.Context, req resource.CreateRequ
 	createRequest := serviceKeyCreateAPIRequest{
 		Description: config.Description.ValueString(),
 		ExpiresAt:   config.ExpiresAt.ValueStringPointer(),
-		OrgRoleId:   config.OrgRoleID.ValueStringPointer(),
-		RoleId:      config.RoleID.ValueStringPointer(),
+		OrgRoleID:   config.OrgRoleID.ValueStringPointer(),
+		RoleID:      config.RoleID.ValueStringPointer(),
 		Workspaces:  workspaces,
 	}
 
