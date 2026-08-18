@@ -22,9 +22,6 @@ import (
 	"github.com/langchain-ai/langsmith-go"
 )
 
-// Fixed workspace used by ACC tests (must exist for the configured API key).
-const serviceKeyTestWorkspaceID = "25cfe4ff-a400-4a3a-8d25-62a59f07f7e7"
-
 // serviceKeyTestConfig holds Terraform attributes for langsmith_service_key tests.
 // Only set fields that should appear in config; omitempty skips the rest.
 // This lets us define a terraform config in JSON format, instead of HCL.
@@ -59,6 +56,23 @@ func serviceKeyConfig(cfg serviceKeyTestConfig) string {
 	return string(b)
 }
 
+func listWorkspaceIDs(t *testing.T, ctx context.Context, client *langsmith.Client) ([]string, error) {
+	t.Helper()
+	type workspace struct {
+		ID string `json:"id"`
+	}
+	type listWorkspacesAPIResponse []workspace
+	var response listWorkspacesAPIResponse
+	if err := client.Get(ctx, "api/v1/workspaces", nil, &response); err != nil {
+		return nil, fmt.Errorf("Unable to Read LangSmith Workspaces: %w", err)
+	}
+	workspaceIDs := []string{}
+	for _, ws := range response {
+		workspaceIDs = append(workspaceIDs, ws.ID)
+	}
+	return workspaceIDs, nil
+}
+
 func TestAccServiceKeyRolePermutations(t *testing.T) {
 	t.Parallel()
 	if os.Getenv("LANGSMITH_PROVIDER_ACC") != "1" {
@@ -87,6 +101,11 @@ func TestAccServiceKeyRolePermutations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup ORGANIZATION_USER: %v", err)
 	}
+	serviceKeyTestWorkspaceIDs, err := listWorkspaceIDs(t, ctx, client)
+	if err != nil {
+		t.Fatalf("lookup workspaces: %v", err)
+	}
+	serviceKeyTestWorkspaceID := serviceKeyTestWorkspaceIDs[0]
 
 	// Full role_id × org_role_id matrix, split by scope:
 	// workspace-scoped + org_role_id is invalid (schema ConflictsWith).
@@ -280,16 +299,28 @@ resource "langsmith_service_key" "test" {
   expires_at  = %q
 }
 `, description, wsViewer.ID, orgViewer.ID, expiresAt)
+	serviceKeyTestWorkspaceIDs, err := listWorkspaceIDs(t, ctx, client)
+	if err != nil {
+		t.Fatalf("lookup workspaces: %v", err)
+	}
+	serviceKeyTestWorkspaceID := serviceKeyTestWorkspaceIDs[0]
+	convertToWorkspaceScopeCfg := fmt.Sprintf(`
+resource "langsmith_service_key" "test" {
+  description = %q
+  role_id     = %q
+  workspaces  = [%q]
+  expires_at  = %q
+}
+`, description, wsViewer.ID, serviceKeyTestWorkspaceID, expiresAt)
 
 	var originalID string
+	var newID string
 	baseChecks := []resource.TestCheckFunc{
 		resource.TestCheckResourceAttrSet("langsmith_service_key.test", "id"),
 		resource.TestCheckResourceAttr("langsmith_service_key.test", "description", description),
-		resource.TestCheckResourceAttr("langsmith_service_key.test", "access_scope", accessScopeOrganization),
 		resource.TestCheckResourceAttrSet("langsmith_service_key.test", "short_key"),
 		resource.TestCheckResourceAttrSet("langsmith_service_key.test", "key"),
 		resource.TestCheckResourceAttrSet("langsmith_service_key.test", "created_at"),
-		resource.TestCheckNoResourceAttr("langsmith_service_key.test", "workspaces"),
 	}
 
 	resource.Test(t, resource.TestCase{
@@ -308,8 +339,10 @@ resource "langsmith_service_key" "test" {
 						originalID = value
 						return nil
 					}),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "access_scope", accessScopeOrganization),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "role_id", wsAdmin.ID),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "org_role_id", orgUser.ID),
+					resource.TestCheckNoResourceAttr("langsmith_service_key.test", "workspaces"),
 					resource.TestCheckNoResourceAttr("langsmith_service_key.test", "expires_at"),
 				)...),
 			},
@@ -330,8 +363,10 @@ resource "langsmith_service_key" "test" {
 						}
 						return nil
 					}),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "access_scope", accessScopeOrganization),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "role_id", wsViewer.ID),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "org_role_id", orgViewer.ID),
+					resource.TestCheckNoResourceAttr("langsmith_service_key.test", "workspaces"),
 					resource.TestCheckNoResourceAttr("langsmith_service_key.test", "expires_at"),
 				)...),
 			},
@@ -346,10 +381,31 @@ resource "langsmith_service_key" "test" {
 						if value == originalID {
 							return fmt.Errorf("id = %q, want replace (new id)", value)
 						}
+						newID = value
 						return nil
 					}),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "access_scope", accessScopeOrganization),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "role_id", wsViewer.ID),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "org_role_id", orgViewer.ID),
+					resource.TestCheckNoResourceAttr("langsmith_service_key.test", "workspaces"),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "expires_at", expiresAt),
+				)...),
+			},
+			// change to workspace-scoped: workspaces is RequiresReplace, so this forces a replace
+			{
+				Config: convertToWorkspaceScopeCfg,
+				Check: resource.ComposeAggregateTestCheckFunc(append(baseChecks,
+					resource.TestCheckResourceAttrWith("langsmith_service_key.test", "id", func(value string) error {
+						if value == newID {
+							return fmt.Errorf("id = %q, want replace (new id)", value)
+						}
+						return nil
+					}),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "access_scope", accessScopeWorkspace),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "role_id", wsViewer.ID),
+					resource.TestCheckNoResourceAttr("langsmith_service_key.test", "org_role_id"),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "workspaces.#", "1"),
+					resource.TestCheckResourceAttr("langsmith_service_key.test", "workspaces.0", serviceKeyTestWorkspaceID),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "expires_at", expiresAt),
 				)...),
 			},
