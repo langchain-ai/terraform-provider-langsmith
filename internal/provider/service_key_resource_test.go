@@ -312,6 +312,14 @@ resource "langsmith_service_key" "test" {
   expires_at  = %q
 }
 `, description, wsViewer.ID, serviceKeyTestWorkspaceID, expiresAt)
+	mismatchedWorkspaceCfg := fmt.Sprintf(`
+resource "langsmith_service_key" "test" {
+  description = %q
+  role_id     = %q
+  workspaces  = ["0000000-0000-9999-0000-000000000000"]
+  expires_at  = %q
+}
+`, description, wsViewer.ID, expiresAt)
 
 	var originalID string
 	var newID string
@@ -418,6 +426,14 @@ resource "langsmith_service_key" "test" {
 						plancheck.ExpectResourceAction("langsmith_service_key.test", plancheck.ResourceActionNoop),
 					},
 				},
+			},
+			// import with a workspaces value that doesn't match what's actually granted
+			{
+				Config:          mismatchedWorkspaceCfg,
+				ResourceName:    "langsmith_service_key.test",
+				ImportState:     true,
+				ImportStateKind: resource.ImportBlockWithID,
+				ExpectError:     regexp.MustCompile(`Workspace mismatch on import`),
 			},
 		},
 	})

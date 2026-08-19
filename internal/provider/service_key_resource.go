@@ -6,17 +6,16 @@ package provider
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
-	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	frameworkvalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -37,7 +36,7 @@ type serviceKeyResourceModel struct {
 	OrgRoleID   types.String `tfsdk:"org_role_id"`
 	RoleID      types.String `tfsdk:"role_id"`
 	ShortKey    types.String `tfsdk:"short_key"`
-	Workspaces  types.List   `tfsdk:"workspaces"`
+	Workspaces  types.Set    `tfsdk:"workspaces"`
 }
 
 // API model
@@ -107,7 +106,7 @@ func serviceKeyModelFromAPIResponse(apiResponse serviceKeyAPIResponse) serviceKe
 		OrgRoleID:   types.StringPointerValue(apiResponse.OrgRoleID),
 		RoleID:      types.StringPointerValue(apiResponse.RoleID),
 		ShortKey:    types.StringValue(apiResponse.ShortKey),
-		Workspaces:  types.ListNull(types.StringType),
+		Workspaces:  types.SetNull(types.StringType),
 	}
 }
 
@@ -245,16 +244,16 @@ func (r *serviceKeyResource) Schema(_ context.Context, _ resource.SchemaRequest,
 			},
 			// `workspace_names` is not included. It introduces inconsitencies when workspaces are deleted.
 			// And we dont not want that a deleted workspace should trigger a replace, or an error because of a mismatch with `workspaces`.
-			"workspaces": schema.ListAttribute{
+			"workspaces": schema.SetAttribute{
 				Description: "The workspace IDs the service key has access to. Omit for organization-wide access. Editing requires replace, and is validated during import.",
 				ElementType: types.StringType,
 				Optional:    true,
-				Validators: []frameworkvalidator.List{
-					listvalidator.SizeAtLeast(1),
+				Validators: []frameworkvalidator.Set{
+					setvalidator.SizeAtLeast(1),
 				},
-				PlanModifiers: []planmodifier.List{
-					listplanmodifier.UseStateForUnknown(),
-					listplanmodifier.RequiresReplace(),
+				PlanModifiers: []planmodifier.Set{
+					setplanmodifier.UseStateForUnknown(),
+					setplanmodifier.RequiresReplace(),
 				},
 			},
 		},
@@ -314,6 +313,16 @@ func (r *serviceKeyResource) Read(ctx context.Context, req resource.ReadRequest,
 	newState := serviceKeyModelFromAPIResponse(*apiKey)
 	newState.Key = state.Key               // set the key to the state value, since API doesn't return this value.
 	newState.Workspaces = state.Workspaces // carry over existing value for workspaces, since API doesn't return this value.
+	// but if we are doing an Import(), then there is no prior workspace state.
+	// save it so that subsequent Read()s can see there is no change.
+	if newState.Workspaces.IsNull() && apiKey.AccessScope != nil && *apiKey.AccessScope == accessScopeWorkspace {
+		workspaceIDs, diags := r.resolveWorkspaceIDsFromNames(ctx, apiKey.WorkspaceNames)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		newState.Workspaces = workspaceIDs
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
@@ -351,37 +360,19 @@ func (r *serviceKeyResource) ModifyPlan(ctx context.Context, req resource.Modify
 		return
 	}
 
-	apiKey, err := r.fetchServiceKeyByID(ctx, state.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to read service key", err.Error())
-		return
-	}
-	workspaceIDs, diags := r.resolveWorkspaceIDsFromNames(ctx, apiKey.WorkspaceNames)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
 	var config serviceKeyResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if !config.Workspaces.Equal(workspaceIDs) {
+	if !config.Workspaces.Equal(state.Workspaces) {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("workspaces"),
 			"Workspace mismatch on import",
 			"The configured workspace IDs do not match the workspaces actually granted to this service key.",
 		)
-		return
 	}
-
-	// Confirmed that workspaces config matches the API's,
-	// no need to trigger replace.
-	resp.RequiresReplace = slices.DeleteFunc(resp.RequiresReplace, func(p path.Path) bool {
-		return p.Equal(path.Root("workspaces"))
-	})
 }
 
 // Update updates the resource and sets the updated Terraform state on success.
@@ -452,13 +443,13 @@ func (r *serviceKeyResource) fetchServiceKeyByID(ctx context.Context, id string)
 }
 
 // resolveWorkspaceIDsFromNames maps granted workspace names back to IDs, since the API never returns IDs directly.
-func (r *serviceKeyResource) resolveWorkspaceIDsFromNames(ctx context.Context, names []string) (types.List, diag.Diagnostics) {
+func (r *serviceKeyResource) resolveWorkspaceIDsFromNames(ctx context.Context, names []string) (types.Set, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	allWorkspaces, err := r.client.Workspaces.List(ctx, langsmith.WorkspaceListParams{IncludeDeleted: langsmith.Bool(true)})
 	if err != nil {
 		diags.AddError("Failed to look up workspaces", err.Error())
-		return types.ListNull(types.StringType), diags
+		return types.SetNull(types.StringType), diags
 	}
 	idByName := make(map[string]string, len(*allWorkspaces))
 	for _, ws := range *allWorkspaces {
@@ -478,10 +469,10 @@ func (r *serviceKeyResource) resolveWorkspaceIDsFromNames(ctx context.Context, n
 		ids = append(ids, id)
 	}
 	if diags.HasError() {
-		return types.ListNull(types.StringType), diags
+		return types.SetNull(types.StringType), diags
 	}
 
-	workspaceIDs, listDiags := types.ListValueFrom(ctx, types.StringType, ids)
+	workspaceIDs, listDiags := types.SetValueFrom(ctx, types.StringType, ids)
 	diags.Append(listDiags...)
 	return workspaceIDs, diags
 }
