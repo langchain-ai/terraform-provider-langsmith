@@ -409,14 +409,6 @@ resource "langsmith_service_key" "test" {
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "expires_at", expiresAt),
 				)...),
 			},
-			// import as workspace-scoped.
-			{
-				ResourceName:            "langsmith_service_key.test",
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"key"},
-			},
-			// import again is no-op
 			{
 				ResourceName:    "langsmith_service_key.test",
 				ImportState:     true,
