@@ -54,7 +54,7 @@ type serviceKeyCreateAPIRequest struct {
 // serviceKeyUpdateAPIRequest is the request for the service key update API.
 type serviceKeyUpdateAPIRequest struct {
 	OrgRoleID *string `json:"org_role_id,omitempty"`
-	RoleId    *string `json:"role_id,omitempty"`
+	RoleID    *string `json:"role_id,omitempty"`
 }
 
 // serviceKeyAPIResponse is the base response for the service key API responses.
@@ -138,7 +138,7 @@ var (
 	_ resource.ResourceWithModifyPlan  = &serviceKeyResource{}
 )
 
-// privateKeyFreshImport is a maerker that lets ModifyPlan() know that the plan is from an Import() or not.
+// privateKeyFreshImport is a marker that lets ModifyPlan() know that the plan is from an Import() or not.
 const privateKeyFreshImport = "fresh_import"
 
 // NewServiceKeyResource is a helper function to simplify the provider implementation.
@@ -403,7 +403,7 @@ func (r *serviceKeyResource) Update(ctx context.Context, req resource.UpdateRequ
 
 	updateRequest := serviceKeyUpdateAPIRequest{
 		OrgRoleID: plan.OrgRoleID.ValueStringPointer(),
-		RoleId:    plan.RoleID.ValueStringPointer(),
+		RoleID:    plan.RoleID.ValueStringPointer(),
 	}
 	apiPath := fmt.Sprintf("api/v1/orgs/current/service-keys/%s", plan.ID.ValueString())
 	if err := r.client.Patch(ctx, apiPath, updateRequest, nil); err != nil {
