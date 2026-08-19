@@ -6,10 +6,12 @@ package provider
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -24,19 +26,18 @@ import (
 // Terraform Data model
 
 type serviceKeyResourceModel struct {
-	AccessScope    types.String `tfsdk:"access_scope"`
-	CreatedAt      types.String `tfsdk:"created_at"`
-	CreatedBy      types.String `tfsdk:"created_by"`
-	Description    types.String `tfsdk:"description"`
-	ExpiresAt      types.String `tfsdk:"expires_at"`
-	ID             types.String `tfsdk:"id"`
-	Key            types.String `tfsdk:"key"`
-	LastUsedAt     types.String `tfsdk:"last_used_at"`
-	OrgRoleID      types.String `tfsdk:"org_role_id"`
-	RoleID         types.String `tfsdk:"role_id"`
-	ShortKey       types.String `tfsdk:"short_key"`
-	WorkspaceNames types.List   `tfsdk:"workspace_names"`
-	Workspaces     types.List   `tfsdk:"workspaces"`
+	AccessScope types.String `tfsdk:"access_scope"`
+	CreatedAt   types.String `tfsdk:"created_at"`
+	CreatedBy   types.String `tfsdk:"created_by"`
+	Description types.String `tfsdk:"description"`
+	ExpiresAt   types.String `tfsdk:"expires_at"`
+	ID          types.String `tfsdk:"id"`
+	Key         types.String `tfsdk:"key"`
+	LastUsedAt  types.String `tfsdk:"last_used_at"`
+	OrgRoleID   types.String `tfsdk:"org_role_id"`
+	RoleID      types.String `tfsdk:"role_id"`
+	ShortKey    types.String `tfsdk:"short_key"`
+	Workspaces  types.List   `tfsdk:"workspaces"`
 }
 
 // API model
@@ -85,37 +86,29 @@ type serviceKeyListAPIResponse []serviceKeyAPIResponse
 // data model conversion functions
 
 // serviceKeyModelFromCreateAPIResponse converts the create API response to the data model.
-// `workspaces` is not returned by API, but `workspace_names` is.
-func serviceKeyModelFromCreateAPIResponse(ctx context.Context, apiResponse serviceKeyCreateAPIResponse) (serviceKeyResourceModel, error) {
-	model, err := serviceKeyModelFromAPIResponse(ctx, apiResponse.serviceKeyAPIResponse)
-	if err != nil {
-		return serviceKeyResourceModel{}, fmt.Errorf("failed to convert API response to model: %w", err)
-	}
+// `workspaces` is not returned by API.
+func serviceKeyModelFromCreateAPIResponse(apiResponse serviceKeyCreateAPIResponse) serviceKeyResourceModel {
+	model := serviceKeyModelFromAPIResponse(apiResponse.serviceKeyAPIResponse)
 	model.Key = types.StringValue(apiResponse.Key)
-	return model, nil
+	return model
 }
 
 // serviceKeyModelFromAPIResponse converts the API response to the data model.
-func serviceKeyModelFromAPIResponse(ctx context.Context, apiResponse serviceKeyAPIResponse) (serviceKeyResourceModel, error) {
-	workspaceNames, diags := types.ListValueFrom(ctx, types.StringType, apiResponse.WorkspaceNames)
-	if diags.HasError() {
-		return serviceKeyResourceModel{}, fmt.Errorf("failed to convert workspace names to list: %v", diags.Errors())
-	}
+func serviceKeyModelFromAPIResponse(apiResponse serviceKeyAPIResponse) serviceKeyResourceModel {
 	return serviceKeyResourceModel{
-		AccessScope:    types.StringPointerValue(apiResponse.AccessScope),
-		CreatedAt:      types.StringPointerValue(apiResponse.CreatedAt),
-		CreatedBy:      types.StringPointerValue(apiResponse.CreatedBy),
-		Description:    types.StringValue(apiResponse.Description),
-		ExpiresAt:      rfc3339StringValue(apiResponse.ExpiresAt),
-		ID:             types.StringValue(apiResponse.ID),
-		Key:            types.StringNull(),
-		LastUsedAt:     types.StringPointerValue(apiResponse.LastUsedAt),
-		OrgRoleID:      types.StringPointerValue(apiResponse.OrgRoleID),
-		RoleID:         types.StringPointerValue(apiResponse.RoleID),
-		ShortKey:       types.StringValue(apiResponse.ShortKey),
-		WorkspaceNames: workspaceNames,
-		Workspaces:     types.ListNull(types.StringType),
-	}, nil
+		AccessScope: types.StringPointerValue(apiResponse.AccessScope),
+		CreatedAt:   types.StringPointerValue(apiResponse.CreatedAt),
+		CreatedBy:   types.StringPointerValue(apiResponse.CreatedBy),
+		Description: types.StringValue(apiResponse.Description),
+		ExpiresAt:   rfc3339StringValue(apiResponse.ExpiresAt),
+		ID:          types.StringValue(apiResponse.ID),
+		Key:         types.StringNull(),
+		LastUsedAt:  types.StringPointerValue(apiResponse.LastUsedAt),
+		OrgRoleID:   types.StringPointerValue(apiResponse.OrgRoleID),
+		RoleID:      types.StringPointerValue(apiResponse.RoleID),
+		ShortKey:    types.StringValue(apiResponse.ShortKey),
+		Workspaces:  types.ListNull(types.StringType),
+	}
 }
 
 // rfc3339StringValue normalizes API timestamps to RFC3339 UTC (Z), so values like
@@ -139,7 +132,11 @@ var (
 	_ resource.Resource                = &serviceKeyResource{}
 	_ resource.ResourceWithConfigure   = &serviceKeyResource{}
 	_ resource.ResourceWithImportState = &serviceKeyResource{}
+	_ resource.ResourceWithModifyPlan  = &serviceKeyResource{}
 )
+
+// privateKeyFreshImport is a maerker that lets ModifyPlan() know that the plan is from an Import() or not.
+const privateKeyFreshImport = "fresh_import"
 
 // NewServiceKeyResource is a helper function to simplify the provider implementation.
 func NewServiceKeyResource() resource.Resource {
@@ -246,16 +243,10 @@ func (r *serviceKeyResource) Schema(_ context.Context, _ resource.SchemaRequest,
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			"workspace_names": schema.ListAttribute{
-				Description: "The resolved names of the workspaces the service key has access to.",
-				ElementType: types.StringType,
-				Computed:    true,
-				PlanModifiers: []planmodifier.List{
-					listplanmodifier.UseStateForUnknown(),
-				},
-			},
+			// `workspace_names` is not included. It introduces inconsitencies when workspaces are deleted.
+			// And we dont not want that a deleted workspace should trigger a replace, or an error because of a mismatch with `workspaces`.
 			"workspaces": schema.ListAttribute{
-				Description: "The workspace IDs the service key has access to. Omit for organization-wide access. Not editable after creation.",
+				Description: "The workspace IDs the service key has access to. Omit for organization-wide access. Editing requires replace, and is validated during import.",
 				ElementType: types.StringType,
 				Optional:    true,
 				Validators: []frameworkvalidator.List{
@@ -297,12 +288,9 @@ func (r *serviceKeyResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	plan, err := serviceKeyModelFromCreateAPIResponse(ctx, apiResponse)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to convert API response to model", err.Error())
-		return
-	}
+	plan := serviceKeyModelFromCreateAPIResponse(apiResponse)
 	plan.Workspaces = config.Workspaces // set the workspaces from the config, since API doesn't return this value.
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -318,30 +306,14 @@ func (r *serviceKeyResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	apiPath := "api/v1/orgs/current/service-keys"
-	var apiResponse serviceKeyListAPIResponse
-	if err := r.client.Get(ctx, apiPath, nil, &apiResponse); err != nil {
+	apiKey, err := r.fetchServiceKeyByID(ctx, state.ID.ValueString())
+	if err != nil {
 		resp.Diagnostics.AddError("Failed to read service key", err.Error())
 		return
 	}
-	var apiKey *serviceKeyAPIResponse
-	for _, key := range apiResponse {
-		if key.ID == state.ID.ValueString() {
-			apiKey = &key
-			break
-		}
-	}
-	if apiKey == nil {
-		resp.Diagnostics.AddError("Service key not found", "Service key not found")
-		return
-	}
-	newState, err := serviceKeyModelFromAPIResponse(ctx, *apiKey)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to convert API response to model", err.Error())
-		return
-	}
-	newState.Workspaces = state.Workspaces // set the workspaces from the config, since API doesn't return this value.
+	newState := serviceKeyModelFromAPIResponse(*apiKey)
 	newState.Key = state.Key               // set the key to the state value, since API doesn't return this value.
+	newState.Workspaces = state.Workspaces // carry over existing value for workspaces, since API doesn't return this value.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
 }
@@ -350,6 +322,66 @@ func (r *serviceKeyResource) Read(ctx context.Context, req resource.ReadRequest,
 func (r *serviceKeyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	// Retrieve import ID and save to id attribute
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Mark this state as import-produced so ModifyPlan knows to validate
+	// workspaces against the config on the first plan following this import.
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateKeyFreshImport, []byte("true"))...)
+}
+
+// ModifyPlan validates the Import(), so that the config `workspaces` match what the API has.
+func (r *serviceKeyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	freshImport, diags := req.Private.GetKey(ctx, privateKeyFreshImport)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() || freshImport == nil {
+		return
+	}
+
+	// Consume the marker so it never leaks into a later, unrelated plan.
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, privateKeyFreshImport, nil)...)
+
+	var state serviceKeyResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if state.AccessScope.ValueString() != accessScopeWorkspace {
+		return
+	}
+
+	apiKey, err := r.fetchServiceKeyByID(ctx, state.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read service key", err.Error())
+		return
+	}
+	workspaceIDs, diags := r.resolveWorkspaceIDsFromNames(ctx, apiKey.WorkspaceNames)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var config serviceKeyResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !config.Workspaces.Equal(workspaceIDs) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("workspaces"),
+			"Workspace mismatch on import",
+			"The configured workspace IDs do not match the workspaces actually granted to this service key.",
+		)
+		return
+	}
+
+	// Confirmed that workspaces config matches the API's,
+	// no need to trigger replace.
+	resp.RequiresReplace = slices.DeleteFunc(resp.RequiresReplace, func(p path.Path) bool {
+		return p.Equal(path.Root("workspaces"))
+	})
 }
 
 // Update updates the resource and sets the updated Terraform state on success.
@@ -401,4 +433,55 @@ func (r *serviceKeyResource) Configure(_ context.Context, req resource.Configure
 		return
 	}
 	r.client = client
+}
+
+// helpers
+
+// fetchServiceKeyByID looks up a service key via the list endpoint (there is no get-by-id endpoint).
+func (r *serviceKeyResource) fetchServiceKeyByID(ctx context.Context, id string) (*serviceKeyAPIResponse, error) {
+	var apiResponse serviceKeyListAPIResponse
+	if err := r.client.Get(ctx, "api/v1/orgs/current/service-keys", nil, &apiResponse); err != nil {
+		return nil, err
+	}
+	for _, key := range apiResponse {
+		if key.ID == id {
+			return &key, nil
+		}
+	}
+	return nil, fmt.Errorf("service key %q not found", id)
+}
+
+// resolveWorkspaceIDsFromNames maps granted workspace names back to IDs, since the API never returns IDs directly.
+func (r *serviceKeyResource) resolveWorkspaceIDsFromNames(ctx context.Context, names []string) (types.List, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	allWorkspaces, err := r.client.Workspaces.List(ctx, langsmith.WorkspaceListParams{IncludeDeleted: langsmith.Bool(true)})
+	if err != nil {
+		diags.AddError("Failed to look up workspaces", err.Error())
+		return types.ListNull(types.StringType), diags
+	}
+	idByName := make(map[string]string, len(*allWorkspaces))
+	for _, ws := range *allWorkspaces {
+		idByName[ws.DisplayName] = ws.ID
+	}
+
+	ids := make([]string, 0, len(names))
+	for _, name := range names {
+		id, ok := idByName[name]
+		if !ok {
+			diags.AddError(
+				"Unknown workspace in service key grants",
+				fmt.Sprintf("Workspace %q is granted to this service key but does not exist in this organization.", name),
+			)
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if diags.HasError() {
+		return types.ListNull(types.StringType), diags
+	}
+
+	workspaceIDs, listDiags := types.ListValueFrom(ctx, types.StringType, ids)
+	diags.Append(listDiags...)
+	return workspaceIDs, diags
 }

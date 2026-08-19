@@ -19,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/langchain-ai/langsmith-go"
 )
 
@@ -26,19 +27,18 @@ import (
 // Only set fields that should appear in config; omitempty skips the rest.
 // This lets us define a terraform config in JSON format, instead of HCL.
 type serviceKeyTestConfig struct {
-	AccessScope    string   `json:"access_scope,omitempty"`
-	CreatedAt      string   `json:"created_at,omitempty"`
-	CreatedBy      string   `json:"created_by,omitempty"`
-	Description    string   `json:"description,omitempty"`
-	ExpiresAt      string   `json:"expires_at,omitempty"`
-	ID             string   `json:"id,omitempty"`
-	Key            string   `json:"key,omitempty"`
-	LastUsedAt     string   `json:"last_used_at,omitempty"`
-	OrgRoleID      string   `json:"org_role_id,omitempty"`
-	RoleID         string   `json:"role_id,omitempty"`
-	ShortKey       string   `json:"short_key,omitempty"`
-	WorkspaceNames []string `json:"workspace_names,omitempty"`
-	Workspaces     []string `json:"workspaces,omitempty"`
+	AccessScope string   `json:"access_scope,omitempty"`
+	CreatedAt   string   `json:"created_at,omitempty"`
+	CreatedBy   string   `json:"created_by,omitempty"`
+	Description string   `json:"description,omitempty"`
+	ExpiresAt   string   `json:"expires_at,omitempty"`
+	ID          string   `json:"id,omitempty"`
+	Key         string   `json:"key,omitempty"`
+	LastUsedAt  string   `json:"last_used_at,omitempty"`
+	OrgRoleID   string   `json:"org_role_id,omitempty"`
+	RoleID      string   `json:"role_id,omitempty"`
+	ShortKey    string   `json:"short_key,omitempty"`
+	Workspaces  []string `json:"workspaces,omitempty"`
 }
 
 // serviceKeyConfig returns Terraform JSON config (accepted by TestStep.Config).
@@ -346,12 +346,12 @@ resource "langsmith_service_key" "test" {
 					resource.TestCheckNoResourceAttr("langsmith_service_key.test", "expires_at"),
 				)...),
 			},
-			// import
+			// import: key is the only field the API never returns on any read path.
 			{
 				ResourceName:            "langsmith_service_key.test",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"key", "workspace_names"},
+				ImportStateVerifyIgnore: []string{"key"},
 			},
 			// update roles in place
 			{
@@ -408,6 +408,24 @@ resource "langsmith_service_key" "test" {
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "workspaces.0", serviceKeyTestWorkspaceID),
 					resource.TestCheckResourceAttr("langsmith_service_key.test", "expires_at", expiresAt),
 				)...),
+			},
+			// import as workspace-scoped.
+			{
+				ResourceName:            "langsmith_service_key.test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"key"},
+			},
+			// import again is no-op
+			{
+				ResourceName:    "langsmith_service_key.test",
+				ImportState:     true,
+				ImportStateKind: resource.ImportBlockWithID,
+				ImportPlanChecks: resource.ImportPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("langsmith_service_key.test", plancheck.ResourceActionNoop),
+					},
+				},
 			},
 		},
 	})
