@@ -53,7 +53,7 @@ resource "langsmith_service_key" "workspace" {
 - `expires_at` (String) The timestamp when the service key will expire. Not set for permanent keys. Not editable after creation.
 - `org_role_id` (String) The ID of the organization role for the service key. Omit for workspace-specific access.
 - `role_id` (String) Workspace role ID. If omitted, the API defaults to Workspace Admin.
-- `workspaces` (List of String) The workspace IDs the service key has access to. Omit for organization-wide access. Editing requires replace, and is validated during import.
+- `workspaces` (Set of String) The workspace IDs the service key has access to. Omit for organization-wide access. Editing requires replace, and is validated during import.
 
 ### Read-Only
 
@@ -64,3 +64,4 @@ resource "langsmith_service_key" "workspace" {
 - `key` (String, Sensitive) The key value of the service key. Only available on creation.
 - `last_used_at` (String) The timestamp when the service key was last used.
 - `short_key` (String) The short, redacted value of the service key.
+- `workspace_names` (Set of String) The resolved names of the workspaces the service key has access to.

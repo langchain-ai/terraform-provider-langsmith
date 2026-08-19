@@ -25,18 +25,19 @@ import (
 // Terraform Data model
 
 type serviceKeyResourceModel struct {
-	AccessScope types.String `tfsdk:"access_scope"`
-	CreatedAt   types.String `tfsdk:"created_at"`
-	CreatedBy   types.String `tfsdk:"created_by"`
-	Description types.String `tfsdk:"description"`
-	ExpiresAt   types.String `tfsdk:"expires_at"`
-	ID          types.String `tfsdk:"id"`
-	Key         types.String `tfsdk:"key"`
-	LastUsedAt  types.String `tfsdk:"last_used_at"`
-	OrgRoleID   types.String `tfsdk:"org_role_id"`
-	RoleID      types.String `tfsdk:"role_id"`
-	ShortKey    types.String `tfsdk:"short_key"`
-	Workspaces  types.Set    `tfsdk:"workspaces"`
+	AccessScope    types.String `tfsdk:"access_scope"`
+	CreatedAt      types.String `tfsdk:"created_at"`
+	CreatedBy      types.String `tfsdk:"created_by"`
+	Description    types.String `tfsdk:"description"`
+	ExpiresAt      types.String `tfsdk:"expires_at"`
+	ID             types.String `tfsdk:"id"`
+	Key            types.String `tfsdk:"key"`
+	LastUsedAt     types.String `tfsdk:"last_used_at"`
+	OrgRoleID      types.String `tfsdk:"org_role_id"`
+	RoleID         types.String `tfsdk:"role_id"`
+	ShortKey       types.String `tfsdk:"short_key"`
+	WorkspaceNames types.Set    `tfsdk:"workspace_names"`
+	Workspaces     types.Set    `tfsdk:"workspaces"`
 }
 
 // API model
@@ -86,28 +87,31 @@ type serviceKeyListAPIResponse []serviceKeyAPIResponse
 
 // serviceKeyModelFromCreateAPIResponse converts the create API response to the data model.
 // `workspaces` is not returned by API.
-func serviceKeyModelFromCreateAPIResponse(apiResponse serviceKeyCreateAPIResponse) serviceKeyResourceModel {
-	model := serviceKeyModelFromAPIResponse(apiResponse.serviceKeyAPIResponse)
+func serviceKeyModelFromCreateAPIResponse(ctx context.Context, apiResponse serviceKeyCreateAPIResponse) (serviceKeyResourceModel, diag.Diagnostics) {
+	model, diags := serviceKeyModelFromAPIResponse(ctx, apiResponse.serviceKeyAPIResponse)
 	model.Key = types.StringValue(apiResponse.Key)
-	return model
+	return model, diags
 }
 
 // serviceKeyModelFromAPIResponse converts the API response to the data model.
-func serviceKeyModelFromAPIResponse(apiResponse serviceKeyAPIResponse) serviceKeyResourceModel {
-	return serviceKeyResourceModel{
-		AccessScope: types.StringPointerValue(apiResponse.AccessScope),
-		CreatedAt:   types.StringPointerValue(apiResponse.CreatedAt),
-		CreatedBy:   types.StringPointerValue(apiResponse.CreatedBy),
-		Description: types.StringValue(apiResponse.Description),
-		ExpiresAt:   rfc3339StringValue(apiResponse.ExpiresAt),
-		ID:          types.StringValue(apiResponse.ID),
-		Key:         types.StringNull(),
-		LastUsedAt:  types.StringPointerValue(apiResponse.LastUsedAt),
-		OrgRoleID:   types.StringPointerValue(apiResponse.OrgRoleID),
-		RoleID:      types.StringPointerValue(apiResponse.RoleID),
-		ShortKey:    types.StringValue(apiResponse.ShortKey),
-		Workspaces:  types.SetNull(types.StringType),
+func serviceKeyModelFromAPIResponse(ctx context.Context, apiResponse serviceKeyAPIResponse) (serviceKeyResourceModel, diag.Diagnostics) {
+	workspaceNames, diags := types.SetValueFrom(ctx, types.StringType, apiResponse.WorkspaceNames)
+	model := serviceKeyResourceModel{
+		AccessScope:    types.StringPointerValue(apiResponse.AccessScope),
+		CreatedAt:      types.StringPointerValue(apiResponse.CreatedAt),
+		CreatedBy:      types.StringPointerValue(apiResponse.CreatedBy),
+		Description:    types.StringValue(apiResponse.Description),
+		ExpiresAt:      rfc3339StringValue(apiResponse.ExpiresAt),
+		ID:             types.StringValue(apiResponse.ID),
+		Key:            types.StringNull(),
+		LastUsedAt:     types.StringPointerValue(apiResponse.LastUsedAt),
+		OrgRoleID:      types.StringPointerValue(apiResponse.OrgRoleID),
+		RoleID:         types.StringPointerValue(apiResponse.RoleID),
+		ShortKey:       types.StringValue(apiResponse.ShortKey),
+		WorkspaceNames: workspaceNames,
+		Workspaces:     types.SetNull(types.StringType),
 	}
+	return model, diags
 }
 
 // rfc3339StringValue normalizes API timestamps to RFC3339 UTC (Z), so values like
@@ -242,8 +246,14 @@ func (r *serviceKeyResource) Schema(_ context.Context, _ resource.SchemaRequest,
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
-			// `workspace_names` is not included. It introduces inconsitencies when workspaces are deleted.
-			// And we dont not want that a deleted workspace should trigger a replace, or an error because of a mismatch with `workspaces`.
+			"workspace_names": schema.SetAttribute{
+				Description: "The resolved names of the workspaces the service key has access to.",
+				ElementType: types.StringType,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Set{
+					setplanmodifier.UseStateForUnknown(),
+				},
+			},
 			"workspaces": schema.SetAttribute{
 				Description: "The workspace IDs the service key has access to. Omit for organization-wide access. Editing requires replace, and is validated during import.",
 				ElementType: types.StringType,
@@ -287,7 +297,11 @@ func (r *serviceKeyResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	plan := serviceKeyModelFromCreateAPIResponse(apiResponse)
+	plan, diags := serviceKeyModelFromCreateAPIResponse(ctx, apiResponse)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	plan.Workspaces = config.Workspaces // set the workspaces from the config, since API doesn't return this value.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
@@ -310,7 +324,11 @@ func (r *serviceKeyResource) Read(ctx context.Context, req resource.ReadRequest,
 		resp.Diagnostics.AddError("Failed to read service key", err.Error())
 		return
 	}
-	newState := serviceKeyModelFromAPIResponse(*apiKey)
+	newState, diags := serviceKeyModelFromAPIResponse(ctx, *apiKey)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	newState.Key = state.Key               // set the key to the state value, since API doesn't return this value.
 	newState.Workspaces = state.Workspaces // carry over existing value for workspaces, since API doesn't return this value.
 	// but if we are doing an Import(), then there is no prior workspace state.
