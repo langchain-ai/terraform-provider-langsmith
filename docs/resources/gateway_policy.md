@@ -64,7 +64,44 @@ resource "langsmith_gateway_policy" "monthly_spend_cap" {
 
 Optional:
 
+- `rate_limit` (Attributes) rate-limit config when policy_type is rate_limit (see [below for nested schema](#nestedatt--config--rate_limit))
 - `spend_cap` (Attributes) Spend-cap config when policy_type is spend_cap. (see [below for nested schema](#nestedatt--config--spend_cap))
+
+<a id="nestedatt--config--rate_limit"></a>
+### Nested Schema for `config.rate_limit`
+
+Required:
+
+- `limits` (Attributes) The limit dimensions. At least one is required. (see [below for nested schema](#nestedatt--config--rate_limit--limits))
+- `version` (Number) The version of the policy configuration
+
+<a id="nestedatt--config--rate_limit--limits"></a>
+### Nested Schema for `config.rate_limit.limits`
+
+Optional:
+
+- `requests` (Attributes) The requests rate limit (see [below for nested schema](#nestedatt--config--rate_limit--limits--requests))
+- `tokens` (Attributes) The tokens rate limit (see [below for nested schema](#nestedatt--config--rate_limit--limits--tokens))
+
+<a id="nestedatt--config--rate_limit--limits--requests"></a>
+### Nested Schema for `config.rate_limit.limits.requests`
+
+Required:
+
+- `value` (Number) The rate limit value
+- `window` (String) The time window for the rate limit
+
+
+<a id="nestedatt--config--rate_limit--limits--tokens"></a>
+### Nested Schema for `config.rate_limit.limits.tokens`
+
+Required:
+
+- `value` (Number) The rate limit value
+- `window` (String) The time window for the rate limit
+
+
+
 
 <a id="nestedatt--config--spend_cap"></a>
 ### Nested Schema for `config.spend_cap`
