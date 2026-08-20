@@ -136,3 +136,140 @@ func TestAccGatewayPolicySpendCap(t *testing.T) {
 		},
 	})
 }
+
+const gatewayPolicyRateLimitConfig = `
+resource "langsmith_gateway_policy" "test" {
+  name        = "tf-provider-gateway-policy-rate-limit"
+  description = "created by TestAccGatewayPolicyRateLimit"
+  action      = "block"
+  # omit enabled/priority to exercise schema defaults
+
+  config = {
+    rate_limit = {
+      version = 1
+      limits = {
+        requests = {
+          window = "minute"
+          value  = 25
+        }
+      }
+    }
+  }
+
+  subject_matchers = [{
+    key   = "workspace_id"
+    value = "00000000-0000-4000-8000-000000000005"
+  }]
+}
+`
+
+const gatewayPolicyRateLimitConfigUpdated = `
+resource "langsmith_gateway_policy" "test" {
+  name        = "tf-provider-gateway-policy-rate-limit-updated"
+  description = "updated by TestAccGatewayPolicyRateLimit"
+  action      = "block"
+  enabled     = false
+
+  config = {
+    rate_limit = {
+      version = 1
+      limits = {
+        requests = {
+          window = "hour"
+          value  = 1500
+        }
+        tokens = {
+          window = "hour"
+          value  = 2000000
+        }
+      }
+    }
+  }
+
+  subject_matchers = [
+    {
+      key   = "workspace_id"
+      value = "00000000-0000-4000-8000-000000000005"
+    },
+    {
+      key   = "workspace_id"
+      value = "00000000-0000-4000-8000-000000000006"
+    },
+  ]
+}
+`
+
+// TestAccGatewayPolicyRateLimit exercises Terraform lifecycle.
+func TestAccGatewayPolicyRateLimit(t *testing.T) {
+	if os.Getenv("LANGSMITH_PROVIDER_ACC") != "1" {
+		t.Skip("set LANGSMITH_PROVIDER_ACC=1 TF_ACC=1 to run rate_limit gateway policy smoke test")
+	}
+
+	var policyID string
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+			"langsmith": providerserver.NewProtocol6WithError(New("test")()),
+		},
+		Steps: []resource.TestStep{
+			// create
+			{
+				Config: gatewayPolicyRateLimitConfig,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrWith("langsmith_gateway_policy.test", "id", func(value string) error {
+						if value == "" {
+							return fmt.Errorf("id is empty")
+						}
+						policyID = value
+						return nil
+					}),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "description", "created by TestAccGatewayPolicyRateLimit"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "policy_type", "rate_limit"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "enabled", "true"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "priority", "0"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.version", "1"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.requests.window", "minute"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.requests.value", "25"),
+					resource.TestCheckNoResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.tokens"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.#", "1"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.key", "workspace_id"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.value", "00000000-0000-4000-8000-000000000005"),
+					resource.TestCheckResourceAttrSet("langsmith_gateway_policy.test", "created_by"),
+					resource.TestCheckNoResourceAttr("langsmith_gateway_policy.test", "parent_policy_id"),
+				),
+			},
+			// import
+			{
+				ResourceName:      "langsmith_gateway_policy.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			// update
+			{
+				Config: gatewayPolicyRateLimitConfigUpdated,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrWith("langsmith_gateway_policy.test", "id", func(value string) error {
+						if value != policyID {
+							return fmt.Errorf("id = %q, want %q", value, policyID)
+						}
+						return nil
+					}),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "name", "tf-provider-gateway-policy-rate-limit-updated"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "description", "updated by TestAccGatewayPolicyRateLimit"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "enabled", "false"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.requests.window", "hour"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.requests.value", "1500"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.tokens.window", "hour"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.tokens.value", "2000000"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.#", "2"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.key", "workspace_id"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.value", "00000000-0000-4000-8000-000000000005"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.1.key", "workspace_id"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.1.value", "00000000-0000-4000-8000-000000000006"),
+				),
+			},
+			// Delete testing automatically occurs in TestCase
+			// The API client will error if delete fails, and the Delete() method will add an error to the response,
+			// failing the test.
+		},
+	})
+}
