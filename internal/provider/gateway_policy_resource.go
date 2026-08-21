@@ -670,7 +670,7 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 						},
 					},
 					gatewayPolicyTypeGuard: schema.SingleNestedAttribute{
-						Description: "gaurd config when policy_type is guard",
+						Description: "guard config when policy_type is guard",
 						Optional:    true,
 						Attributes: map[string]schema.Attribute{
 							"detect": schema.SingleNestedAttribute{

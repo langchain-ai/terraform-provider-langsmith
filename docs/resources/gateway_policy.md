@@ -126,7 +126,7 @@ resource "langsmith_gateway_policy" "pii_and_secrets_guard" {
 
 Optional:
 
-- `guard` (Attributes) gaurd config when policy_type is guard (see [below for nested schema](#nestedatt--config--guard))
+- `guard` (Attributes) guard config when policy_type is guard (see [below for nested schema](#nestedatt--config--guard))
 - `rate_limit` (Attributes) rate-limit config when policy_type is rate_limit (see [below for nested schema](#nestedatt--config--rate_limit))
 - `spend_cap` (Attributes) Spend-cap config when policy_type is spend_cap. (see [below for nested schema](#nestedatt--config--spend_cap))
 
