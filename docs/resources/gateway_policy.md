@@ -31,29 +31,41 @@ resource "langsmith_gateway_policy" "monthly_spend_cap" {
   }]
 }
 
-resource "langsmith_gateway_policy" "hourly_rate_limit" {
-  name        = "hourly-rate-limit"
-  description = "Block requests once a workspace exceeds the per-minute request limit or hourly token limit."
+resource "langsmith_gateway_policy" "burst_and_sustained_rate_limit" {
+  name        = "burst-and-sustained-rate-limit"
+  description = "Block requests once a API key exceeds request or token limits"
   action      = "block"
 
   config = {
     rate_limit = {
       version = 1
-      limits = {
-        requests = {
+      limits = [
+        { # optional: caps requests within a minute
+          metric = "requests"
           window = "minute"
           value  = 25
-        }
-        tokens = {
+        },
+        { # optional: caps request volume over an hour
+          metric = "requests"
+          window = "hour"
+          value  = 1000
+        },
+        { # optional: caps tokens within a minute
+          metric = "tokens"
+          window = "minute"
+          value  = 50000
+        },
+        { # optional: caps token volume over an hour
+          metric = "tokens"
           window = "hour"
           value  = 2000000
-        }
-      }
+        },
+      ]
     }
   }
 
   subject_matchers = [{
-    key   = "workspace_id"
+    key   = "api_key_id"
     value = "00000000-0000-0000-0000-000000000000"
   }]
 }
@@ -99,34 +111,17 @@ Optional:
 
 Required:
 
-- `limits` (Attributes) The limit dimensions. At least one is required. (see [below for nested schema](#nestedatt--config--rate_limit--limits))
+- `limits` (Attributes List) The limit dimensions. At least one is required (see [below for nested schema](#nestedatt--config--rate_limit--limits))
 - `version` (Number) The version of the policy configuration
 
 <a id="nestedatt--config--rate_limit--limits"></a>
 ### Nested Schema for `config.rate_limit.limits`
 
-Optional:
-
-- `requests` (Attributes) The requests rate limit (see [below for nested schema](#nestedatt--config--rate_limit--limits--requests))
-- `tokens` (Attributes) The tokens rate limit (see [below for nested schema](#nestedatt--config--rate_limit--limits--tokens))
-
-<a id="nestedatt--config--rate_limit--limits--requests"></a>
-### Nested Schema for `config.rate_limit.limits.requests`
-
 Required:
 
+- `metric` (String) The metric to limit
 - `value` (Number) The rate limit value
 - `window` (String) The time window for the rate limit
-
-
-<a id="nestedatt--config--rate_limit--limits--tokens"></a>
-### Nested Schema for `config.rate_limit.limits.tokens`
-
-Required:
-
-- `value` (Number) The rate limit value
-- `window` (String) The time window for the rate limit
-
 
 
 

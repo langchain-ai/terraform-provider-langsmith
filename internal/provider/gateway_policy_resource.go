@@ -36,7 +36,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/objectvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -101,18 +100,13 @@ type gatewayPolicySpendCapConfigModel struct {
 
 // gatewayPolicyRateLimitConfigModel maps a gateway policy rate limit config schema data from the terraform configuration.
 type gatewayPolicyRateLimitConfigModel struct {
-	Version types.Int64                             `tfsdk:"version"`
-	Limits  gatewayPolicyRateLimitConfigLimitsModel `tfsdk:"limits"`
+	Version types.Int64                               `tfsdk:"version"`
+	Limits  []gatewayPolicyRateLimitConfigLimitsModel `tfsdk:"limits"`
 }
 
 // gatewayPolicyRateLimitConfigLimitsModel maps a rate limit from the schema to the terraform configuration.
 type gatewayPolicyRateLimitConfigLimitsModel struct {
-	Requests *gatewayPolicyRateLimitConfigLimitsWindowValue `tfsdk:"requests"`
-	Tokens   *gatewayPolicyRateLimitConfigLimitsWindowValue `tfsdk:"tokens"`
-}
-
-// gatewayPolicyRateLimitConfigLimitsWindowValue maps a rate limit by window and value from the scham to the terraform configuration.
-type gatewayPolicyRateLimitConfigLimitsWindowValue struct {
+	Metric types.String `tfsdk:"metric"`
 	Window types.String `tfsdk:"window"`
 	Value  types.Int64  `tfsdk:"value"`
 }
@@ -171,10 +165,10 @@ type gatewayPolicyRateLimitConfigWindowValueAPI struct {
 	Window string `json:"window"`
 }
 
-const (
-	gatewayPolicyRateLimitMetricRequests string = "requests"
-	gatewayPolicyRateLimitMetricTokens   string = "tokens"
-)
+var gatewayRateLimitMetricNames = []string{
+	"requests",
+	"tokens",
+}
 
 var gatewaySpendCapWindows = []string{
 	"hourly",
@@ -268,31 +262,18 @@ func gatewayPolicyConfigModelFromAPI(policyType string, raw json.RawMessage) (*g
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return nil, fmt.Errorf("decode rate_limit config: %w", err)
 		}
-		var requests *gatewayPolicyRateLimitConfigLimitsWindowValue
-		var tokens *gatewayPolicyRateLimitConfigLimitsWindowValue
-		for _, limit := range cfg.Limits {
-			switch limit.Metric {
-			case gatewayPolicyRateLimitMetricRequests:
-				requests = &gatewayPolicyRateLimitConfigLimitsWindowValue{
-					Window: types.StringValue(limit.Window),
-					Value:  types.Int64Value(limit.Value),
-				}
-			case gatewayPolicyRateLimitMetricTokens:
-				tokens = &gatewayPolicyRateLimitConfigLimitsWindowValue{
-					Window: types.StringValue(limit.Window),
-					Value:  types.Int64Value(limit.Value),
-				}
-			default:
-				return nil, fmt.Errorf("unknown metric type: %s", limit.Metric)
-			}
+		limits := []gatewayPolicyRateLimitConfigLimitsModel{}
+		for _, cfgLimit := range cfg.Limits {
+			limits = append(limits, gatewayPolicyRateLimitConfigLimitsModel{
+				Metric: types.StringValue(cfgLimit.Metric),
+				Value:  types.Int64Value(cfgLimit.Value),
+				Window: types.StringValue(cfgLimit.Window),
+			})
 		}
 		return &gatewayPolicyConfigModel{
 			RateLimit: &gatewayPolicyRateLimitConfigModel{
 				Version: types.Int64Value(cfg.Version),
-				Limits: gatewayPolicyRateLimitConfigLimitsModel{
-					Requests: requests,
-					Tokens:   tokens,
-				},
+				Limits:  limits,
 			},
 		}, nil
 	default:
@@ -371,18 +352,11 @@ func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (string, json.RawM
 	case plan.Config.RateLimit != nil:
 		policyType = gatewayPolicyTypeRateLimit
 		limits := []gatewayPolicyRateLimitConfigWindowValueAPI{}
-		if plan.Config.RateLimit.Limits.Requests != nil {
+		for _, planLimit := range plan.Config.RateLimit.Limits {
 			limits = append(limits, gatewayPolicyRateLimitConfigWindowValueAPI{
-				Metric: gatewayPolicyRateLimitMetricRequests,
-				Value:  plan.Config.RateLimit.Limits.Requests.Value.ValueInt64(),
-				Window: plan.Config.RateLimit.Limits.Requests.Window.ValueString(),
-			})
-		}
-		if plan.Config.RateLimit.Limits.Tokens != nil {
-			limits = append(limits, gatewayPolicyRateLimitConfigWindowValueAPI{
-				Metric: gatewayPolicyRateLimitMetricTokens,
-				Value:  plan.Config.RateLimit.Limits.Tokens.Value.ValueInt64(),
-				Window: plan.Config.RateLimit.Limits.Tokens.Window.ValueString(),
+				Metric: planLimit.Metric.ValueString(),
+				Value:  planLimit.Value.ValueInt64(),
+				Window: planLimit.Window.ValueString(),
 			})
 		}
 		policyConfig = gatewayPolicyRateLimitConfigAPI{
@@ -484,50 +458,37 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 									int64validator.OneOf(gatewayRateLimitPolicyConfigVersions...),
 								},
 							},
-							"limits": schema.SingleNestedAttribute{
-								Description: "The limit dimensions. At least one is required.",
+							"limits": schema.ListNestedAttribute{
+								Description: "The limit dimensions. At least one is required",
 								Required:    true,
-								Attributes: map[string]schema.Attribute{
-									gatewayPolicyRateLimitMetricRequests: schema.SingleNestedAttribute{
-										Description: "The requests rate limit",
-										Optional:    true,
-										Attributes: map[string]schema.Attribute{
-											"window": schema.StringAttribute{
-												Description: "The time window for the rate limit",
-												Validators: []validator.String{
-													stringvalidator.OneOf(gatewayPolicyRateLimitWindows...),
-												},
-												Required: true,
-											},
-											"value": schema.Int64Attribute{
-												Description: "The rate limit value",
-												Required:    true,
+								NestedObject: schema.NestedAttributeObject{
+									Attributes: map[string]schema.Attribute{
+										"metric": schema.StringAttribute{
+											Description: "The metric to limit",
+											Required:    true,
+											Validators: []validator.String{
+												stringvalidator.OneOf(gatewayRateLimitMetricNames...),
 											},
 										},
-									},
-									gatewayPolicyRateLimitMetricTokens: schema.SingleNestedAttribute{
-										Description: "The tokens rate limit",
-										Optional:    true,
-										Attributes: map[string]schema.Attribute{
-											"window": schema.StringAttribute{
-												Description: "The time window for the rate limit",
-												Validators: []validator.String{
-													stringvalidator.OneOf(gatewayPolicyRateLimitWindows...),
-												},
-												Required: true,
+										"window": schema.StringAttribute{
+											Description: "The time window for the rate limit",
+											Required:    true,
+											Validators: []validator.String{
+												stringvalidator.OneOf(gatewayPolicyRateLimitWindows...),
 											},
-											"value": schema.Int64Attribute{
-												Description: "The rate limit value",
-												Required:    true,
+										},
+										"value": schema.Int64Attribute{
+											Description: "The rate limit value",
+											Required:    true,
+											Validators: []validator.Int64{
+												int64validator.AtLeast(0),
 											},
 										},
 									},
 								},
-								Validators: []validator.Object{
-									objectvalidator.AtLeastOneOf(
-										path.MatchRelative().AtParent().AtName(gatewayPolicyRateLimitMetricRequests),
-										path.MatchRelative().AtParent().AtName(gatewayPolicyRateLimitMetricTokens),
-									),
+								Validators: []validator.List{
+									listvalidator.SizeAtLeast(1),
+									listvalidator.UniqueValues(),
 								},
 							},
 						},

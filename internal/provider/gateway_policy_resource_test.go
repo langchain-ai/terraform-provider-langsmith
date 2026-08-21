@@ -147,12 +147,18 @@ resource "langsmith_gateway_policy" "test" {
   config = {
     rate_limit = {
       version = 1
-      limits = {
-        requests = {
+      limits = [
+        {
+          metric = "requests"
           window = "minute"
           value  = 25
-        }
-      }
+        },
+        {
+          metric = "tokens"
+          window = "hour"
+          value  = 2000000
+        },
+      ]
     }
   }
 
@@ -173,16 +179,23 @@ resource "langsmith_gateway_policy" "test" {
   config = {
     rate_limit = {
       version = 1
-      limits = {
-        requests = {
+      limits = [
+        {
+          metric = "requests"
           window = "hour"
           value  = 1500
-        }
-        tokens = {
+        },
+        {
+          metric = "tokens"
           window = "hour"
           value  = 2000000
-        }
-      }
+        },
+        {
+          metric = "requests"
+          window = "minute"
+          value  = 100
+        },
+      ]
     }
   }
 
@@ -227,9 +240,13 @@ func TestAccGatewayPolicyRateLimit(t *testing.T) {
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "enabled", "true"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "priority", "0"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.version", "1"),
-					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.requests.window", "minute"),
-					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.requests.value", "25"),
-					resource.TestCheckNoResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.tokens"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.#", "2"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.0.metric", "requests"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.0.window", "minute"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.0.value", "25"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.1.metric", "tokens"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.1.window", "hour"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.1.value", "2000000"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.#", "1"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.key", "workspace_id"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.value", "00000000-0000-4000-8000-000000000005"),
@@ -256,10 +273,16 @@ func TestAccGatewayPolicyRateLimit(t *testing.T) {
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "name", "tf-provider-gateway-policy-rate-limit-updated"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "description", "updated by TestAccGatewayPolicyRateLimit"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "enabled", "false"),
-					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.requests.window", "hour"),
-					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.requests.value", "1500"),
-					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.tokens.window", "hour"),
-					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.tokens.value", "2000000"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.#", "3"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.0.metric", "requests"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.0.window", "hour"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.0.value", "1500"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.1.metric", "tokens"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.1.window", "hour"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.1.value", "2000000"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.2.metric", "requests"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.2.window", "minute"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.rate_limit.limits.2.value", "100"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.#", "2"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.key", "workspace_id"),
 					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.value", "00000000-0000-4000-8000-000000000005"),
