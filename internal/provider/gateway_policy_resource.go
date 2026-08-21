@@ -34,6 +34,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
@@ -79,17 +81,20 @@ var gatewayPolicyActions = []string{
 const (
 	gatewayPolicyTypeSpendCap  = "spend_cap"
 	gatewayPolicyTypeRateLimit = "rate_limit"
+	gatewayPolicyTypeGuard     = "guard"
 )
 
 var gatewayPolicyTypes = []string{
 	gatewayPolicyTypeSpendCap,
 	gatewayPolicyTypeRateLimit,
+	gatewayPolicyTypeGuard,
 }
 
 // gatewayPolicyConfigModel maps gateway policy config schema data for the terraform configuration.
 type gatewayPolicyConfigModel struct {
 	SpendCap  *gatewayPolicySpendCapConfigModel  `tfsdk:"spend_cap"`
 	RateLimit *gatewayPolicyRateLimitConfigModel `tfsdk:"rate_limit"`
+	Guard     *gatewayPolicyGuardConfigModel     `tfsdk:"guard"`
 }
 
 // gatewayPolicySpendCapConfigModel maps gateway policy spend cap config schema data for the terraform configuration.
@@ -109,6 +114,39 @@ type gatewayPolicyRateLimitConfigLimitsModel struct {
 	Metric types.String `tfsdk:"metric"`
 	Window types.String `tfsdk:"window"`
 	Value  types.Int64  `tfsdk:"value"`
+}
+
+// gatewayPolicyGuardConfigModel maps a gateway policy guard config schema data for the terraform configuration.
+type gatewayPolicyGuardConfigModel struct {
+	Version        types.Int64                    `tfsdk:"version"`
+	Detect         *gatewayPolicyGuardDetectModel `tfsdk:"detect"`
+	Trace          *gatewayPolicyGuardTraceModel  `tfsdk:"trace"`
+	TimeoutSeconds types.Float64                  `tfsdk:"timeout_seconds"`
+	TimeoutAction  types.String                   `tfsdk:"timeout_action"`
+}
+
+// gatewayPolicyGuardDetectModel maps a guard policy's detect config from the terraform configuration.
+type gatewayPolicyGuardDetectModel struct {
+	PII     gatewayPolicyGuardPIIModel `tfsdk:"pii"`
+	Secrets types.Bool                 `tfsdk:"secrets"`
+}
+
+// gatewayPolicyGuardPIIModel maps a guard policy's detect.pii config from the terraform configuration.
+// Exactly one of Enabled or Rules is set: the API represents this as either a JSON bool
+// (enable all rules) or an object listing specific rule IDs.
+type gatewayPolicyGuardPIIModel struct {
+	Enabled types.Bool                     `tfsdk:"enabled"`
+	Rules   []gatewayPolicyGuardRulesModel `tfsdk:"rules"`
+}
+
+// gatewayPolicyGuardRulesModel maps a guard policy's detect.pii.rules config from the terraform configuration.
+type gatewayPolicyGuardRulesModel struct {
+	ID types.String `tfsdk:"id"`
+}
+
+// gatewayPolicyGuardTraceModel maps a guard policy's trace config from the terraform configuration.
+type gatewayPolicyGuardTraceModel struct {
+	CaptureContent types.Bool `tfsdk:"capture_content"`
 }
 
 // gatewayPolicySubjectMatcherModel maps gateway policy subject matcher schema data for the terraform configuration.
@@ -184,6 +222,59 @@ var gatewayPolicyRateLimitWindows = []string{
 
 var gatewayRateLimitPolicyConfigVersions = []int64{
 	1,
+}
+
+var gatewayGuardPolicyConfigVersions = []int64{
+	1,
+}
+
+// gatewayPolicyGuardConfigAPI is the guard config from the API.
+type gatewayPolicyGuardConfigAPI struct {
+	Version        int64                        `json:"version"`
+	Detect         *gatewayPolicyGuardDetectAPI `json:"detect,omitempty"`
+	Trace          *gatewayPolicyGuardTraceAPI  `json:"trace,omitempty"`
+	TimeoutSeconds *float64                     `json:"timeout_seconds,omitempty"`
+	TimeoutAction  *string                      `json:"timeout_action,omitempty"`
+}
+
+// gatewayPolicyGuardDetectAPI is the guard config's detect block from the API.
+type gatewayPolicyGuardDetectAPI struct {
+	// PII is either a JSON bool (enable/disable all rules) or an object
+	// listing specific rule IDs: {"rules": [{"id": "..."}]}.
+	PII     json.RawMessage `json:"pii"`
+	Secrets bool            `json:"secrets"`
+}
+
+// gatewayPolicyGuardTraceAPI is the guard config's trace block from the API.
+type gatewayPolicyGuardTraceAPI struct {
+	CaptureContent bool `json:"capture_content"`
+}
+
+// gatewayPolicyGuardPIIBoolAPI is the giard config's pii block for a bool from the API.
+type gatewayPolicyGuardPIIBoolAPI bool
+
+// gatewayPolicyGuardPIIRulesAPI is the guard config's pii block for a list of rules from the API.
+type gatewayPolicyGuardPIIRulesAPI struct {
+	Rules []gatewayPolicyGuardPIIRuleAPI `json:"rules"`
+}
+
+// gatewayPolicyGuardPIIRuleAPI is one entry in a guard policy's detect.pii.rules list.
+type gatewayPolicyGuardPIIRuleAPI struct {
+	ID string `json:"id"`
+}
+
+var gatewayPolicyGuardTimeoutActions = []string{
+	"allow",
+	"block",
+}
+
+var gatewayPolicyGuardPIIRuleIDs = []string{
+	"email-address",
+	"location",
+	"nrp",
+	"person",
+	"us-phone-number",
+	"us-ssn",
 }
 
 // gatewayPolicyGetAPI maps a GatewayPolicyRecord from the admin API.
@@ -276,6 +367,50 @@ func gatewayPolicyConfigModelFromAPI(policyType string, raw json.RawMessage) (*g
 				Limits:  limits,
 			},
 		}, nil
+	case gatewayPolicyTypeGuard:
+		var cfg gatewayPolicyGuardConfigAPI
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return nil, fmt.Errorf("decode guard config: %w", err)
+		}
+		var detect *gatewayPolicyGuardDetectModel
+		if cfg.Detect != nil {
+			var enabled *gatewayPolicyGuardPIIBoolAPI
+			modelEnabled := types.BoolNull()
+			var rules gatewayPolicyGuardPIIRulesAPI
+			var modelRules []gatewayPolicyGuardRulesModel
+			switch {
+			case json.Unmarshal(cfg.Detect.PII, &enabled) == nil && enabled != nil:
+				modelEnabled = types.BoolValue(bool(*enabled))
+			case json.Unmarshal(cfg.Detect.PII, &rules) == nil && rules.Rules != nil:
+				for _, rule := range rules.Rules {
+					modelRules = append(modelRules, gatewayPolicyGuardRulesModel{
+						ID: types.StringValue(rule.ID),
+					})
+				}
+			}
+			detect = &gatewayPolicyGuardDetectModel{
+				PII: gatewayPolicyGuardPIIModel{
+					Enabled: modelEnabled,
+					Rules:   modelRules,
+				},
+				Secrets: types.BoolValue(cfg.Detect.Secrets),
+			}
+		}
+		var trace *gatewayPolicyGuardTraceModel
+		if cfg.Trace != nil {
+			trace = &gatewayPolicyGuardTraceModel{
+				CaptureContent: types.BoolValue(cfg.Trace.CaptureContent),
+			}
+		}
+		return &gatewayPolicyConfigModel{
+			Guard: &gatewayPolicyGuardConfigModel{
+				Detect:         detect,
+				TimeoutAction:  types.StringPointerValue(cfg.TimeoutAction),
+				TimeoutSeconds: types.Float64PointerValue(cfg.TimeoutSeconds),
+				Trace:          trace,
+				Version:        types.Int64Value(cfg.Version),
+			},
+		}, nil
 	default:
 		// The API serves policy types this provider cannot represent (guard,
 		// route_config, rate_limit, and the default_* variants). Reject them
@@ -363,6 +498,47 @@ func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (string, json.RawM
 			Version: plan.Config.RateLimit.Version.ValueInt64(),
 			Limits:  limits,
 		}
+	case plan.Config.Guard != nil:
+		policyType = gatewayPolicyTypeGuard
+		var detect *gatewayPolicyGuardDetectAPI
+		if plan.Config.Guard.Detect != nil {
+			var pii any
+			switch {
+			case !plan.Config.Guard.Detect.PII.Enabled.IsNull():
+				pii = gatewayPolicyGuardPIIBoolAPI(plan.Config.Guard.Detect.PII.Enabled.ValueBool())
+			case plan.Config.Guard.Detect.PII.Rules != nil:
+				rules := []gatewayPolicyGuardPIIRuleAPI{}
+				for _, rule := range plan.Config.Guard.Detect.PII.Rules {
+					rules = append(rules, gatewayPolicyGuardPIIRuleAPI{
+						ID: rule.ID.ValueString(),
+					})
+				}
+				pii = gatewayPolicyGuardPIIRulesAPI{
+					Rules: rules,
+				}
+			}
+			piiJSON, err := json.Marshal(pii)
+			if err != nil {
+				return "", nil, fmt.Errorf("marshal pii config: %w", err)
+			}
+			detect = &gatewayPolicyGuardDetectAPI{
+				PII:     piiJSON,
+				Secrets: plan.Config.Guard.Detect.Secrets.ValueBool(),
+			}
+		}
+		var trace *gatewayPolicyGuardTraceAPI
+		if plan.Config.Guard.Trace != nil {
+			trace = &gatewayPolicyGuardTraceAPI{
+				CaptureContent: plan.Config.Guard.Trace.CaptureContent.ValueBool(),
+			}
+		}
+		policyConfig = gatewayPolicyGuardConfigAPI{
+			Detect:         detect,
+			TimeoutAction:  plan.Config.Guard.TimeoutAction.ValueStringPointer(),
+			TimeoutSeconds: plan.Config.Guard.TimeoutSeconds.ValueFloat64Pointer(),
+			Trace:          trace,
+			Version:        plan.Config.Guard.Version.ValueInt64(),
+		}
 	default:
 		return "", nil, fmt.Errorf("invalid policy config")
 	}
@@ -447,7 +623,7 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 							},
 						},
 					},
-					"rate_limit": schema.SingleNestedAttribute{
+					gatewayPolicyTypeRateLimit: schema.SingleNestedAttribute{
 						Description: "rate-limit config when policy_type is rate_limit",
 						Optional:    true,
 						Attributes: map[string]schema.Attribute{
@@ -489,6 +665,86 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 								Validators: []validator.List{
 									listvalidator.SizeAtLeast(1),
 									listvalidator.UniqueValues(),
+								},
+							},
+						},
+					},
+					gatewayPolicyTypeGuard: schema.SingleNestedAttribute{
+						Description: "gaurd config when policy_type is guard",
+						Optional:    true,
+						Attributes: map[string]schema.Attribute{
+							"detect": schema.SingleNestedAttribute{
+								Description: "The detection configuration.",
+								Optional:    true,
+								Attributes: map[string]schema.Attribute{
+									"pii": schema.SingleNestedAttribute{
+										Description: "The PII scan configuration. Use either `enabled` or `rules` to enable specific rules",
+										Required:    true,
+										Attributes: map[string]schema.Attribute{
+											"enabled": schema.BoolAttribute{
+												Description: "Whether to enable all guard scanning rules",
+												Optional:    true,
+												Validators: []validator.Bool{
+													boolvalidator.ExactlyOneOf(
+														path.MatchRelative().AtParent().AtName("rules"),
+													),
+												},
+											},
+											"rules": schema.ListNestedAttribute{
+												Description: "The list of rules to enable",
+												Optional:    true,
+												Validators: []validator.List{
+													listvalidator.UniqueValues(),
+												},
+												NestedObject: schema.NestedAttributeObject{
+													Attributes: map[string]schema.Attribute{
+														"id": schema.StringAttribute{
+															Description: "The ID of the rule",
+															Required:    true,
+															Validators: []validator.String{
+																stringvalidator.OneOf(gatewayPolicyGuardPIIRuleIDs...),
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+									"secrets": schema.BoolAttribute{
+										Required:    true,
+										Description: "Whether to scan for secrets",
+									},
+								},
+							},
+							"timeout_action": schema.StringAttribute{
+								Description: "The Action when the timeout is reached. By default, the gateway will fail-open",
+								Optional:    true,
+								Validators: []validator.String{
+									stringvalidator.OneOf(gatewayPolicyGuardTimeoutActions...),
+								},
+							},
+							"timeout_seconds": schema.Float64Attribute{
+								Description: "The duration in seconds before timing out guard scans.",
+								Optional:    true,
+								Validators: []validator.Float64{
+									float64validator.Between(0.1, 30),
+								},
+							},
+							"trace": schema.SingleNestedAttribute{
+								Description: "The configuration for what is captured in the gateway's traces",
+								Optional:    true,
+								Attributes: map[string]schema.Attribute{
+									"capture_content": schema.BoolAttribute{
+										Description: "Whether to record model inputs and outputs ontraces. Metadata is still recorded on traces.",
+										Required:    true,
+									},
+								},
+							},
+							"version": schema.Int64Attribute{
+								Description: "The version of the policy configuration",
+								Required:    true,
+								Validators: []validator.Int64{
+									int64validator.OneOf(gatewayGuardPolicyConfigVersions...),
 								},
 							},
 						},

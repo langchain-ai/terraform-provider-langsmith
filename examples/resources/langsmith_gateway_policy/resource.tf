@@ -54,3 +54,26 @@ resource "langsmith_gateway_policy" "burst_and_sustained_rate_limit" {
     value = "00000000-0000-0000-0000-000000000000"
   }]
 }
+
+resource "langsmith_gateway_policy" "pii_and_secrets_guard" {
+  name        = "pii-and-secrets-guard"
+  description = "Block requests that contain detected PII or secrets."
+  action      = "block"
+
+  config = {
+    guard = {
+      version = 1
+      detect = {
+        pii     = { enabled = true }
+        secrets = true
+      }
+      timeout_seconds = 3
+      timeout_action  = "allow"
+    }
+  }
+
+  subject_matchers = [{
+    key   = "workspace_id"
+    value = "00000000-0000-0000-0000-000000000000"
+  }]
+}

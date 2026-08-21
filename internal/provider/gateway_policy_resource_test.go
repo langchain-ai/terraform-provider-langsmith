@@ -296,3 +296,145 @@ func TestAccGatewayPolicyRateLimit(t *testing.T) {
 		},
 	})
 }
+
+const gatewayPolicyGuardConfig = `
+resource "langsmith_gateway_policy" "test" {
+  name        = "tf-provider-gateway-policy-guard"
+  description = "created by TestAccGatewayPolicyGuard"
+  action      = "block"
+  # omit enabled/priority to exercise schema defaults
+
+  config = {
+    guard = {
+      version = 1
+      detect = {
+        pii     = { enabled = true }
+        secrets = true
+      }
+      timeout_seconds = 3
+      timeout_action  = "allow"
+    }
+  }
+
+  subject_matchers = [{
+    key   = "workspace_id"
+    value = "00000000-0000-4000-8000-00000000000a"
+  }]
+}
+`
+
+const gatewayPolicyGuardConfigUpdated = `
+resource "langsmith_gateway_policy" "test" {
+  name        = "tf-provider-gateway-policy-guard-updated"
+  description = "updated by TestAccGatewayPolicyGuard"
+  action      = "block"
+  enabled     = false
+
+  config = {
+    guard = {
+      version = 1
+      detect = {
+        pii     = { rules = [{ id = "email-address" }, { id = "us-ssn" }] }
+        secrets = false
+      }
+      trace = {
+        capture_content = false
+      }
+      timeout_action = "block"
+    }
+  }
+
+  subject_matchers = [
+    {
+      key   = "workspace_id"
+      value = "00000000-0000-4000-8000-00000000000a"
+    },
+    {
+      key   = "workspace_id"
+      value = "00000000-0000-4000-8000-00000000000b"
+    },
+  ]
+}
+`
+
+// TestAccGatewayPolicyGuard exercises Terraform lifecycle.
+func TestAccGatewayPolicyGuard(t *testing.T) {
+	if os.Getenv("LANGSMITH_PROVIDER_ACC") != "1" {
+		t.Skip("set LANGSMITH_PROVIDER_ACC=1 TF_ACC=1 to run guard gateway policy smoke test")
+	}
+
+	var policyID string
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+			"langsmith": providerserver.NewProtocol6WithError(New("test")()),
+		},
+		Steps: []resource.TestStep{
+			// create
+			{
+				Config: gatewayPolicyGuardConfig,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrWith("langsmith_gateway_policy.test", "id", func(value string) error {
+						if value == "" {
+							return fmt.Errorf("id is empty")
+						}
+						policyID = value
+						return nil
+					}),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "description", "created by TestAccGatewayPolicyGuard"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "policy_type", "guard"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "enabled", "true"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "priority", "0"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.guard.version", "1"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.guard.detect.pii.enabled", "true"),
+					resource.TestCheckNoResourceAttr("langsmith_gateway_policy.test", "config.guard.detect.pii.rules"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.guard.detect.secrets", "true"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.guard.timeout_seconds", "3"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.guard.timeout_action", "allow"),
+					resource.TestCheckNoResourceAttr("langsmith_gateway_policy.test", "config.guard.trace"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.#", "1"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.key", "workspace_id"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.value", "00000000-0000-4000-8000-00000000000a"),
+					resource.TestCheckResourceAttrSet("langsmith_gateway_policy.test", "created_by"),
+					resource.TestCheckNoResourceAttr("langsmith_gateway_policy.test", "parent_policy_id"),
+				),
+			},
+			// import
+			{
+				ResourceName:      "langsmith_gateway_policy.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			// update
+			{
+				Config: gatewayPolicyGuardConfigUpdated,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrWith("langsmith_gateway_policy.test", "id", func(value string) error {
+						if value != policyID {
+							return fmt.Errorf("id = %q, want %q", value, policyID)
+						}
+						return nil
+					}),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "name", "tf-provider-gateway-policy-guard-updated"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "description", "updated by TestAccGatewayPolicyGuard"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "enabled", "false"),
+					resource.TestCheckNoResourceAttr("langsmith_gateway_policy.test", "config.guard.detect.pii.enabled"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.guard.detect.pii.rules.#", "2"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.guard.detect.pii.rules.0.id", "email-address"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.guard.detect.pii.rules.1.id", "us-ssn"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.guard.detect.secrets", "false"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.guard.trace.capture_content", "false"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.guard.timeout_action", "block"),
+					resource.TestCheckNoResourceAttr("langsmith_gateway_policy.test", "config.guard.timeout_seconds"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.#", "2"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.key", "workspace_id"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.value", "00000000-0000-4000-8000-00000000000a"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.1.key", "workspace_id"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.1.value", "00000000-0000-4000-8000-00000000000b"),
+				),
+			},
+			// Delete testing automatically occurs in TestCase
+			// The API client will error if delete fails, and the Delete() method will add an error to the response,
+			// failing the test.
+		},
+	})
+}
