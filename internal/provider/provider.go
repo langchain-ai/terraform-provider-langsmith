@@ -141,6 +141,7 @@ func (p *LangSmithProvider) Resources(ctx context.Context) []func() resource.Res
 		NewWorkspaceRoleResource,
 		NewWorkspaceResource,
 		NewGatewayPolicyResource,
+		NewModelConfigurationResource,
 	}
 }
 
