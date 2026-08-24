@@ -79,22 +79,28 @@ var gatewayPolicyActions = []string{
 }
 
 const (
-	gatewayPolicyTypeSpendCap  = "spend_cap"
-	gatewayPolicyTypeRateLimit = "rate_limit"
-	gatewayPolicyTypeGuard     = "guard"
+	gatewayPolicyTypeSpendCap         = "spend_cap"
+	gatewayPolicyTypeDefaultSpendCap  = "default_spend_cap"
+	gatewayPolicyTypeRateLimit        = "rate_limit"
+	gatewayPolicyTypeDefaultRateLimit = "default_rate_limit"
+	gatewayPolicyTypeGuard            = "guard"
 )
 
 var gatewayPolicyTypes = []string{
 	gatewayPolicyTypeSpendCap,
+	gatewayPolicyTypeDefaultSpendCap,
 	gatewayPolicyTypeRateLimit,
+	gatewayPolicyTypeDefaultRateLimit,
 	gatewayPolicyTypeGuard,
 }
 
 // gatewayPolicyConfigModel maps gateway policy config schema data for the terraform configuration.
 type gatewayPolicyConfigModel struct {
-	SpendCap  *gatewayPolicySpendCapConfigModel  `tfsdk:"spend_cap"`
-	RateLimit *gatewayPolicyRateLimitConfigModel `tfsdk:"rate_limit"`
-	Guard     *gatewayPolicyGuardConfigModel     `tfsdk:"guard"`
+	SpendCap         *gatewayPolicySpendCapConfigModel  `tfsdk:"spend_cap"`
+	DefaultSpendCap  *gatewayPolicySpendCapConfigModel  `tfsdk:"default_spend_cap"`
+	RateLimit        *gatewayPolicyRateLimitConfigModel `tfsdk:"rate_limit"`
+	DefaultRateLimit *gatewayPolicyRateLimitConfigModel `tfsdk:"default_rate_limit"`
+	Guard            *gatewayPolicyGuardConfigModel     `tfsdk:"guard"`
 }
 
 // gatewayPolicySpendCapConfigModel maps gateway policy spend cap config schema data for the terraform configuration.
@@ -337,18 +343,24 @@ func gatewayPolicyModelFromAPI(api gatewayPolicyGetAPI) (gatewayPolicyModel, err
 // gatewayPolicyConfigModelFromAPI maps the API policy's `config` to `config` in the terraform configuration.
 func gatewayPolicyConfigModelFromAPI(policyType string, raw json.RawMessage) (*gatewayPolicyConfigModel, error) {
 	switch policyType {
-	case gatewayPolicyTypeSpendCap:
+	case gatewayPolicyTypeSpendCap, gatewayPolicyTypeDefaultSpendCap:
 		var cfg gatewayPolicySpendCapConfigAPI
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return nil, fmt.Errorf("decode spend_cap config: %w", err)
 		}
+		config := &gatewayPolicySpendCapConfigModel{
+			Window:   types.StringValue(cfg.Window),
+			LimitUSD: types.Float64Value(cfg.LimitUSD),
+		}
+		if policyType == gatewayPolicyTypeDefaultSpendCap {
+			return &gatewayPolicyConfigModel{
+				DefaultSpendCap: config,
+			}, nil
+		}
 		return &gatewayPolicyConfigModel{
-			SpendCap: &gatewayPolicySpendCapConfigModel{
-				Window:   types.StringValue(cfg.Window),
-				LimitUSD: types.Float64Value(cfg.LimitUSD),
-			},
+			SpendCap: config,
 		}, nil
-	case gatewayPolicyTypeRateLimit:
+	case gatewayPolicyTypeRateLimit, gatewayPolicyTypeDefaultRateLimit:
 		var cfg gatewayPolicyRateLimitConfigAPI
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return nil, fmt.Errorf("decode rate_limit config: %w", err)
@@ -361,11 +373,17 @@ func gatewayPolicyConfigModelFromAPI(policyType string, raw json.RawMessage) (*g
 				Window: types.StringValue(cfgLimit.Window),
 			})
 		}
+		config := &gatewayPolicyRateLimitConfigModel{
+			Version: types.Int64Value(cfg.Version),
+			Limits:  limits,
+		}
+		if policyType == gatewayPolicyTypeDefaultRateLimit {
+			return &gatewayPolicyConfigModel{
+				DefaultRateLimit: config,
+			}, nil
+		}
 		return &gatewayPolicyConfigModel{
-			RateLimit: &gatewayPolicyRateLimitConfigModel{
-				Version: types.Int64Value(cfg.Version),
-				Limits:  limits,
-			},
+			RateLimit: config,
 		}, nil
 	case gatewayPolicyTypeGuard:
 		var cfg gatewayPolicyGuardConfigAPI
@@ -484,6 +502,12 @@ func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (string, json.RawM
 			Window:   plan.Config.SpendCap.Window.ValueString(),
 			LimitUSD: plan.Config.SpendCap.LimitUSD.ValueFloat64(),
 		}
+	case plan.Config.DefaultSpendCap != nil:
+		policyType = gatewayPolicyTypeDefaultSpendCap
+		policyConfig = gatewayPolicySpendCapConfigAPI{
+			Window:   plan.Config.DefaultSpendCap.Window.ValueString(),
+			LimitUSD: plan.Config.DefaultSpendCap.LimitUSD.ValueFloat64(),
+		}
 	case plan.Config.RateLimit != nil:
 		policyType = gatewayPolicyTypeRateLimit
 		limits := []gatewayPolicyRateLimitConfigWindowValueAPI{}
@@ -496,6 +520,20 @@ func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (string, json.RawM
 		}
 		policyConfig = gatewayPolicyRateLimitConfigAPI{
 			Version: plan.Config.RateLimit.Version.ValueInt64(),
+			Limits:  limits,
+		}
+	case plan.Config.DefaultRateLimit != nil:
+		policyType = gatewayPolicyTypeDefaultRateLimit
+		limits := []gatewayPolicyRateLimitConfigWindowValueAPI{}
+		for _, planLimit := range plan.Config.DefaultRateLimit.Limits {
+			limits = append(limits, gatewayPolicyRateLimitConfigWindowValueAPI{
+				Metric: planLimit.Metric.ValueString(),
+				Value:  planLimit.Value.ValueInt64(),
+				Window: planLimit.Window.ValueString(),
+			})
+		}
+		policyConfig = gatewayPolicyRateLimitConfigAPI{
+			Version: plan.Config.DefaultRateLimit.Version.ValueInt64(),
 			Limits:  limits,
 		}
 	case plan.Config.Guard != nil:
@@ -606,69 +644,10 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 				Description: "The config of the gateway policy. Exactly one typed child is set.",
 				Required:    true,
 				Attributes: map[string]schema.Attribute{
-					gatewayPolicyTypeSpendCap: schema.SingleNestedAttribute{
-						Description: "Spend-cap config when policy_type is spend_cap.",
-						Optional:    true,
-						Attributes: map[string]schema.Attribute{
-							"window": schema.StringAttribute{
-								Description: "The time window for the spend cap",
-								Validators: []validator.String{
-									stringvalidator.OneOf(gatewaySpendCapWindows...),
-								},
-								Required: true,
-							},
-							"limit_usd": schema.Float64Attribute{
-								Description: "The spend cap amount in USD",
-								Required:    true,
-							},
-						},
-					},
-					gatewayPolicyTypeRateLimit: schema.SingleNestedAttribute{
-						Description: "rate-limit config when policy_type is rate_limit",
-						Optional:    true,
-						Attributes: map[string]schema.Attribute{
-							"version": schema.Int64Attribute{
-								Description: "The version of the policy configuration",
-								Required:    true,
-								Validators: []validator.Int64{
-									int64validator.OneOf(gatewayRateLimitPolicyConfigVersions...),
-								},
-							},
-							"limits": schema.ListNestedAttribute{
-								Description: "The limit dimensions. At least one is required",
-								Required:    true,
-								NestedObject: schema.NestedAttributeObject{
-									Attributes: map[string]schema.Attribute{
-										"metric": schema.StringAttribute{
-											Description: "The metric to limit",
-											Required:    true,
-											Validators: []validator.String{
-												stringvalidator.OneOf(gatewayRateLimitMetricNames...),
-											},
-										},
-										"window": schema.StringAttribute{
-											Description: "The time window for the rate limit",
-											Required:    true,
-											Validators: []validator.String{
-												stringvalidator.OneOf(gatewayPolicyRateLimitWindows...),
-											},
-										},
-										"value": schema.Int64Attribute{
-											Description: "The rate limit value",
-											Required:    true,
-											Validators: []validator.Int64{
-												int64validator.AtLeast(0),
-											},
-										},
-									},
-								},
-								Validators: []validator.List{
-									listvalidator.SizeAtLeast(1),
-									listvalidator.UniqueValues(),
-								},
-							},
-						},
-					},
+					gatewayPolicyTypeSpendCap:         gatewayPolicySpendCapConfigSchema,
+					gatewayPolicyTypeDefaultSpendCap:  gatewayPolicySpendCapConfigSchema,
+					gatewayPolicyTypeRateLimit:        gatewayPolicyRateLimitConfigSchema,
+					gatewayPolicyTypeDefaultRateLimit: gatewayPolicyRateLimitConfigSchema,
 					gatewayPolicyTypeGuard: schema.SingleNestedAttribute{
 						Description: "guard config when policy_type is guard",
 						Optional:    true,
@@ -842,7 +821,7 @@ For a custom X-Gateway-* header, drop the "X-Gateway-" prefix and lowercase the 
 							Required: true,
 						},
 						"value": schema.StringAttribute{
-							MarkdownDescription: `Subject id for that kind (e.g. workspace UUID), or the custom header value. Matched exactly (case-sensitive) against the request value.`,
+							MarkdownDescription: `Subject id for that kind (e.g. workspace UUID), or the custom header value. Matched exactly (case-sensitive) against the request value. Must be empty string "" for default_* policy types`,
 							Required:            true,
 						},
 					},
@@ -856,13 +835,81 @@ For a custom X-Gateway-* header, drop the "X-Gateway-" prefix and lowercase the 
 	}
 }
 
-func (r *gatewayPolicyResource) ConfigValidators(ctx context.Context) []resource.ConfigValidator {
-	expressions := []path.Expression{}
-	for _, policyType := range gatewayPolicyTypes {
-		expressions = append(expressions, path.MatchRoot("config").AtName(policyType))
+var (
+	gatewayPolicySpendCapConfigSchema = schema.SingleNestedAttribute{
+		Description: "Spend-cap config when policy_type is spend_cap or default_spend_cap.",
+		Optional:    true,
+		Attributes: map[string]schema.Attribute{
+			"window": schema.StringAttribute{
+				Description: "The time window for the spend cap",
+				Validators: []validator.String{
+					stringvalidator.OneOf(gatewaySpendCapWindows...),
+				},
+				Required: true,
+			},
+			"limit_usd": schema.Float64Attribute{
+				Description: "The spend cap amount in USD",
+				Required:    true,
+			},
+		},
 	}
+	gatewayPolicyRateLimitConfigSchema = schema.SingleNestedAttribute{
+		Description: "rate-limit config when policy_type is rate_limit or default_rate_limit.",
+		Optional:    true,
+		Attributes: map[string]schema.Attribute{
+			"version": schema.Int64Attribute{
+				Description: "The version of the policy configuration",
+				Required:    true,
+				Validators: []validator.Int64{
+					int64validator.OneOf(gatewayRateLimitPolicyConfigVersions...),
+				},
+			},
+			"limits": schema.ListNestedAttribute{
+				Description: "The limit dimensions. At least one is required",
+				Required:    true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"metric": schema.StringAttribute{
+							Description: "The metric to limit",
+							Required:    true,
+							Validators: []validator.String{
+								stringvalidator.OneOf(gatewayRateLimitMetricNames...),
+							},
+						},
+						"window": schema.StringAttribute{
+							Description: "The time window for the rate limit",
+							Required:    true,
+							Validators: []validator.String{
+								stringvalidator.OneOf(gatewayPolicyRateLimitWindows...),
+							},
+						},
+						"value": schema.Int64Attribute{
+							Description: "The rate limit value",
+							Required:    true,
+							Validators: []validator.Int64{
+								int64validator.AtLeast(0),
+							},
+						},
+					},
+				},
+				Validators: []validator.List{
+					listvalidator.SizeAtLeast(1),
+					listvalidator.UniqueValues(),
+				},
+			},
+		},
+	}
+)
+
+func (r *gatewayPolicyResource) ConfigValidators(ctx context.Context) []resource.ConfigValidator {
+	policyTypeExpressions := []path.Expression{}
+	for _, policyType := range gatewayPolicyTypes {
+		policyTypeExpressions = append(policyTypeExpressions, path.MatchRoot("config").AtName(policyType))
+	}
+	policyTypeValidator := resourcevalidator.ExactlyOneOf(policyTypeExpressions...)
+
 	return []resource.ConfigValidator{
-		resourcevalidator.ExactlyOneOf(expressions...),
+		policyTypeValidator,
 	}
 }
 
