@@ -109,21 +109,11 @@ type gatewayPolicySpendCapConfigModel struct {
 	Window   types.String  `tfsdk:"window"`
 }
 
-// // gatewayPolicySpendDefaultCapConfigModel maps gateway policy default spend cap config schema data for the terraform configuration.
-// type gatewayPolicyDefaultSpendCapConfigModel struct {
-// 	gatewayPolicySpendCapConfigModel
-// }
-
 // gatewayPolicyRateLimitConfigModel maps a gateway policy rate limit config schema data from the terraform configuration.
 type gatewayPolicyRateLimitConfigModel struct {
 	Version types.Int64                               `tfsdk:"version"`
 	Limits  []gatewayPolicyRateLimitConfigLimitsModel `tfsdk:"limits"`
 }
-
-// // gatewayPolicyDefaultRateLimitConfigModel maps a gateway policy default rate limit config schema data from the terraform configuration.
-// type gatewayPolicyDefaultRateLimitConfigModel struct {
-// 	gatewayPolicyRateLimitConfigModel
-// }
 
 // gatewayPolicyRateLimitConfigLimitsModel maps a rate limit from the schema to the terraform configuration.
 type gatewayPolicyRateLimitConfigLimitsModel struct {
