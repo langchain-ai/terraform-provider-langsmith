@@ -126,9 +126,39 @@ resource "langsmith_gateway_policy" "pii_and_secrets_guard" {
 
 Optional:
 
+- `default_rate_limit` (Attributes) rate-limit config when policy_type is rate_limit or default_rate_limit. (see [below for nested schema](#nestedatt--config--default_rate_limit))
+- `default_spend_cap` (Attributes) Spend-cap config when policy_type is spend_cap or default_spend_cap. (see [below for nested schema](#nestedatt--config--default_spend_cap))
 - `guard` (Attributes) guard config when policy_type is guard (see [below for nested schema](#nestedatt--config--guard))
-- `rate_limit` (Attributes) rate-limit config when policy_type is rate_limit (see [below for nested schema](#nestedatt--config--rate_limit))
-- `spend_cap` (Attributes) Spend-cap config when policy_type is spend_cap. (see [below for nested schema](#nestedatt--config--spend_cap))
+- `rate_limit` (Attributes) rate-limit config when policy_type is rate_limit or default_rate_limit. (see [below for nested schema](#nestedatt--config--rate_limit))
+- `spend_cap` (Attributes) Spend-cap config when policy_type is spend_cap or default_spend_cap. (see [below for nested schema](#nestedatt--config--spend_cap))
+
+<a id="nestedatt--config--default_rate_limit"></a>
+### Nested Schema for `config.default_rate_limit`
+
+Required:
+
+- `limits` (Attributes List) The limit dimensions. At least one is required (see [below for nested schema](#nestedatt--config--default_rate_limit--limits))
+- `version` (Number) The version of the policy configuration
+
+<a id="nestedatt--config--default_rate_limit--limits"></a>
+### Nested Schema for `config.default_rate_limit.limits`
+
+Required:
+
+- `metric` (String) The metric to limit
+- `value` (Number) The rate limit value
+- `window` (String) The time window for the rate limit
+
+
+
+<a id="nestedatt--config--default_spend_cap"></a>
+### Nested Schema for `config.default_spend_cap`
+
+Required:
+
+- `limit_usd` (Number) The spend cap amount in USD
+- `window` (String) The time window for the spend cap
+
 
 <a id="nestedatt--config--guard"></a>
 ### Nested Schema for `config.guard`
@@ -216,4 +246,4 @@ Required:
 - `key` (String) Subject kind. Built-in: organization_id, workspace_id, user_id, or api_key_id.
 
 For a custom X-Gateway-* header, drop the "X-Gateway-" prefix and lowercase the rest, replacing any non [a-z0-9_] char with _ (e.g. header "X-Gateway-My-Internal-Team" matches as key "my_internal_team").
-- `value` (String) Subject id for that kind (e.g. workspace UUID), or the custom header value. Matched exactly (case-sensitive) against the request value.
+- `value` (String) Subject id for that kind (e.g. workspace UUID), or the custom header value. Matched exactly (case-sensitive) against the request value. Must be empty string "" for default_* policy types
