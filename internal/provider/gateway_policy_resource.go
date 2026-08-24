@@ -678,12 +678,13 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 								Optional:    true,
 								Attributes: map[string]schema.Attribute{
 									"pii": schema.SingleNestedAttribute{
-										Description: "The PII scan configuration. Use either `enabled` or `rules` to enable specific rules",
+										Description: "The PII scan configuration. `pii.enabled` is deprecated. Use `pii.rules` to specify the scanning rules",
 										Required:    true,
 										Attributes: map[string]schema.Attribute{
 											"enabled": schema.BoolAttribute{
-												Description: "Whether to enable all guard scanning rules",
-												Optional:    true,
+												Description:        "Whether to enable all guard scanning rules",
+												DeprecationMessage: "Use `pii.rules` instead to specify the set of scanning rules",
+												Optional:           true,
 												Validators: []validator.Bool{
 													boolvalidator.ExactlyOneOf(
 														path.MatchRelative().AtParent().AtName("rules"),

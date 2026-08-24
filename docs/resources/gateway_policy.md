@@ -149,7 +149,7 @@ Optional:
 
 Required:
 
-- `pii` (Attributes) The PII scan configuration. Use either `enabled` or `rules` to enable specific rules (see [below for nested schema](#nestedatt--config--guard--detect--pii))
+- `pii` (Attributes) The PII scan configuration. `pii.enabled` is deprecated. Use `pii.rules` to specify the scanning rules (see [below for nested schema](#nestedatt--config--guard--detect--pii))
 - `secrets` (Boolean) Whether to scan for secrets
 
 <a id="nestedatt--config--guard--detect--pii"></a>
@@ -157,7 +157,7 @@ Required:
 
 Optional:
 
-- `enabled` (Boolean) Whether to enable all guard scanning rules
+- `enabled` (Boolean, Deprecated) Whether to enable all guard scanning rules
 - `rules` (Attributes List) The list of rules to enable (see [below for nested schema](#nestedatt--config--guard--detect--pii--rules))
 
 <a id="nestedatt--config--guard--detect--pii--rules"></a>
