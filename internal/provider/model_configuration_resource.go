@@ -59,35 +59,95 @@ var modelConfigScopes = []string{
 // modelConfigProviderSpec describes how a provider's model, credential and
 // base URL map onto the backend's serialization.
 type modelConfigProviderSpec struct {
-	// lcClassName is settings.ID's last element (e.g. "ChatOpenAI"). Matching
-	// on the class name alone, rather than the full id path.
-	lcClassName  string
-	modelKwarg   string
+	// lcIDPath is the SerializedConstructor "id" path, e.g.
+	// ["langchain", "chat_models", "openai", "ChatOpenAI"]. Writes send it
+	// verbatim; reads match on its last element (the class name) alone.
+	lcIDPath     []string
 	secretKwarg  string
 	baseURLKwarg string
+	// writeComplex sends the SerializedConstructor instead of the "simple"
+	// modelId shorthand, which the server can only convert for providers in its
+	// own _PROVIDER_MAP. False for those, whose simple write also requires the
+	// stricter manage-model-configs permission.
+	writeComplex bool
+}
+
+// lcClassName is the last element of the id path, which is what reads match on.
+func (s modelConfigProviderSpec) lcClassName() string {
+	return s.lcIDPath[len(s.lcIDPath)-1]
 }
 
 var modelConfigProviders = map[string]modelConfigProviderSpec{
 	"openai": {
-		lcClassName:  "ChatOpenAI",
-		modelKwarg:   "model",
+		lcIDPath:     []string{"langchain", "chat_models", "openai", "ChatOpenAI"},
 		secretKwarg:  "openai_api_key",
 		baseURLKwarg: "openai_api_base",
 	},
 	"anthropic": {
-		lcClassName:  "ChatAnthropic",
-		modelKwarg:   "model",
+		lcIDPath:     []string{"langchain", "chat_models", "anthropic", "ChatAnthropic"},
 		secretKwarg:  "anthropic_api_key",
 		baseURLKwarg: "base_url",
 	},
 	"azure_openai": {
-		lcClassName: "AzureChatOpenAI",
-		modelKwarg:  "model",
+		lcIDPath:    []string{"langchain", "chat_models", "azure_openai", "AzureChatOpenAI"},
 		secretKwarg: "openai_api_key",
 		// Azure has no dedicated base URL kwarg; it reads azure_endpoint out of
 		// additional_kwargs, falling back to the top-level baseUrl (see
 		// simple_to_complex in smith-backend's playground_settings endpoint).
 		baseURLKwarg: "",
+	},
+	"gemini": {
+		lcIDPath:     []string{"langchain_google_genai", "chat_models", "ChatGoogleGenerativeAI"},
+		secretKwarg:  "google_api_key",
+		baseURLKwarg: "base_url",
+		writeComplex: true,
+	},
+	"deepseek": {
+		lcIDPath:     []string{"langchain_deepseek", "chat_models", "ChatDeepSeek"},
+		secretKwarg:  "api_key",
+		baseURLKwarg: "base_url",
+		writeComplex: true,
+	},
+	"mistralai": {
+		lcIDPath:     []string{"langchain", "chat_models", "mistralai", "ChatMistralAI"},
+		secretKwarg:  "mistral_api_key",
+		baseURLKwarg: "base_url",
+		writeComplex: true,
+	},
+	"fireworks": {
+		lcIDPath:     []string{"langchain", "chat_models", "fireworks", "ChatFireworks"},
+		secretKwarg:  "fireworks_api_key",
+		baseURLKwarg: "base_url",
+		writeComplex: true,
+	},
+	"groq": {
+		lcIDPath:     []string{"langchain_groq", "chat_models", "ChatGroq"},
+		secretKwarg:  "groq_api_key",
+		baseURLKwarg: "base_url",
+		writeComplex: true,
+	},
+	"databricks": {
+		lcIDPath:    []string{"databricks_langchain", "chat_models", "ChatDatabricks"},
+		secretKwarg: "databricks_token",
+		// Databricks addresses a workspace via target_uri, not a base URL.
+		baseURLKwarg: "",
+		writeComplex: true,
+	},
+	"vertexai": {
+		lcIDPath: []string{"langchain", "chat_models", "vertexai", "ChatVertexAI"},
+		// Holds a service-account JSON blob rather than an API key; the env var
+		// is still a single name, so it fits the same secret reference shape.
+		secretKwarg:  "credentials",
+		baseURLKwarg: "base_url",
+		writeComplex: true,
+	},
+	"bedrock": {
+		lcIDPath: []string{"langchain_aws", "chat_models", "ChatBedrockConverse"},
+		// Bedrock also accepts an access-key pair or an IAM role ARN, which need
+		// more than one env var; only the bearer-token path fits env_var_name.
+		secretKwarg:  "bedrock_api_key",
+		baseURLKwarg: "base_url",
+		writeComplex: true,
 	},
 }
 
@@ -203,7 +263,7 @@ func modelConfigurationSettingsInfoFromAPI(settingsType string, raw json.RawMess
 		var provider string
 		var spec modelConfigProviderSpec
 		for name, s := range modelConfigProviders {
-			if s.lcClassName == lcClassName {
+			if s.lcClassName() == lcClassName {
 				provider, spec = name, s
 				break
 			}
@@ -214,10 +274,10 @@ func modelConfigurationSettingsInfoFromAPI(settingsType string, raw json.RawMess
 				settings.ID, strings.Join(modelConfigProviderNames, ", "),
 			)
 		}
-		model, ok := settings.Kwargs[spec.modelKwarg].(string)
+		model, ok := settings.Kwargs["model"].(string)
 		if !ok {
 			return modelConfigurationSettingsInfo{}, fmt.Errorf(
-				"complex settings for provider %q are missing kwargs[%q] (model)", provider, spec.modelKwarg,
+				"complex settings for provider %q are missing kwargs[\"model\"]", provider,
 			)
 		}
 		envVarName, err := modelConfigEnvVarNameFromSecretRef(settings.Kwargs[spec.secretKwarg])
@@ -270,7 +330,7 @@ func modelConfigEnvVarNameFromSecretRef(raw any) (string, error) {
 
 // modelConfigurationCreateAPIFromModel converts the plan model to the create API request.
 func modelConfigurationCreateAPIFromModel(plan modelConfigurationModel) (modelConfigurationCreateAPI, error) {
-	settings, err := modelConfigurationSettingsAPIFromModel(plan)
+	settings, settingsType, err := modelConfigurationSettingsAPIFromModel(plan)
 	if err != nil {
 		return modelConfigurationCreateAPI{}, err
 	}
@@ -278,13 +338,16 @@ func modelConfigurationCreateAPIFromModel(plan modelConfigurationModel) (modelCo
 		Name:         plan.Name.ValueStringPointer(),
 		Scope:        plan.Scope.ValueString(),
 		Settings:     settings,
-		SettingsType: modelConfigSettingsTypeSimple,
+		SettingsType: settingsType,
 	}, nil
 }
 
 // modelConfigurationUpdateAPIFromModel converts the plan model to the update API request.
+//
+// The update body carries no settings_type: the API infers it from whether the
+// settings contain a modelId, which matches whichever shape was built here.
 func modelConfigurationUpdateAPIFromModel(plan modelConfigurationModel) (modelConfigurationUpdateAPI, error) {
-	settings, err := modelConfigurationSettingsAPIFromModel(plan)
+	settings, _, err := modelConfigurationSettingsAPIFromModel(plan)
 	if err != nil {
 		return modelConfigurationUpdateAPI{}, err
 	}
@@ -294,16 +357,26 @@ func modelConfigurationUpdateAPIFromModel(plan modelConfigurationModel) (modelCo
 	}, nil
 }
 
-// modelConfigurationSettingsAPIFromModel builds the "simple" settings JSON sent to the API.
-func modelConfigurationSettingsAPIFromModel(plan modelConfigurationModel) (json.RawMessage, error) {
+// modelConfigurationSettingsAPIFromModel builds the settings JSON sent to the
+// API, along with the settings_type describing which shape it built.
+func modelConfigurationSettingsAPIFromModel(plan modelConfigurationModel) (json.RawMessage, string, error) {
 	provider := plan.Provider.ValueString()
-	if _, ok := modelConfigProviders[provider]; !ok {
-		return nil, fmt.Errorf("unsupported provider %q; supported: %s", provider, strings.Join(modelConfigProviderNames, ", "))
+	spec, ok := modelConfigProviders[provider]
+	if !ok {
+		return nil, "", fmt.Errorf("unsupported provider %q; supported: %s", provider, strings.Join(modelConfigProviderNames, ", "))
 	}
 
 	kwargs, err := modelConfigurationKwargsFromModel(plan.InvocationParams)
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+
+	if spec.writeComplex {
+		raw, err := modelConfigurationComplexSettings(plan, spec, kwargs)
+		if err != nil {
+			return nil, "", err
+		}
+		return raw, modelConfigSettingsTypeComplex, nil
 	}
 
 	settings := modelConfigurationSettingsAPI{
@@ -315,7 +388,44 @@ func modelConfigurationSettingsAPIFromModel(plan modelConfigurationModel) (json.
 
 	raw, err := json.Marshal(settings)
 	if err != nil {
-		return nil, fmt.Errorf("marshal settings: %w", err)
+		return nil, "", fmt.Errorf("marshal settings: %w", err)
+	}
+	return raw, modelConfigSettingsTypeSimple, nil
+}
+
+// modelConfigurationComplexSettings builds a LangChain SerializedConstructor,
+// the same shape simple_to_complex produces server-side. Providers missing from
+// the backend's own provider map have to be written this way: it cannot convert
+// them on read, and would serve the unusable simple shape to every consumer.
+//
+// invocation_params seeds the kwargs so that model, the secret reference and
+// base_url below always win over a colliding key.
+func modelConfigurationComplexSettings(
+	plan modelConfigurationModel,
+	spec modelConfigProviderSpec,
+	kwargs map[string]any,
+) (json.RawMessage, error) {
+	if kwargs == nil {
+		kwargs = map[string]any{}
+	}
+	kwargs["model"] = plan.Model.ValueString()
+	kwargs[spec.secretKwarg] = map[string]any{
+		"lc":   1,
+		"type": "secret",
+		"id":   []string{plan.EnvVarName.ValueString()},
+	}
+	if baseURL := stringPtr(plan.BaseURL); baseURL != nil && spec.baseURLKwarg != "" {
+		kwargs[spec.baseURLKwarg] = *baseURL
+	}
+
+	raw, err := json.Marshal(map[string]any{
+		"lc":     1,
+		"type":   "constructor",
+		"id":     spec.lcIDPath,
+		"kwargs": kwargs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal complex settings: %w", err)
 	}
 	return raw, nil
 }
@@ -405,8 +515,13 @@ func (r *modelConfigurationResource) Schema(_ context.Context, _ resource.Schema
 				Computed:    true,
 			},
 			"model_provider": schema.StringAttribute{
-				Description: "The model provider",
-				Required:    true,
+				// Derived from modelConfigProviders so the documented set cannot
+				// drift from what the validator actually accepts.
+				MarkdownDescription: fmt.Sprintf(
+					"The model provider. One of: `%s`.",
+					strings.Join(modelConfigProviderNames, "`, `"),
+				),
+				Required: true,
 				Validators: []validator.String{
 					stringvalidator.OneOf(modelConfigProviderNames...),
 				},

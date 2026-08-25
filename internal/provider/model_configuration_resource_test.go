@@ -85,7 +85,10 @@ resource "langsmith_model_configuration" "test" {
 					resource.TestCheckResourceAttrSet("langsmith_model_configuration.test", "updated_at"),
 				),
 			},
-			// import: invocation_params is write-only and never echoed back by Read.
+			// import: invocation_params is write-only and never echoed back by Read,
+			// so re-importing a config that set it always disagrees with prior state.
+			// See TestAccModelConfigurationImportNoDiffWithoutInvocationParams for the
+			// null-in-config case, where import produces no diff at all.
 			{
 				ResourceName:            "langsmith_model_configuration.test",
 				ImportState:             true,
@@ -108,6 +111,53 @@ resource "langsmith_model_configuration" "test" {
 				),
 			},
 			// Delete testing automatically occurs in TestCase for successful creates.
+		},
+	})
+}
+
+// TestAccModelConfigurationImportNoDiffWithoutInvocationParams verifies the
+// other half of invocation_params' write-only behavior: when configuration
+// never sets it, state is already null before and after import, so import
+// produces no diff at all (unlike TestAccModelConfigurationLifecycle's import
+// step, which must ignore invocation_params because config set it there).
+func TestAccModelConfigurationImportNoDiffWithoutInvocationParams(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("LANGSMITH_PROVIDER_ACC") != "1" {
+		t.Skip("set LANGSMITH_PROVIDER_ACC=1 TF_ACC=1 to run model configuration import no-diff test")
+	}
+
+	const createCfg = `
+resource "langsmith_model_configuration" "test" {
+  name           = "tf-acc model configuration import no diff"
+  model_provider = "openai"
+  model          = "gpt-4o"
+  env_var_name   = "OPENAI_API_KEY"
+}
+`
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+			"langsmith": providerserver.NewProtocol6WithError(New("test")()),
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: createCfg,
+				Check:  resource.TestCheckNoResourceAttr("langsmith_model_configuration.test", "invocation_params"),
+			},
+			// import: no ImportStateVerifyIgnore needed, since invocation_params is
+			// already null in both prior state and the freshly imported state.
+			{
+				ResourceName:      "langsmith_model_configuration.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			// plan again post-import with the same config: assert zero diff, the
+			// same convergence the write-only docs promise for the omitted case.
+			{
+				Config:             createCfg,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false,
+			},
 		},
 	})
 }
@@ -163,6 +213,124 @@ resource "langsmith_model_configuration" "test" {
 			},
 		},
 	})
+}
+
+// TestAccModelConfigurationComplexWritePath covers the providers written as a
+// SerializedConstructor rather than the simple modelId shorthand. Import is the
+// point of it: it is the only check that the complex writer and the complex read
+// decoder agree on where model, the secret reference and base_url live.
+func TestAccModelConfigurationComplexWritePath(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("LANGSMITH_PROVIDER_ACC") != "1" {
+		t.Skip("set LANGSMITH_PROVIDER_ACC=1 TF_ACC=1 to run model configuration complex write path test")
+	}
+
+	tests := []struct {
+		provider     string
+		model        string
+		updatedModel string
+		envVarName   string
+		// baseURL is empty for providers with no base URL kwarg, whose base_url
+		// the writer has nowhere to put.
+		baseURL string
+	}{
+		{
+			provider:     "gemini",
+			model:        "gemini-3.1-pro-preview",
+			updatedModel: "gemini-3.5-flash-lite",
+			envVarName:   "GOOGLE_API_KEY",
+			baseURL:      "https://my-gemini-proxy.example.com",
+		},
+		{
+			// credentials holds a service-account JSON blob, not an API key.
+			provider:     "vertexai",
+			model:        "gemini-3.1-pro-preview",
+			updatedModel: "gemini-2.0-flash-exp",
+			envVarName:   "GOOGLE_VERTEX_AI_WEB_CREDENTIALS",
+		},
+		{
+			provider:     "databricks",
+			model:        "databricks-claude-sonnet-5",
+			updatedModel: "databricks-claude-3-7-sonnet",
+			envVarName:   "DATABRICKS_TOKEN",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			t.Parallel()
+
+			baseURLLine := ""
+			if tt.baseURL != "" {
+				baseURLLine = fmt.Sprintf("base_url = %q", tt.baseURL)
+			}
+			cfg := func(model string) string {
+				return fmt.Sprintf(`
+resource "langsmith_model_configuration" "test" {
+  name           = "tf-acc model configuration complex %s"
+  model_provider = %q
+  model          = %q
+  env_var_name   = %q
+  %s
+}
+`, tt.provider, tt.provider, model, tt.envVarName, baseURLLine)
+			}
+
+			baseURLCheck := resource.TestCheckNoResourceAttr("langsmith_model_configuration.test", "base_url")
+			if tt.baseURL != "" {
+				baseURLCheck = resource.TestCheckResourceAttr("langsmith_model_configuration.test", "base_url", tt.baseURL)
+			}
+
+			var originalID string
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+					"langsmith": providerserver.NewProtocol6WithError(New("test")()),
+				},
+				Steps: []resource.TestStep{
+					// create
+					{
+						Config: cfg(tt.model),
+						Check: resource.ComposeAggregateTestCheckFunc(
+							resource.TestCheckResourceAttrWith("langsmith_model_configuration.test", "id", func(value string) error {
+								if value == "" {
+									return fmt.Errorf("id is empty")
+								}
+								originalID = value
+								return nil
+							}),
+							resource.TestCheckResourceAttr("langsmith_model_configuration.test", "model_provider", tt.provider),
+							resource.TestCheckResourceAttr("langsmith_model_configuration.test", "model", tt.model),
+							resource.TestCheckResourceAttr("langsmith_model_configuration.test", "env_var_name", tt.envVarName),
+							resource.TestCheckResourceAttr("langsmith_model_configuration.test", "scope", modelConfigScopeWorkspace),
+							baseURLCheck,
+							resource.TestCheckResourceAttrSet("langsmith_model_configuration.test", "created_at"),
+						),
+					},
+					// import: configuration never sets invocation_params, so no
+					// ImportStateVerifyIgnore is needed and any drift is a real
+					// disagreement between the writer and the decoder.
+					{
+						ResourceName:      "langsmith_model_configuration.test",
+						ImportState:       true,
+						ImportStateVerify: true,
+					},
+					// update in place
+					{
+						Config: cfg(tt.updatedModel),
+						Check: resource.ComposeAggregateTestCheckFunc(
+							resource.TestCheckResourceAttrWith("langsmith_model_configuration.test", "id", func(value string) error {
+								if value != originalID {
+									return fmt.Errorf("id = %q, want %q (in-place update)", value, originalID)
+								}
+								return nil
+							}),
+							resource.TestCheckResourceAttr("langsmith_model_configuration.test", "model", tt.updatedModel),
+							baseURLCheck,
+						),
+					},
+				},
+			})
+		})
+	}
 }
 
 // TestAccModelConfigurationInvalidInvocationParams verifies that a non-object
