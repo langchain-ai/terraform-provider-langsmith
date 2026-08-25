@@ -235,7 +235,7 @@ func TestAccModelConfigurationComplexWritePath(t *testing.T) {
 		baseURL string
 	}{
 		{
-			provider:     "gemini",
+			provider:     "google_genai",
 			model:        "gemini-3.1-pro-preview",
 			updatedModel: "gemini-3.5-flash-lite",
 			envVarName:   "GOOGLE_API_KEY",
@@ -243,7 +243,7 @@ func TestAccModelConfigurationComplexWritePath(t *testing.T) {
 		},
 		{
 			// credentials holds a service-account JSON blob, not an API key.
-			provider:     "vertexai",
+			provider:     "google_vertexai",
 			model:        "gemini-3.1-pro-preview",
 			updatedModel: "gemini-2.0-flash-exp",
 			envVarName:   "GOOGLE_VERTEX_AI_WEB_CREDENTIALS",

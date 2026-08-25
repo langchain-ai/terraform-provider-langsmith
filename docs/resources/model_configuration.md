@@ -64,7 +64,7 @@ resource "langsmith_model_configuration" "org_openai_gpt4o" {
 
 - `env_var_name` (String) Name of the environment variable, configured server-side, that holds the provider API key. This is a reference, not the credential itself.
 - `model` (String) The model name (e.g. gpt-4o)
-- `model_provider` (String) The model provider. One of: `anthropic`, `azure_openai`, `bedrock`, `databricks`, `deepseek`, `fireworks`, `gemini`, `groq`, `mistralai`, `openai`, `vertexai`.
+- `model_provider` (String) The model provider. One of: `anthropic`, `azure_openai`, `bedrock`, `databricks`, `deepseek`, `fireworks`, `google_genai`, `google_vertexai`, `groq`, `mistralai`, `openai`.
 - `name` (String) The name of the model configuration
 
 ### Optional

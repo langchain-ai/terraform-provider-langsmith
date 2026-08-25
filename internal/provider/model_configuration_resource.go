@@ -96,7 +96,7 @@ var modelConfigProviders = map[string]modelConfigProviderSpec{
 		// simple_to_complex in smith-backend's playground_settings endpoint).
 		baseURLKwarg: "",
 	},
-	"gemini": {
+	"google_genai": {
 		lcIDPath:     []string{"langchain_google_genai", "chat_models", "ChatGoogleGenerativeAI"},
 		secretKwarg:  "google_api_key",
 		baseURLKwarg: "base_url",
@@ -133,7 +133,7 @@ var modelConfigProviders = map[string]modelConfigProviderSpec{
 		baseURLKwarg: "",
 		writeComplex: true,
 	},
-	"vertexai": {
+	"google_vertexai": {
 		lcIDPath: []string{"langchain", "chat_models", "vertexai", "ChatVertexAI"},
 		// Holds a service-account JSON blob rather than an API key; the env var
 		// is still a single name, so it fits the same secret reference shape.
