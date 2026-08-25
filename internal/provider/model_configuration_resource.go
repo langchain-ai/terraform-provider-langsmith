@@ -39,6 +39,7 @@ type modelConfigurationModel struct {
 	Provider         types.String `tfsdk:"model_provider"`
 	Scope            types.String `tfsdk:"scope"`
 	UpdatedAt        types.String `tfsdk:"updated_at"`
+	WorkspaceID      types.String `tfsdk:"workspace_id"`
 }
 
 const modelConfigurationsPath = "api/v1/playground-settings"
@@ -209,6 +210,9 @@ func modelConfigurationModelFromAPI(api modelConfigurationGetAPI, previous model
 	next.Name = nullableStringPointer(api.Name)
 	next.CreatedAt = nullableString(api.CreatedAt)
 	next.UpdatedAt = nullableString(api.UpdatedAt)
+	// The API response carries no scope field. Scope is only a create-time
+	// selector for whether organization_id gets set, so derive it back from that
+	// field's presence, the way the server's PlaygroundSettingsResponse does.
 	if api.OrganizationID != nil {
 		next.Scope = types.StringValue(modelConfigScopeOrganization)
 		next.OrganizationID = types.StringValue(*api.OrganizationID)
@@ -542,6 +546,15 @@ func (r *modelConfigurationResource) Schema(_ context.Context, _ resource.Schema
 				Description: "The timestamp of when the model configuration was last updated",
 				Computed:    true,
 			},
+			"workspace_id": schema.StringAttribute{
+				MarkdownDescription: "LangSmith workspace (tenant) ID that owns this model configuration. " +
+					"When unset, the resource uses the workspace configured on the provider block. " +
+					"When `scope` is `organization`, the owner is that workspace's organization rather than the workspace itself.",
+				Optional: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
 		},
 	}
 }
@@ -559,7 +572,7 @@ func (r *modelConfigurationResource) Create(ctx context.Context, req resource.Cr
 		return
 	}
 	var apiResponse modelConfigurationGetAPI
-	if err := r.client.Post(ctx, modelConfigurationsPath, apiRequest, &apiResponse); err != nil {
+	if err := r.client.Post(ctx, modelConfigurationsPath, apiRequest, &apiResponse, workspaceOpts(plan.WorkspaceID)...); err != nil {
 		resp.Diagnostics.AddError("Failed to create model configuration", err.Error())
 		return
 	}
@@ -580,7 +593,7 @@ func (r *modelConfigurationResource) Read(ctx context.Context, req resource.Read
 	}
 	var apiData modelConfigurationGetAPI
 	apiPath := fmt.Sprintf("%s/%s", modelConfigurationsPath, currentState.ID.ValueString())
-	if err := r.client.Get(ctx, apiPath, nil, &apiData); err != nil {
+	if err := r.client.Get(ctx, apiPath, nil, &apiData, workspaceOpts(currentState.WorkspaceID)...); err != nil {
 		resp.Diagnostics.AddError("Failed to read model configuration", err.Error())
 		return
 	}
@@ -611,7 +624,7 @@ func (r *modelConfigurationResource) Update(ctx context.Context, req resource.Up
 	}
 	apiPath := fmt.Sprintf("%s/%s", modelConfigurationsPath, plan.ID.ValueString())
 	var apiResponse modelConfigurationGetAPI
-	if err := r.client.Patch(ctx, apiPath, apiRequest, &apiResponse); err != nil {
+	if err := r.client.Patch(ctx, apiPath, apiRequest, &apiResponse, workspaceOpts(plan.WorkspaceID)...); err != nil {
 		resp.Diagnostics.AddError("Failed to update model configuration", err.Error())
 		return
 	}
@@ -631,7 +644,7 @@ func (r *modelConfigurationResource) Delete(ctx context.Context, req resource.De
 		return
 	}
 	apiPath := fmt.Sprintf("%s/%s", modelConfigurationsPath, state.ID.ValueString())
-	if err := r.client.Delete(ctx, apiPath, nil, nil); err != nil && !isLangSmithNotFound(err) {
+	if err := r.client.Delete(ctx, apiPath, nil, nil, workspaceOpts(state.WorkspaceID)...); err != nil && !isLangSmithNotFound(err) {
 		resp.Diagnostics.AddError("Failed to delete model configuration", err.Error())
 	}
 }

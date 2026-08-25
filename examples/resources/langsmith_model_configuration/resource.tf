@@ -40,3 +40,20 @@ resource "langsmith_model_configuration" "org_openai_gpt4o" {
   env_var_name   = "OPENAI_API_KEY"
   scope          = "organization"
 }
+
+# Workspace-scoped configurations land in the workspace configured on the
+# provider block by default. Set workspace_id to place one in a specific
+# workspace instead, so that a single provider configuration manage
+# configurations across several workspaces.
+resource "langsmith_workspace" "research" {
+  display_name  = "research"
+  tenant_handle = "research"
+}
+
+resource "langsmith_model_configuration" "research_claude" {
+  name           = "claude-sonnet (research)"
+  model_provider = "anthropic"
+  model          = "claude-sonnet-5"
+  env_var_name   = "ANTHROPIC_API_KEY"
+  workspace_id   = langsmith_workspace.research.id
+}
