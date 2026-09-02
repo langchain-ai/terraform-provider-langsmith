@@ -1,6 +1,6 @@
 module github.com/langchain-ai/terraform-provider-langsmith
 
-go 1.25.8
+go 1.26.7
 
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
@@ -8,7 +8,7 @@ require (
 	github.com/hashicorp/terraform-plugin-go v0.31.0
 	github.com/hashicorp/terraform-plugin-log v0.11.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
-	github.com/langchain-ai/langsmith-go v0.25.4
+	github.com/langchain-ai/langsmith-go v0.26.0
 )
 
 require (
