@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"net/url"
 	"strconv"
 
@@ -58,7 +57,6 @@ func (d *DeploymentRevisionsDataSource) Schema(ctx context.Context, req datasour
 					"created_at":             schema.StringAttribute{Computed: true},
 					"updated_at":             schema.StringAttribute{Computed: true},
 					"status":                 schema.StringAttribute{Computed: true},
-					"status_message":         schema.StringAttribute{Computed: true},
 					"source":                 schema.StringAttribute{Computed: true},
 					"source_revision_config": deploymentRevisionSourceConfigSchema(),
 				}},
@@ -113,11 +111,11 @@ func (d *DeploymentRevisionsDataSource) listRevisions(ctx context.Context, data 
 	if !data.Status.IsNull() && !data.Status.IsUnknown() {
 		query.Set("status", data.Status.ValueString())
 	}
-	path := fmt.Sprintf("v2/deployments/%s/revisions", url.PathEscape(data.DeploymentID.ValueString()))
+	requestPath := deploymentRevisionsPath(data.DeploymentID.ValueString())
 	if encoded := query.Encode(); encoded != "" {
-		path += "?" + encoded
+		requestPath += "?" + encoded
 	}
 	var result deploymentRevisionsAPI
-	err := d.client.Get(ctx, path, nil, &result)
+	err := d.client.Get(ctx, requestPath, nil, &result)
 	return result, err
 }

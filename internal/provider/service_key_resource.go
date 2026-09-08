@@ -431,8 +431,6 @@ func (r *serviceKeyResource) Delete(ctx context.Context, req resource.DeleteRequ
 
 // Configure adds the provider configured client to the resource.
 func (r *serviceKeyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	// Add a nil check when handling ProviderData because Terraform
-	// sets that data after it calls the ConfigureProvider RPC.
 	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Resource")
 	if !ok {
 		return

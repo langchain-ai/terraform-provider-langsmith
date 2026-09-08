@@ -2,8 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
-	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -30,7 +28,6 @@ type deploymentRevisionDataSourceModel struct {
 	CreatedAt            types.String                         `tfsdk:"created_at"`
 	UpdatedAt            types.String                         `tfsdk:"updated_at"`
 	Status               types.String                         `tfsdk:"status"`
-	StatusMessage        types.String                         `tfsdk:"status_message"`
 	Source               types.String                         `tfsdk:"source"`
 	SourceRevisionConfig *deploymentRevisionSourceConfigModel `tfsdk:"source_revision_config"`
 }
@@ -40,7 +37,6 @@ type deploymentRevisionModel struct {
 	CreatedAt            types.String                         `tfsdk:"created_at"`
 	UpdatedAt            types.String                         `tfsdk:"updated_at"`
 	Status               types.String                         `tfsdk:"status"`
-	StatusMessage        types.String                         `tfsdk:"status_message"`
 	Source               types.String                         `tfsdk:"source"`
 	SourceRevisionConfig *deploymentRevisionSourceConfigModel `tfsdk:"source_revision_config"`
 }
@@ -60,7 +56,6 @@ type deploymentRevisionAPI struct {
 	CreatedAt            string                            `json:"created_at"`
 	UpdatedAt            string                            `json:"updated_at"`
 	Status               string                            `json:"status"`
-	StatusMessage        *string                           `json:"status_message"`
 	Source               string                            `json:"source"`
 	SourceRevisionConfig deploymentRevisionSourceConfigAPI `json:"source_revision_config"`
 }
@@ -89,7 +84,6 @@ func (d *DeploymentRevisionDataSource) Schema(ctx context.Context, req datasourc
 			"created_at":             schema.StringAttribute{Computed: true, MarkdownDescription: "Revision creation time."},
 			"updated_at":             schema.StringAttribute{Computed: true, MarkdownDescription: "Revision last update time."},
 			"status":                 schema.StringAttribute{Computed: true, MarkdownDescription: "Revision status."},
-			"status_message":         schema.StringAttribute{Computed: true, MarkdownDescription: "Revision status detail."},
 			"source":                 schema.StringAttribute{Computed: true, MarkdownDescription: "Revision source."},
 			"source_revision_config": deploymentRevisionSourceConfigSchema(),
 		},
@@ -142,7 +136,6 @@ func (d *DeploymentRevisionDataSource) Read(ctx context.Context, req datasource.
 	data.CreatedAt = model.CreatedAt
 	data.UpdatedAt = model.UpdatedAt
 	data.Status = model.Status
-	data.StatusMessage = model.StatusMessage
 	data.Source = model.Source
 	data.SourceRevisionConfig = model.SourceRevisionConfig
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -150,20 +143,18 @@ func (d *DeploymentRevisionDataSource) Read(ctx context.Context, req datasource.
 
 func (d *DeploymentRevisionDataSource) readRevision(ctx context.Context, deploymentID, revisionID string) (deploymentRevisionAPI, error) {
 	var revision deploymentRevisionAPI
-	path := fmt.Sprintf("v2/deployments/%s/revisions/%s", url.PathEscape(deploymentID), url.PathEscape(revisionID))
-	err := d.client.Get(ctx, path, nil, &revision)
+	err := d.client.Get(ctx, deploymentRevisionPath(deploymentID, revisionID), nil, &revision)
 	return revision, err
 }
 
 func deploymentRevisionModelFromAPI(ctx context.Context, revision deploymentRevisionAPI) (deploymentRevisionModel, diag.Diagnostics) {
 	trackedPackages, diags := types.ListValueFrom(ctx, types.StringType, revision.SourceRevisionConfig.TrackedPackages)
 	return deploymentRevisionModel{
-		ID:            types.StringValue(revision.ID),
-		CreatedAt:     types.StringValue(revision.CreatedAt),
-		UpdatedAt:     types.StringValue(revision.UpdatedAt),
-		Status:        types.StringValue(revision.Status),
-		StatusMessage: nullableStringPointer(revision.StatusMessage),
-		Source:        types.StringValue(revision.Source),
+		ID:        types.StringValue(revision.ID),
+		CreatedAt: types.StringValue(revision.CreatedAt),
+		UpdatedAt: types.StringValue(revision.UpdatedAt),
+		Status:    types.StringValue(revision.Status),
+		Source:    types.StringValue(revision.Source),
 		SourceRevisionConfig: &deploymentRevisionSourceConfigModel{
 			RepoRef:             nullableStringPointer(revision.SourceRevisionConfig.RepoRef),
 			LangGraphConfigPath: nullableStringPointer(revision.SourceRevisionConfig.LangGraphConfigPath),

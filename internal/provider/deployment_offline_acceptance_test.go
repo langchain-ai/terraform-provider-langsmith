@@ -1,5 +1,13 @@
 package provider
 
+// The backend in this file deliberately answers the way host-backend does
+// rather than echoing back whatever the configuration sent. That matters: every
+// key of source_config is present with a null value when unset, build_on_push is
+// always a boolean, an external_docker deployment always carries a
+// resource_spec, deployment_type defaults to prod, and display_name has a
+// minimum length of 1 on PATCH. A fake that only replays the request cannot
+// catch a provider that mishandles any of it.
+
 import (
 	"encoding/json"
 	"fmt"
@@ -35,17 +43,23 @@ func TestAccDeploymentOffline(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	resource.Test(t, resource.TestCase{
-		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
-			"langsmith": providerserver.NewProtocol6WithError(New("test")()),
-		},
+		ProtoV6ProviderFactories: offlineDeploymentFactories(),
 		Steps: []resource.TestStep{
 			{
-				Config: deploymentAcceptanceConfig(server.URL, "Offline deployment", "registry.example.com/agent:v1", "1", offlineSecretOne),
+				Config: deploymentAcceptanceConfig(server.URL, `display_name = "Offline deployment"`, "registry.example.com/agent:v1", "1", offlineSecretOne),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "id", offlineDeploymentID),
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "display_name", "Offline deployment"),
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "latest_revision_id", offlineRevisionOne),
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "latest_revision_status", "DEPLOYED"),
+					// Adopted from the service rather than diffed against null.
+					resource.TestCheckResourceAttr("langsmith_deployment.test", "source_config.build_on_push", "false"),
+					// resource_spec is desired state: omitting it leaves the
+					// service's materialized defaults out of Terraform's hands
+					// rather than importing them into the plan.
+					resource.TestCheckNoResourceAttr("langsmith_deployment.test", "source_config.resource_spec"),
+					// Terraform keeps owning what the service does not report.
+					resource.TestCheckResourceAttr("langsmith_deployment.test", "source_revision_config.image_uri", "registry.example.com/agent:v1"),
 					resource.TestCheckResourceAttr("data.langsmith_deployment_revision.test", "id", offlineRevisionOne),
 					resource.TestCheckResourceAttr("data.langsmith_deployment_revision.test", "source_revision_config.image_uri", "registry.example.com/agent:v1"),
 					resource.TestCheckResourceAttr("data.langsmith_deployment_revisions.test", "revisions.#", "1"),
@@ -54,35 +68,96 @@ func TestAccDeploymentOffline(t *testing.T) {
 				),
 			},
 			{
-				Config:             deploymentAcceptanceConfig(server.URL, "Offline deployment", "registry.example.com/agent:v1", "1", offlineSecretOne),
+				Config:             deploymentAcceptanceConfig(server.URL, `display_name = "Offline deployment"`, "registry.example.com/agent:v1", "1", offlineSecretOne),
 				PlanOnly:           true,
 				ExpectNonEmptyPlan: false,
 			},
 			{
-				ResourceName:            "langsmith_deployment.test",
-				ImportState:             true,
-				ImportStateId:           offlineDeploymentID,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"secrets_version"},
+				ResourceName:      "langsmith_deployment.test",
+				ImportState:       true,
+				ImportStateId:     offlineDeploymentID,
+				ImportStateVerify: true,
+				// secrets_version is write-only bookkeeping the service never
+				// stores, and an import cannot tell a desired resource_spec from
+				// the defaults the service materialized around it.
+				ImportStateVerifyIgnore: []string{"secrets_version", "source_config.resource_spec"},
 				Check:                   deploymentStateExcludesSecrets,
 			},
 			{
-				Config: deploymentAcceptanceConfig(server.URL, "Offline deployment updated", "registry.example.com/agent:v2", "2", offlineSecretTwo),
+				// A new image and a new secrets version: exactly one revision.
+				Config: deploymentAcceptanceConfig(server.URL, `display_name = "Offline deployment"`, "registry.example.com/agent:v2", "2", offlineSecretTwo),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("langsmith_deployment.test", "display_name", "Offline deployment updated"),
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "latest_revision_id", offlineRevisionTwo),
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "latest_revision_status", "DEPLOYED"),
-					resource.TestCheckResourceAttr("data.langsmith_deployment_revision.test", "id", offlineRevisionTwo),
-					resource.TestCheckResourceAttr("data.langsmith_deployment_revision.test", "source_revision_config.image_uri", "registry.example.com/agent:v2"),
+					resource.TestCheckResourceAttr("langsmith_deployment.test", "source_revision_config.image_uri", "registry.example.com/agent:v2"),
 					resource.TestCheckResourceAttr("data.langsmith_deployment_revisions.test", "revisions.#", "2"),
 					resource.TestCheckResourceAttr("data.langsmith_deployment_revisions.test", "revisions.0.id", offlineRevisionTwo),
+					backend.expectRevisionPosts(1),
+					deploymentStateExcludesSecrets,
+				),
+			},
+			{
+				// Renaming touches no revision input, so the service should see a
+				// PATCH and nothing else. Creating a revision here would rebuild
+				// and redeploy the agent for a cosmetic change.
+				Config: deploymentAcceptanceConfig(server.URL, `display_name = "Offline deployment renamed"`, "registry.example.com/agent:v2", "2", offlineSecretTwo),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("langsmith_deployment.test", "display_name", "Offline deployment renamed"),
+					resource.TestCheckResourceAttr("langsmith_deployment.test", "latest_revision_id", offlineRevisionTwo),
+					backend.expectRevisionPosts(1),
 					deploymentStateExcludesSecrets,
 				),
 			},
 		},
 	})
+}
 
-	backend.assertCoverage()
+// TestAccDeploymentOfflineWithoutDisplayName covers the configuration shape that
+// used to be unmanageable: every optional argument omitted. The service defaults
+// or materializes several of them, and it rejects an empty display_name, so both
+// a create and a later update have to work without one.
+func TestAccDeploymentOfflineWithoutDisplayName(t *testing.T) {
+	if os.Getenv("TF_ACC") != "1" {
+		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
+	}
+
+	backend := newDeploymentContractBackend(t)
+	server := httptest.NewServer(backend)
+	t.Cleanup(server.Close)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: offlineDeploymentFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: deploymentAcceptanceConfig(server.URL, "", "registry.example.com/agent:v1", "1", offlineSecretOne),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("langsmith_deployment.test", "id", offlineDeploymentID),
+					resource.TestCheckNoResourceAttr("langsmith_deployment.test", "display_name"),
+					resource.TestCheckResourceAttr("langsmith_deployment.test", "source_config.deployment_type", "prod"),
+					resource.TestCheckResourceAttr("langsmith_deployment.test", "source_config.build_on_push", "false"),
+				),
+			},
+			{
+				Config:             deploymentAcceptanceConfig(server.URL, "", "registry.example.com/agent:v1", "1", offlineSecretOne),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: false,
+			},
+			{
+				Config: deploymentAcceptanceConfig(server.URL, "", "registry.example.com/agent:v2", "2", offlineSecretTwo),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("langsmith_deployment.test", "latest_revision_id", offlineRevisionTwo),
+					resource.TestCheckNoResourceAttr("langsmith_deployment.test", "display_name"),
+					backend.expectRevisionPosts(1),
+				),
+			},
+		},
+	})
+}
+
+func offlineDeploymentFactories() map[string]func() (tfprotov6.ProviderServer, error) {
+	return map[string]func() (tfprotov6.ProviderServer, error){
+		"langsmith": providerserver.NewProtocol6WithError(New("test")()),
+	}
 }
 
 func deploymentAcceptanceConfig(serverURL, displayName, image, secretsVersion, secret string) string {
@@ -94,9 +169,9 @@ provider "langsmith" {
 }
 
 resource "langsmith_deployment" "test" {
-  name         = "offline-agent"
-  display_name = %q
-  source       = "external_docker"
+  name   = "offline-agent"
+  source = "external_docker"
+  %s
 
   source_config = {
     deployment_type = "prod"
@@ -140,7 +215,7 @@ func deploymentStateExcludesSecrets(state *terraform.State) error {
 type deploymentContractBackend struct {
 	t              *testing.T
 	mu             sync.Mutex
-	displayName    string
+	displayName    *string
 	image          string
 	latestRevision string
 	revisions      []string
@@ -149,11 +224,23 @@ type deploymentContractBackend struct {
 	deleted        bool
 	createPosts    int
 	revisionPosts  int
-	patches        int
 }
 
 func newDeploymentContractBackend(t *testing.T) *deploymentContractBackend {
 	return &deploymentContractBackend{t: t, revisionGets: map[string]int{}}
+}
+
+// expectRevisionPosts asserts how many revisions the service has been asked to
+// create so far, so a step that must not create one says so at that step.
+func (b *deploymentContractBackend) expectRevisionPosts(want int) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if b.revisionPosts != want {
+			return fmt.Errorf("revision creations = %d, want %d", b.revisionPosts, want)
+		}
+		return nil
+	}
 }
 
 func (b *deploymentContractBackend) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -216,11 +303,15 @@ func (b *deploymentContractBackend) create(w http.ResponseWriter, req *http.Requ
 		b.reject(w, req, "invalid create payload")
 		return
 	}
+	// DeploymentCreateRequest has no display_name field, which is why the
+	// provider needs a follow-up PATCH to set one.
 	if _, ok := payload["display_name"]; ok {
 		b.reject(w, req, "create payload contains display_name")
 		return
 	}
 	b.created = true
+	b.deleted = false
+	b.displayName = nil
 	b.image = "registry.example.com/agent:v1"
 	b.latestRevision = offlineRevisionOne
 	b.revisions = []string{offlineRevisionOne}
@@ -234,13 +325,35 @@ func (b *deploymentContractBackend) patch(w http.ResponseWriter, req *http.Reque
 	if !b.decode(w, req, body, &payload) {
 		return
 	}
-	name, ok := payload["display_name"].(string)
-	if !ok || len(payload) != 1 {
-		b.reject(w, req, "PATCH must contain only display_name")
-		return
+	for key := range payload {
+		if key != "display_name" && key != "source_config" {
+			b.reject(w, req, "PATCH carries unsupported field "+key)
+			return
+		}
 	}
-	b.displayName = name
-	b.patches++
+	if raw, ok := payload["display_name"]; ok {
+		name, isString := raw.(string)
+		if !isString || name == "" {
+			// DeploymentPatchRequest.display_name has min_length=1, so an empty
+			// string is a 422 rather than a way to clear the name.
+			b.unprocessable(w, "display_name must be at least 1 character")
+			return
+		}
+		b.displayName = &name
+	}
+	if raw, ok := payload["source_config"]; ok {
+		nested, isObject := raw.(map[string]any)
+		if !isObject {
+			b.reject(w, req, "PATCH source_config is not an object")
+			return
+		}
+		for key := range nested {
+			if key != "build_on_push" && key != "custom_url" {
+				b.reject(w, req, "PATCH source_config carries unsupported field "+key)
+				return
+			}
+		}
+	}
 	b.writeDeployment(w)
 }
 
@@ -273,13 +386,30 @@ func (b *deploymentContractBackend) readDeployment(w http.ResponseWriter, req *h
 	b.writeDeployment(w)
 }
 
+// writeDeployment mirrors host-backend's serializer: absent values are present
+// as null rather than omitted, build_on_push is always a boolean, and an
+// external_docker deployment always reports a resource_spec.
 func (b *deploymentContractBackend) writeDeployment(w http.ResponseWriter) {
 	response := map[string]any{
 		"id": offlineDeploymentID, "name": "offline-agent", "source": "external_docker", "display_name": b.displayName,
-		"source_config": map[string]any{"deployment_type": "prod"}, "source_revision_config": map[string]any{"image_uri": b.image},
-		"secret_references": []any{}, "shareable": false, "route_through_gateway": false, "tenant_id": "offline-workspace",
+		"source_config": map[string]any{
+			"integration_id": nil, "repo_url": nil, "deployment_type": "prod", "build_on_push": false,
+			"custom_url": nil, "listener_id": nil, "listener_config": nil,
+			"install_command": nil, "build_command": nil, "template_id": nil,
+			"resource_spec": map[string]any{
+				"min_scale": 1, "max_scale": 1, "cpu": 1, "cpu_limit": nil,
+				"memory_mb": 2048, "memory_limit_mb": nil,
+				"labels": nil, "annotations": nil, "service_account_name": nil,
+			},
+		},
+		"source_revision_config": map[string]any{
+			"repo_ref": nil, "langgraph_config_path": nil, "image_uri": b.image,
+			"source_tarball_path": nil, "repo_commit_sha": nil,
+		},
+		"secret_references": []any{}, "tenant_id": "offline-workspace",
 		"created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-01T00:00:01Z", "status": "READY",
-		"latest_revision_id": b.latestRevision, "active_revision_id": b.latestRevision, "tracer_session_id": "44444444-4444-4444-4444-444444444444", "url": "https://offline.example.com",
+		"latest_revision_id": b.latestRevision, "active_revision_id": b.latestRevision,
+		"image_version": nil, "is_managed_deep_agent": false,
 	}
 	_ = json.NewEncoder(w).Encode(response)
 }
@@ -300,7 +430,7 @@ func (b *deploymentContractBackend) readRevision(w http.ResponseWriter, req *htt
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id": id, "created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-01T00:00:01Z", "status": status,
-		"status_message": nil, "source": "external_docker", "source_revision_config": map[string]any{"image_uri": image, "tracked_packages": []string{"agent"}},
+		"source": "external_docker", "source_revision_config": map[string]any{"image_uri": image, "tracked_packages": []string{"agent"}},
 	})
 }
 
@@ -315,7 +445,7 @@ func (b *deploymentContractBackend) listRevisions(w http.ResponseWriter, req *ht
 		if id == offlineRevisionTwo {
 			image = "registry.example.com/agent:v2"
 		}
-		resources = append(resources, map[string]any{"id": id, "created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-01T00:00:01Z", "status": "DEPLOYED", "status_message": nil, "source": "external_docker", "source_revision_config": map[string]any{"image_uri": image, "tracked_packages": []string{"agent"}}})
+		resources = append(resources, map[string]any{"id": id, "created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-01T00:00:01Z", "status": "DEPLOYED", "source": "external_docker", "source_revision_config": map[string]any{"image_uri": image, "tracked_packages": []string{"agent"}}})
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"resources": resources, "offset": len(resources)})
 }
@@ -328,17 +458,17 @@ func (b *deploymentContractBackend) decode(w http.ResponseWriter, req *http.Requ
 	return true
 }
 
+// reject fails the test: the provider sent something the service would not
+// accept. unprocessable instead answers the way the service does, for cases the
+// provider is expected to avoid rather than recover from.
 func (b *deploymentContractBackend) reject(w http.ResponseWriter, req *http.Request, reason string) {
 	b.t.Errorf("%s %s: %s", req.Method, req.URL.RequestURI(), reason)
 	http.Error(w, reason, http.StatusBadRequest)
 }
 
-func (b *deploymentContractBackend) assertCoverage() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.createPosts != 1 || b.revisionPosts != 1 || b.patches != 2 || b.revisionGets[offlineRevisionOne] < 2 || b.revisionGets[offlineRevisionTwo] < 2 || !b.deleted || b.created {
-		b.t.Fatalf("contract coverage: create=%d revision=%d patches=%d revision_gets=%v deleted=%t exists=%t", b.createPosts, b.revisionPosts, b.patches, b.revisionGets, b.deleted, b.created)
-	}
+func (b *deploymentContractBackend) unprocessable(w http.ResponseWriter, detail string) {
+	w.WriteHeader(http.StatusUnprocessableEntity)
+	_, _ = w.Write([]byte(`{"detail":"` + detail + `"}`))
 }
 
 func deploymentNestedString(payload map[string]any, object, key string) string {

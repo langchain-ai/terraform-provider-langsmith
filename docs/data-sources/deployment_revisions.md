@@ -49,7 +49,6 @@ Read-Only:
 - `source` (String)
 - `source_revision_config` (Attributes) Source configuration for the revision. (see [below for nested schema](#nestedatt--revisions--source_revision_config))
 - `status` (String)
-- `status_message` (String)
 - `updated_at` (String)
 
 <a id="nestedatt--revisions--source_revision_config"></a>

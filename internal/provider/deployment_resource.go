@@ -9,10 +9,12 @@ import (
 	"sort"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	frameworkvalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -34,27 +36,22 @@ type DeploymentResource struct {
 }
 
 type deploymentResourceModel struct {
-	ID                          types.String                     `tfsdk:"id"`
-	Name                        types.String                     `tfsdk:"name"`
-	Source                      types.String                     `tfsdk:"source"`
-	DisplayName                 types.String                     `tfsdk:"display_name"`
-	SourceConfig                *deploymentSourceConfigModel     `tfsdk:"source_config"`
-	SourceRevisionConfig        *sourceRevisionConfigModel       `tfsdk:"source_revision_config"`
-	Secrets                     types.Map                        `tfsdk:"secrets"`
-	SecretsVersion              types.String                     `tfsdk:"secrets_version"`
-	SecretReferences            []deploymentSecretReferenceModel `tfsdk:"secret_references"`
-	Shareable                   types.Bool                       `tfsdk:"shareable"`
-	RouteThroughGateway         types.Bool                       `tfsdk:"route_through_gateway"`
-	TenantID                    types.String                     `tfsdk:"tenant_id"`
-	CreatedAt                   types.String                     `tfsdk:"created_at"`
-	UpdatedAt                   types.String                     `tfsdk:"updated_at"`
-	Status                      types.String                     `tfsdk:"status"`
-	LatestRevisionID            types.String                     `tfsdk:"latest_revision_id"`
-	ActiveRevisionID            types.String                     `tfsdk:"active_revision_id"`
-	TracerSessionID             types.String                     `tfsdk:"tracer_session_id"`
-	URL                         types.String                     `tfsdk:"url"`
-	LatestRevisionStatus        types.String                     `tfsdk:"latest_revision_status"`
-	LatestRevisionStatusMessage types.String                     `tfsdk:"latest_revision_status_message"`
+	ID                   types.String                     `tfsdk:"id"`
+	Name                 types.String                     `tfsdk:"name"`
+	Source               types.String                     `tfsdk:"source"`
+	DisplayName          types.String                     `tfsdk:"display_name"`
+	SourceConfig         *deploymentSourceConfigModel     `tfsdk:"source_config"`
+	SourceRevisionConfig *sourceRevisionConfigModel       `tfsdk:"source_revision_config"`
+	Secrets              types.Map                        `tfsdk:"secrets"`
+	SecretsVersion       types.String                     `tfsdk:"secrets_version"`
+	SecretReferences     []deploymentSecretReferenceModel `tfsdk:"secret_references"`
+	TenantID             types.String                     `tfsdk:"tenant_id"`
+	CreatedAt            types.String                     `tfsdk:"created_at"`
+	UpdatedAt            types.String                     `tfsdk:"updated_at"`
+	Status               types.String                     `tfsdk:"status"`
+	LatestRevisionID     types.String                     `tfsdk:"latest_revision_id"`
+	ActiveRevisionID     types.String                     `tfsdk:"active_revision_id"`
+	LatestRevisionStatus types.String                     `tfsdk:"latest_revision_status"`
 }
 
 type deploymentSourceConfigModel struct {
@@ -108,22 +105,17 @@ type deploymentAPI struct {
 	SourceConfig         map[string]any                 `json:"source_config"`
 	SourceRevisionConfig map[string]any                 `json:"source_revision_config"`
 	SecretReferences     []deploymentSecretReferenceAPI `json:"secret_references"`
-	Shareable            bool                           `json:"shareable"`
-	RouteThroughGateway  bool                           `json:"route_through_gateway"`
 	TenantID             string                         `json:"tenant_id"`
 	CreatedAt            string                         `json:"created_at"`
 	UpdatedAt            string                         `json:"updated_at"`
 	Status               string                         `json:"status"`
 	LatestRevisionID     *string                        `json:"latest_revision_id"`
 	ActiveRevisionID     *string                        `json:"active_revision_id"`
-	TracerSessionID      *string                        `json:"tracer_session_id"`
-	URL                  *string                        `json:"url"`
 }
 
 type deploymentResourceRevisionAPI struct {
-	ID            string  `json:"id"`
-	Status        string  `json:"status"`
-	StatusMessage *string `json:"status_message"`
+	ID     string `json:"id"`
+	Status string `json:"status"`
 }
 
 type deploymentSecretReferenceAPI struct {
@@ -147,71 +139,231 @@ func (r *DeploymentResource) Configure(ctx context.Context, req resource.Configu
 	}
 }
 
+// Attribute ownership
+//
+// The service returns a normalized view of a deployment: it defaults
+// deployment_type, always reports build_on_push, materializes a resource_spec
+// for external_docker deployments, and reports source_revision_config as the
+// latest revision's resolved values (repo_ref comes back as a commit SHA, not
+// the branch that was requested). Attributes it owns in that sense are
+// Optional+Computed with UseStateForUnknown, so an omitted attribute adopts the
+// service's value once instead of diffing against null forever.
+//
+// The remaining inputs are desired state that the service either never echoes
+// back or reports in a shape of its own -- install_command, build_command,
+// listener_config, resource_spec, source_revision_config, secrets and
+// secret_references. Those stay Optional-only and Terraform remains
+// their source of truth; observed revision values are available from the
+// langsmith_deployment_revision data source.
 func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	replace := []planmodifier.String{stringplanmodifier.RequiresReplace()}
+	immutable := []planmodifier.String{stringplanmodifier.UseStateForUnknown()}
 	computedString := func(description string) schema.StringAttribute {
 		return schema.StringAttribute{Computed: true, MarkdownDescription: description}
 	}
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service.",
+		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.",
 		Attributes: map[string]schema.Attribute{
-			"id":                     computedString("Deployment UUID."),
-			"name":                   schema.StringAttribute{Required: true, PlanModifiers: replace, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}},
-			"source":                 schema.StringAttribute{Required: true, PlanModifiers: replace, Validators: []frameworkvalidator.String{oneOfStringValidator{values: []string{"github", "external_docker", "internal_docker", "internal_source", "internal_template"}}}, MarkdownDescription: "Deployment source."},
-			"display_name":           schema.StringAttribute{Optional: true, Computed: true},
-			"source_config":          schema.SingleNestedAttribute{Required: true, Attributes: sourceConfigSchema()},
-			"source_revision_config": schema.SingleNestedAttribute{Required: true, Attributes: sourceRevisionConfigSchema()},
-			"secrets":                schema.MapAttribute{Optional: true, Sensitive: true, WriteOnly: true, ElementType: types.StringType, MarkdownDescription: "Write-only environment variable values. Change secrets_version whenever this map changes."},
-			"secrets_version":        schema.StringAttribute{Optional: true, MarkdownDescription: "Opaque trigger for applying a new secrets map as a revision."},
-			"secret_references": schema.ListNestedAttribute{Optional: true, NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
-				"name": schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}}, "secret_name": schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}}, "secret_key": schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}},
-			}}},
-			"shareable":                      schema.BoolAttribute{Optional: true, Computed: true},
-			"route_through_gateway":          schema.BoolAttribute{Optional: true, Computed: true},
-			"tenant_id":                      computedString("Owning tenant UUID."),
-			"created_at":                     computedString("Creation timestamp."),
-			"updated_at":                     computedString("Last update timestamp."),
-			"status":                         computedString("Deployment status."),
-			"latest_revision_id":             computedString("Latest revision UUID."),
-			"active_revision_id":             computedString("Active revision UUID."),
-			"tracer_session_id":              computedString("Tracing project UUID."),
-			"url":                            computedString("Serving URL."),
-			"latest_revision_status":         computedString("Latest revision status."),
-			"latest_revision_status_message": computedString("Latest revision status detail."),
+			"id": schema.StringAttribute{
+				Computed:            true,
+				PlanModifiers:       immutable,
+				MarkdownDescription: "Deployment UUID.",
+			},
+			"name": schema.StringAttribute{
+				Required:            true,
+				PlanModifiers:       replace,
+				Validators:          []frameworkvalidator.String{nonEmptyStringValidator{}},
+				MarkdownDescription: "Deployment name. A LangSmith tracing project of the same name is created alongside it. Changing this replaces the deployment.",
+			},
+			"source": schema.StringAttribute{
+				Required:            true,
+				PlanModifiers:       replace,
+				Validators:          []frameworkvalidator.String{oneOfStringValidator{values: []string{"github", "external_docker", "internal_docker", "internal_source", "internal_template"}}},
+				MarkdownDescription: "Where the deployment builds from: `github`, `external_docker`, `internal_docker`, `internal_source`, or `internal_template`. Self-hosted installs support `external_docker`. Changing this replaces the deployment.",
+			},
+			"display_name": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+				Validators:          []frameworkvalidator.String{nonEmptyStringValidator{}},
+				MarkdownDescription: "Human-readable name. The service has no way to clear a display name once set, so removing this argument leaves the last value in place.",
+			},
+			"source_config": schema.SingleNestedAttribute{
+				Required:            true,
+				Attributes:          sourceConfigSchema(),
+				MarkdownDescription: "Configuration that applies to the deployment as a whole.",
+			},
+			"source_revision_config": schema.SingleNestedAttribute{
+				Required:            true,
+				Attributes:          sourceRevisionConfigSchema(),
+				MarkdownDescription: "Configuration for the code or image a revision builds from. Changing any argument here creates a new revision.",
+			},
+			"secrets": schema.MapAttribute{
+				Optional:            true,
+				Sensitive:           true,
+				WriteOnly:           true,
+				ElementType:         types.StringType,
+				Validators:          []frameworkvalidator.Map{mapvalidator.AlsoRequires(path.MatchRoot("secrets_version"))},
+				MarkdownDescription: "Write-only environment variable values, exposed to the deployment's container. Change `secrets_version` whenever this map changes, otherwise the new values are never applied. Set this to `{}` and bump the version to remove all secrets; removing the argument entirely leaves the previous revision's secrets in place.",
+			},
+			"secrets_version": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Opaque trigger for applying a new `secrets` map as a revision. Any change to this value creates a revision carrying the current `secrets`.",
+			},
+			"secret_references": schema.ListNestedAttribute{
+				Optional:            true,
+				MarkdownDescription: "References to existing Kubernetes Secrets to expose as environment variables. Only applicable to the `external_docker` source. Set this to `[]` to remove all references; removing the argument entirely leaves the previous revision's references in place.",
+				NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+					"name": schema.StringAttribute{
+						Required:            true,
+						Validators:          []frameworkvalidator.String{nonEmptyStringValidator{}},
+						MarkdownDescription: "Name of the environment variable to populate.",
+					},
+					"secret_name": schema.StringAttribute{
+						Required:            true,
+						Validators:          []frameworkvalidator.String{nonEmptyStringValidator{}},
+						MarkdownDescription: "Name of an existing Kubernetes Secret in the deployment's namespace.",
+					},
+					"secret_key": schema.StringAttribute{
+						Required:            true,
+						Validators:          []frameworkvalidator.String{nonEmptyStringValidator{}},
+						MarkdownDescription: "Key within that Secret to read the value from.",
+					},
+				}},
+			},
+			"tenant_id": schema.StringAttribute{
+				Computed:            true,
+				PlanModifiers:       immutable,
+				MarkdownDescription: "Owning workspace (tenant) UUID.",
+			},
+			"created_at": schema.StringAttribute{
+				Computed:            true,
+				PlanModifiers:       immutable,
+				MarkdownDescription: "Creation timestamp.",
+			},
+			"updated_at":             computedString("Last update timestamp."),
+			"status":                 computedString("Deployment status, one of `AWAITING_DATABASE`, `READY`, `UNUSED`, `AWAITING_DELETE`, `AWAITING_FINAL_DELETE`, or `UNKNOWN`."),
+			"latest_revision_id":     computedString("UUID of the most recently created revision."),
+			"active_revision_id":     computedString("UUID of the revision currently serving traffic."),
+			"latest_revision_status": computedString("Status of the most recently created revision."),
 		},
 	}
 }
 
 func sourceConfigSchema() map[string]schema.Attribute {
-	replace := []planmodifier.String{stringplanmodifier.RequiresReplace()}
+	// Every argument here that the service echoes back is Optional+Computed, so
+	// omitting one adopts the service's value rather than fighting it. See the
+	// ownership note on Schema.
+	serverOwnedString := func(description string, replaces bool, validators ...frameworkvalidator.String) schema.StringAttribute {
+		modifiers := []planmodifier.String{stringplanmodifier.UseStateForUnknown()}
+		if replaces {
+			modifiers = append(modifiers, stringplanmodifier.RequiresReplace())
+		}
+		return schema.StringAttribute{
+			Optional:            true,
+			Computed:            true,
+			PlanModifiers:       modifiers,
+			Validators:          validators,
+			MarkdownDescription: description,
+		}
+	}
 	return map[string]schema.Attribute{
-		"integration_id":  schema.StringAttribute{Optional: true, PlanModifiers: replace, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}},
-		"repo_url":        schema.StringAttribute{Optional: true, PlanModifiers: replace, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}},
-		"deployment_type": schema.StringAttribute{Optional: true, PlanModifiers: replace, Validators: []frameworkvalidator.String{oneOfStringValidator{values: []string{"dev_free", "dev", "prod", "dev_zero", "dev_free_zero"}}}},
-		"build_on_push":   schema.BoolAttribute{Optional: true},
-		"custom_url":      schema.StringAttribute{Optional: true},
-		"listener_id":     schema.StringAttribute{Optional: true, PlanModifiers: replace, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}},
-		"listener_config": schema.SingleNestedAttribute{Optional: true, Attributes: map[string]schema.Attribute{"k8s_namespace": schema.StringAttribute{Optional: true, PlanModifiers: replace}}},
-		"install_command": schema.StringAttribute{Optional: true},
-		"build_command":   schema.StringAttribute{Optional: true},
-		"template_id":     schema.StringAttribute{Optional: true, PlanModifiers: replace, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}},
-		"resource_spec": schema.SingleNestedAttribute{Optional: true, Attributes: map[string]schema.Attribute{
-			"min_scale": schema.Int64Attribute{Optional: true}, "max_scale": schema.Int64Attribute{Optional: true},
-			"cpu": schema.Float64Attribute{Optional: true}, "cpu_limit": schema.Float64Attribute{Optional: true},
-			"memory_mb": schema.Int64Attribute{Optional: true}, "memory_limit_mb": schema.Int64Attribute{Optional: true},
-			"labels":               schema.MapAttribute{Optional: true, ElementType: types.StringType},
-			"annotations":          schema.MapAttribute{Optional: true, ElementType: types.StringType},
-			"service_account_name": schema.StringAttribute{Optional: true},
-		}},
+		"integration_id":  serverOwnedString("UUID of the GitHub integration to build through. Only applicable to the `github` source. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
+		"repo_url":        serverOwnedString("URL of the repository to build from. Only applicable to the `github` source. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
+		"deployment_type": serverOwnedString("Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. The service defaults this to `prod`. Changing it replaces the deployment.", true, oneOfStringValidator{values: []string{"dev_free", "dev", "prod", "dev_zero", "dev_free_zero"}}),
+		"listener_id":     serverOwnedString("UUID of the listener to bind the deployment to. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
+		"template_id":     serverOwnedString("Identifier of the LangChain template to deploy. Only applicable to the `internal_template` source. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
+		"custom_url":      serverOwnedString("Custom hostname to serve the deployment on. The service has no way to clear this once set, so removing the argument leaves the last value in place.", false),
+		"build_on_push": schema.BoolAttribute{
+			Optional:            true,
+			Computed:            true,
+			PlanModifiers:       []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
+			MarkdownDescription: "Rebuild automatically when the tracked git ref moves. Must be `false` when `source_revision_config.repo_ref` names a tag. The service has no way to clear this once set, so removing the argument leaves the last value in place.",
+		},
+		"install_command": schema.StringAttribute{
+			Optional:            true,
+			MarkdownDescription: "Command used to install dependencies during a build. The service does not report this back, so Terraform is its source of truth.",
+		},
+		"build_command": schema.StringAttribute{
+			Optional:            true,
+			MarkdownDescription: "Command used to build the deployment. The service does not report this back, so Terraform is its source of truth.",
+		},
+		"listener_config": schema.SingleNestedAttribute{
+			Optional:            true,
+			MarkdownDescription: "Listener settings. The service does not report these back, so Terraform is their source of truth.",
+			Attributes: map[string]schema.Attribute{
+				"k8s_namespace": schema.StringAttribute{
+					Optional:            true,
+					PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+					MarkdownDescription: "Kubernetes namespace to deploy into. Changing this replaces the deployment.",
+				},
+			},
+		},
+		"resource_spec": schema.SingleNestedAttribute{
+			Optional:            true,
+			MarkdownDescription: "Compute resources for the deployment. The service materializes defaults and fields this schema does not model, so Terraform owns whatever is set here and leaves the rest alone. Changing any argument creates a new revision.",
+			Attributes: map[string]schema.Attribute{
+				"min_scale": schema.Int64Attribute{
+					Optional:            true,
+					MarkdownDescription: "Minimum replica count. Only `dev_zero` deployment types may scale to 0.",
+				},
+				"max_scale": schema.Int64Attribute{
+					Optional:            true,
+					MarkdownDescription: "Maximum replica count.",
+				},
+				"cpu": schema.Float64Attribute{
+					Optional:            true,
+					MarkdownDescription: "CPU request, in cores.",
+				},
+				"cpu_limit": schema.Float64Attribute{
+					Optional:            true,
+					MarkdownDescription: "CPU limit, in cores.",
+				},
+				"memory_mb": schema.Int64Attribute{
+					Optional:            true,
+					MarkdownDescription: "Memory request, in MiB.",
+				},
+				"memory_limit_mb": schema.Int64Attribute{
+					Optional:            true,
+					MarkdownDescription: "Memory limit, in MiB.",
+				},
+				"labels": schema.MapAttribute{
+					Optional:            true,
+					ElementType:         types.StringType,
+					MarkdownDescription: "Kubernetes labels to apply to the deployment's pods.",
+				},
+				"annotations": schema.MapAttribute{
+					Optional:            true,
+					ElementType:         types.StringType,
+					MarkdownDescription: "Kubernetes annotations to apply to the deployment's pods.",
+				},
+				"service_account_name": schema.StringAttribute{
+					Optional:            true,
+					MarkdownDescription: "Kubernetes service account to run the deployment under.",
+				},
+			},
+		},
 	}
 }
 
 func sourceRevisionConfigSchema() map[string]schema.Attribute {
 	return map[string]schema.Attribute{
-		"repo_ref":              schema.StringAttribute{Optional: true},
-		"langgraph_config_path": schema.StringAttribute{Optional: true},
-		"image_uri":             schema.StringAttribute{Optional: true},
-		"source_tarball_path":   schema.StringAttribute{Optional: true},
+		"repo_ref": schema.StringAttribute{
+			Optional:            true,
+			MarkdownDescription: "Git ref to build: a branch name, or a full ref path for a tag. Tags require `source_config.build_on_push` to be `false`. Only applicable to the `github` source.",
+		},
+		"langgraph_config_path": schema.StringAttribute{
+			Optional:            true,
+			MarkdownDescription: "Path to `langgraph.json` within the repository. Required for the `github` and `internal_source` sources.",
+		},
+		"image_uri": schema.StringAttribute{
+			Optional:            true,
+			MarkdownDescription: "Docker image to deploy, as `<name>:<tag>`. Only applicable to the `external_docker` source.",
+		},
+		"source_tarball_path": schema.StringAttribute{
+			Optional:            true,
+			MarkdownDescription: "Object path of an uploaded source tarball, obtained from the deployment's upload-url endpoint. Only applicable to the `internal_source` source, and only for a deployment that already exists.",
+		},
 	}
 }
 
@@ -308,6 +460,9 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 	if result.ID == "" || result.LatestRevisionID == nil {
 		return interim, errors.New("LangSmith did not return deployment and revision IDs")
 	}
+	// The create endpoint does not accept a display name, so it takes a second
+	// write. A failure here leaves a working deployment, so report the error but
+	// keep the state that proves it exists.
 	if !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() {
 		var ignored deploymentAPI
 		if err := r.client.Patch(ctx, deploymentPath(result.ID), map[string]any{"display_name": plan.DisplayName.ValueString()}, &ignored); err != nil {
@@ -317,10 +472,16 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 	revision, err := r.waitForRevision(ctx, result.ID, *result.LatestRevisionID)
 	if err != nil {
 		interim.LatestRevisionStatus = nullableString(revision.Status)
-		interim.LatestRevisionStatusMessage = nullableStringPointer(revision.StatusMessage)
 		return interim, err
 	}
-	return r.read(ctx, result.ID, plan)
+	// Never fall back to the plan here: its ID is unknown, Create would decline
+	// to persist it, and the deployment we just built would be orphaned.
+	model, err := r.read(ctx, result.ID, plan)
+	if err != nil {
+		interim.LatestRevisionStatus = nullableString(revision.Status)
+		return interim, err
+	}
+	return model, nil
 }
 
 func (r *DeploymentResource) read(ctx context.Context, id string, previous deploymentResourceModel) (deploymentResourceModel, error) {
@@ -330,7 +491,10 @@ func (r *DeploymentResource) read(ctx context.Context, id string, previous deplo
 	}
 	var revision deploymentResourceRevisionAPI
 	if result.LatestRevisionID != nil {
-		if err := r.client.Get(ctx, deploymentRevisionPath(id, *result.LatestRevisionID), nil, &revision); err != nil {
+		// A revision can 404 on its own -- pruned, or reassigned to another
+		// deployment. Callers treat a not-found as "the deployment is gone", so
+		// that must only come from the deployment request above.
+		if err := r.client.Get(ctx, deploymentRevisionPath(id, *result.LatestRevisionID), nil, &revision); err != nil && !isLangSmithNotFound(err) {
 			return previous, err
 		}
 	}
@@ -339,8 +503,7 @@ func (r *DeploymentResource) read(ctx context.Context, id string, previous deplo
 
 func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentResourceModel) (deploymentResourceModel, error) {
 	id := state.ID.ValueString()
-	mutable := mutablePayload(state, plan)
-	if len(mutable) > 0 {
+	if mutable := mutablePayload(state, plan); len(mutable) > 0 {
 		var ignored deploymentAPI
 		if err := r.client.Patch(ctx, deploymentPath(id), mutable, &ignored); err != nil {
 			return plan, err
@@ -348,27 +511,49 @@ func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentR
 	}
 	if revisionChanged(state, plan) {
 		var revision deploymentResourceRevisionAPI
-		if err := r.client.Post(ctx, deploymentRevisionsPath(id), revisionPayload(plan, !plan.Secrets.IsNull() && !plan.Secrets.IsUnknown()), &revision); err != nil {
+		if err := r.client.Post(ctx, deploymentRevisionsPath(id), revisionPayload(plan), &revision); err != nil {
 			return plan, err
 		}
-		partial := plan
-		partial.ID = state.ID
-		partial.Secrets = types.MapNull(types.StringType)
-		partial.LatestRevisionID = nullableString(revision.ID)
-		partial.LatestRevisionStatus = nullableString(revision.Status)
-		partial.LatestRevisionStatusMessage = nullableStringPointer(revision.StatusMessage)
-		partial.ActiveRevisionID = state.ActiveRevisionID
 		if revision.ID == "" {
-			return partial, errors.New("LangSmith did not return a revision ID")
+			return r.applied(ctx, id, state, plan, revision), errors.New("LangSmith did not return a revision ID")
 		}
-		waited, err := r.waitForRevision(ctx, id, revision.ID)
-		if err != nil {
-			partial.LatestRevisionStatus = nullableString(waited.Status)
-			partial.LatestRevisionStatusMessage = nullableStringPointer(waited.StatusMessage)
-			return partial, err
+		if waited, err := r.waitForRevision(ctx, id, revision.ID); err != nil {
+			return r.applied(ctx, id, state, plan, waited), err
 		}
 	}
 	return r.read(ctx, id, plan)
+}
+
+// applied builds a state value that is safe to persist once the service has
+// accepted a revision but the wait for it failed. The plan on its own is not:
+// Terraform leaves every Computed attribute an unset config omits unknown, and
+// unknown values in applied state are reported back as a provider bug. A fresh
+// read fills them in, and the prior state covers the case where that read fails
+// too. The desired inputs come from the plan either way, so a retry recognizes
+// the revision as already applied instead of creating a second one.
+func (r *DeploymentResource) applied(ctx context.Context, id string, state, plan deploymentResourceModel, revision deploymentResourceRevisionAPI) deploymentResourceModel {
+	model, err := r.read(ctx, id, plan)
+	if err != nil {
+		model = state
+		model.SecretsVersion = plan.SecretsVersion
+		model.SecretReferences = plan.SecretReferences
+		model.SourceRevisionConfig = plan.SourceRevisionConfig
+		if model.SourceConfig != nil && plan.SourceConfig != nil {
+			merged := *model.SourceConfig
+			merged.InstallCommand = plan.SourceConfig.InstallCommand
+			merged.BuildCommand = plan.SourceConfig.BuildCommand
+			merged.ListenerConfig = plan.SourceConfig.ListenerConfig
+			merged.ResourceSpec = plan.SourceConfig.ResourceSpec
+			model.SourceConfig = &merged
+		}
+	}
+	if revision.ID != "" {
+		model.LatestRevisionID = types.StringValue(revision.ID)
+	}
+	if revision.Status != "" {
+		model.LatestRevisionStatus = types.StringValue(revision.Status)
+	}
+	return model
 }
 
 func (r *DeploymentResource) delete(ctx context.Context, id string) error {
@@ -412,6 +597,11 @@ func (r *DeploymentResource) pollSettings() (time.Duration, time.Duration) {
 	return interval, timeout
 }
 
+// waitForRevision polls until the revision stops moving. Only the three failure
+// statuses are errors: SKIPPED means a newer revision superseded this one before
+// the service promoted it, and INTERRUPTED and UNKNOWN are transient states with
+// onward transitions, so treating any of them as failure would abort an apply
+// the service goes on to complete.
 func (r *DeploymentResource) waitForRevision(ctx context.Context, id, revisionID string) (deploymentResourceRevisionAPI, error) {
 	interval, timeout := r.pollSettings()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -422,10 +612,10 @@ func (r *DeploymentResource) waitForRevision(ctx context.Context, id, revisionID
 			return revision, err
 		}
 		switch revision.Status {
-		case "DEPLOYED":
+		case "DEPLOYED", "SKIPPED":
 			return revision, nil
-		case "CREATE_FAILED", "BUILD_FAILED", "DEPLOY_FAILED", "SKIPPED", "INTERRUPTED", "UNKNOWN":
-			return revision, fmt.Errorf("revision %s reached terminal status %s: %s", revisionID, revision.Status, deploymentStringPointer(revision.StatusMessage))
+		case "CREATE_FAILED", "BUILD_FAILED", "DEPLOY_FAILED":
+			return revision, fmt.Errorf("revision %s failed with status %s", revisionID, revision.Status)
 		}
 		select {
 		case <-ctx.Done():
@@ -436,52 +626,67 @@ func (r *DeploymentResource) waitForRevision(ctx context.Context, id, revisionID
 }
 
 func createPayload(m deploymentResourceModel) map[string]any {
-	p := map[string]any{"name": m.Name.ValueString(), "source": m.Source.ValueString(), "source_config": sourceConfigPayload(m.SourceConfig), "source_revision_config": sourceRevisionPayload(m.SourceRevisionConfig), "secrets": secretsPayload(m.Secrets)}
-	if refs := secretReferencesPayload(m.SecretReferences); refs != nil {
-		p["secret_references"] = refs
+	p := map[string]any{
+		"name":                   m.Name.ValueString(),
+		"source":                 m.Source.ValueString(),
+		"source_config":          sourceConfigPayload(m.SourceConfig),
+		"source_revision_config": sourceRevisionPayload(m.SourceRevisionConfig),
+		"secrets":                secretsPayload(m.Secrets),
 	}
-	putBool(p, "shareable", m.Shareable)
-	putBool(p, "route_through_gateway", m.RouteThroughGateway)
+	if m.SecretReferences != nil {
+		p["secret_references"] = secretReferencesPayload(m.SecretReferences)
+	}
 	return p
 }
 
-func mutablePayload(old, plan deploymentResourceModel) map[string]any {
+func mutablePayload(state, plan deploymentResourceModel) map[string]any {
 	p := map[string]any{}
-	if !old.DisplayName.Equal(plan.DisplayName) {
-		p["display_name"] = nullableValue(plan.DisplayName)
+	if changedValue(state.DisplayName, plan.DisplayName) {
+		p["display_name"] = plan.DisplayName.ValueString()
 	}
-	oldBuild, newBuild := types.BoolNull(), types.BoolNull()
-	if old.SourceConfig != nil {
-		oldBuild = old.SourceConfig.BuildOnPush
-	}
-	if plan.SourceConfig != nil {
-		newBuild = plan.SourceConfig.BuildOnPush
-	}
-	oldCustomURL, newCustomURL := types.StringNull(), types.StringNull()
-	if old.SourceConfig != nil {
-		oldCustomURL = old.SourceConfig.CustomURL
-	}
-	if plan.SourceConfig != nil {
-		newCustomURL = plan.SourceConfig.CustomURL
-	}
-	if !oldBuild.Equal(newBuild) || !oldCustomURL.Equal(newCustomURL) {
-		sourceConfig := map[string]any{}
-		if !oldBuild.Equal(newBuild) {
-			sourceConfig["build_on_push"] = nullableBool(newBuild)
+	sourceConfig := map[string]any{}
+	if state.SourceConfig != nil && plan.SourceConfig != nil {
+		if !plan.SourceConfig.BuildOnPush.IsUnknown() && !state.SourceConfig.BuildOnPush.Equal(plan.SourceConfig.BuildOnPush) && !plan.SourceConfig.BuildOnPush.IsNull() {
+			sourceConfig["build_on_push"] = plan.SourceConfig.BuildOnPush.ValueBool()
 		}
-		if !oldCustomURL.Equal(newCustomURL) {
-			sourceConfig["custom_url"] = nullableValue(newCustomURL)
+		if changedValue(state.SourceConfig.CustomURL, plan.SourceConfig.CustomURL) {
+			sourceConfig["custom_url"] = plan.SourceConfig.CustomURL.ValueString()
 		}
+	}
+	if len(sourceConfig) > 0 {
 		p["source_config"] = sourceConfig
 	}
 	return p
 }
 
-func revisionChanged(old, plan deploymentResourceModel) bool {
-	if !reflect.DeepEqual(old.SourceRevisionConfig, plan.SourceRevisionConfig) || !old.SecretsVersion.Equal(plan.SecretsVersion) || !reflect.DeepEqual(old.SecretReferences, plan.SecretReferences) || !old.Shareable.Equal(plan.Shareable) || !old.RouteThroughGateway.Equal(plan.RouteThroughGateway) {
+// changedValue reports whether plan carries a new value worth sending. An
+// unknown plan value holds no user intent -- it is what the framework leaves
+// behind for a Computed attribute whose config and prior state are both null --
+// and a null one cannot be sent, because the service merges request nulls into
+// the existing row rather than clearing it. Sending either would serialize an
+// empty string, which the service rejects for display_name.
+func changedValue(state, plan types.String) bool {
+	if plan.IsUnknown() || plan.IsNull() {
+		return false
+	}
+	return !state.Equal(plan)
+}
+
+// revisionChanged reports whether any input the service turns into a new
+// revision differs from the applied state. Unknown plan values are excluded for
+// the reason given on changedValue: they mean "unset", not "changed", and
+// treating them as a change would rebuild and redeploy on every apply.
+func revisionChanged(state, plan deploymentResourceModel) bool {
+	if !state.SecretsVersion.Equal(plan.SecretsVersion) {
 		return true
 	}
-	return !reflect.DeepEqual(revisionSourceConfig(old.SourceConfig), revisionSourceConfig(plan.SourceConfig))
+	if !reflect.DeepEqual(state.SourceRevisionConfig, plan.SourceRevisionConfig) {
+		return true
+	}
+	if !reflect.DeepEqual(state.SecretReferences, plan.SecretReferences) {
+		return true
+	}
+	return !reflect.DeepEqual(revisionSourceConfig(state.SourceConfig), revisionSourceConfig(plan.SourceConfig))
 }
 
 func revisionSourceConfig(s *deploymentSourceConfigModel) map[string]any {
@@ -497,19 +702,20 @@ func revisionSourceConfig(s *deploymentSourceConfigModel) map[string]any {
 	return p
 }
 
-func revisionPayload(m deploymentResourceModel, includeSecrets bool) map[string]any {
+func revisionPayload(m deploymentResourceModel) map[string]any {
 	p := map[string]any{"source_revision_config": sourceRevisionPayload(m.SourceRevisionConfig)}
 	if sourceConfig := revisionSourceConfig(m.SourceConfig); len(sourceConfig) > 0 {
 		p["source_config"] = sourceConfig
 	}
-	if includeSecrets {
+	// Secrets are write-only, so they are only in hand when the configuration
+	// still declares them. Omitting the key tells the service to carry the
+	// previous revision's values over; sending an empty list clears them.
+	if !m.Secrets.IsNull() && !m.Secrets.IsUnknown() {
 		p["secrets"] = secretsPayload(m.Secrets)
 	}
-	if refs := secretReferencesPayload(m.SecretReferences); refs != nil {
-		p["secret_references"] = refs
+	if m.SecretReferences != nil {
+		p["secret_references"] = secretReferencesPayload(m.SecretReferences)
 	}
-	putBool(p, "shareable", m.Shareable)
-	putBool(p, "route_through_gateway", m.RouteThroughGateway)
 	return p
 }
 
@@ -578,12 +784,9 @@ func secretsPayload(v types.Map) []map[string]string {
 }
 
 func secretReferencesPayload(refs []deploymentSecretReferenceModel) []deploymentSecretReferenceAPI {
-	if refs == nil {
-		return nil
-	}
-	out := make([]deploymentSecretReferenceAPI, len(refs))
-	for i, ref := range refs {
-		out[i] = deploymentSecretReferenceAPI{ref.Name.ValueString(), ref.SecretName.ValueString(), ref.SecretKey.ValueString()}
+	out := make([]deploymentSecretReferenceAPI, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, deploymentSecretReferenceAPI{ref.Name.ValueString(), ref.SecretName.ValueString(), ref.SecretKey.ValueString()})
 	}
 	return out
 }
@@ -594,36 +797,55 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 	next.Name = types.StringValue(api.Name)
 	next.Source = types.StringValue(api.Source)
 	next.DisplayName = nullableStringPointer(api.DisplayName)
+
+	adopt := adoptServerState(previous)
 	sourceConfig := sourceConfigModelFromAPI(api.SourceConfig)
-	if next.SourceConfig != nil {
-		if _, ok := api.SourceConfig["install_command"]; !ok {
-			sourceConfig.InstallCommand = next.SourceConfig.InstallCommand
-		}
-		if _, ok := api.SourceConfig["build_command"]; !ok {
-			sourceConfig.BuildCommand = next.SourceConfig.BuildCommand
-		}
+	if !adopt && previous.SourceConfig != nil {
+		// Desired-only arguments: the service reports these back as null
+		// whatever was sent, so reading them would drop the configured value and
+		// fail the apply as inconsistent.
+		sourceConfig.InstallCommand = previous.SourceConfig.InstallCommand
+		sourceConfig.BuildCommand = previous.SourceConfig.BuildCommand
+		sourceConfig.ListenerConfig = previous.SourceConfig.ListenerConfig
+		sourceConfig.ResourceSpec = previous.SourceConfig.ResourceSpec
 	}
 	next.SourceConfig = sourceConfig
-	if api.SourceRevisionConfig != nil {
+
+	// source_revision_config describes the latest revision rather than the
+	// request that produced it, so Terraform keeps its own desired values unless
+	// there is no prior state to keep -- an import, where the service's view is
+	// all there is.
+	if adopt && api.SourceRevisionConfig != nil {
 		next.SourceRevisionConfig = sourceRevisionModelFromAPI(api.SourceRevisionConfig)
 	}
-	if len(api.SecretReferences) > 0 || previous.SecretReferences != nil {
+	// With no prior state, adopt references only if there are any: turning an
+	// empty response list into an empty configured list would make an imported
+	// deployment differ from an applied one.
+	if adopt {
+		if len(api.SecretReferences) > 0 {
+			next.SecretReferences = secretReferenceModelsFromAPI(api.SecretReferences)
+		}
+	} else if previous.SecretReferences != nil {
 		next.SecretReferences = secretReferenceModelsFromAPI(api.SecretReferences)
 	}
-	next.Shareable = types.BoolValue(api.Shareable)
-	next.RouteThroughGateway = types.BoolValue(api.RouteThroughGateway)
+
 	next.TenantID = nullableString(api.TenantID)
 	next.CreatedAt = nullableString(api.CreatedAt)
 	next.UpdatedAt = nullableString(api.UpdatedAt)
 	next.Status = nullableString(api.Status)
 	next.LatestRevisionID = nullableStringPointer(api.LatestRevisionID)
 	next.ActiveRevisionID = nullableStringPointer(api.ActiveRevisionID)
-	next.TracerSessionID = nullableStringPointer(api.TracerSessionID)
-	next.URL = nullableStringPointer(api.URL)
 	next.LatestRevisionStatus = nullableString(revision.Status)
-	next.LatestRevisionStatusMessage = nullableStringPointer(revision.StatusMessage)
 	next.Secrets = types.MapNull(types.StringType)
 	return next
+}
+
+// adoptServerState reports whether there is no prior desired state to preserve.
+// That is the shape ImportState leaves behind, where only the ID is set, and it
+// is the one case where the service's view of the desired-only arguments is
+// better than nothing.
+func adoptServerState(previous deploymentResourceModel) bool {
+	return previous.Name.IsNull() || previous.Name.IsUnknown()
 }
 
 func sourceConfigModelFromAPI(api map[string]any) *deploymentSourceConfigModel {
@@ -658,9 +880,9 @@ func sourceRevisionModelFromAPI(api map[string]any) *sourceRevisionConfigModel {
 }
 
 func secretReferenceModelsFromAPI(api []deploymentSecretReferenceAPI) []deploymentSecretReferenceModel {
-	result := make([]deploymentSecretReferenceModel, len(api))
-	for i, ref := range api {
-		result[i] = deploymentSecretReferenceModel{Name: types.StringValue(ref.Name), SecretName: types.StringValue(ref.SecretName), SecretKey: types.StringValue(ref.SecretKey)}
+	result := make([]deploymentSecretReferenceModel, 0, len(api))
+	for _, ref := range api {
+		result = append(result, deploymentSecretReferenceModel{Name: types.StringValue(ref.Name), SecretName: types.StringValue(ref.SecretName), SecretKey: types.StringValue(ref.SecretKey)})
 	}
 	return result
 }
@@ -694,15 +916,11 @@ func apiMap(api map[string]any, key string) types.Map {
 	if !ok {
 		return types.MapNull(types.StringType)
 	}
-	elements := make(map[string]types.String, len(value))
+	converted := make(map[string]attr.Value, len(value))
 	for k, raw := range value {
 		if s, ok := raw.(string); ok {
-			elements[k] = types.StringValue(s)
+			converted[k] = types.StringValue(s)
 		}
-	}
-	converted := make(map[string]attr.Value, len(elements))
-	for k, v := range elements {
-		converted[k] = v
 	}
 	return types.MapValueMust(types.StringType, converted)
 }
@@ -738,22 +956,4 @@ func putFloat(p map[string]any, key string, v types.Float64) {
 	if !v.IsNull() && !v.IsUnknown() {
 		p[key] = v.ValueFloat64()
 	}
-}
-func nullableValue(v types.String) any {
-	if v.IsNull() {
-		return nil
-	}
-	return v.ValueString()
-}
-func nullableBool(v types.Bool) any {
-	if v.IsNull() {
-		return nil
-	}
-	return v.ValueBool()
-}
-func deploymentStringPointer(v *string) string {
-	if v == nil {
-		return ""
-	}
-	return *v
 }

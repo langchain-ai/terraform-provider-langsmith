@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -58,7 +57,7 @@ func (p *LangSmithProvider) Schema(ctx context.Context, req frameworkprovider.Sc
 			},
 			"control_plane_url": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "LangSmith control-plane API URL. Defaults to `LANGSMITH_CONTROL_PLANE_URL`, then `https://api.host.langchain.com`.",
+				MarkdownDescription: "LangSmith control-plane API URL, used by `langsmith_deployment` and the deployment revision data sources. Defaults to `LANGSMITH_CONTROL_PLANE_URL`, then to whatever `api_url` implies: `https://api.host.langchain.com` for LangSmith SaaS, or `<api_url origin>/api-host` for a self-hosted install. Set it explicitly when selecting a self-hosted install through `profile`, because the provider cannot read a profile's endpoint.",
 			},
 			"workspace_id": schema.StringAttribute{
 				Optional:            true,
@@ -99,10 +98,10 @@ func (p *LangSmithProvider) Configure(ctx context.Context, req frameworkprovider
 	}
 
 	apiKey := stringConfig(config.APIKey)
-	apiURL := stringConfig(config.APIURL)
+	apiURL := resolveAPIURL(stringConfig(config.APIURL))
 	workspaceID := stringConfig(config.WorkspaceID)
 	profileName := stringConfig(config.Profile)
-	controlPlaneURL, err := resolveControlPlaneURL(stringConfig(config.ControlPlaneURL))
+	controlPlaneURL, err := resolveControlPlaneURL(stringConfig(config.ControlPlaneURL), apiURL)
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("control_plane_url"), "Invalid Control Plane URL", err.Error())
 		return
@@ -112,8 +111,8 @@ func (p *LangSmithProvider) Configure(ctx context.Context, req frameworkprovider
 	if profileName != "" {
 		opts = append(opts, langsmith.WithProfile(profileName))
 	}
-	if endpoint := resolveAPIURL(apiURL); endpoint != "" {
-		opts = append(opts, option.WithBaseURL(endpoint))
+	if apiURL != "" {
+		opts = append(opts, option.WithBaseURL(apiURL))
 	}
 	if workspaceID != "" {
 		opts = append(opts, option.WithTenantID(workspaceID))
@@ -200,43 +199,85 @@ func normalizeAPIURL(raw string) string {
 	return strings.TrimSuffix(u, "/api/v1")
 }
 
-const defaultControlPlaneURL = "https://api.host.langchain.com"
+const (
+	defaultControlPlaneURL     = "https://api.host.langchain.com"
+	selfHostedControlPlanePath = "/api-host"
+)
 
-func resolveControlPlaneURL(configured string) (string, error) {
-	raw := configured
-	if raw == "" {
-		raw = strings.TrimSpace(os.Getenv("LANGSMITH_CONTROL_PLANE_URL"))
-	}
-	if raw == "" {
-		raw = defaultControlPlaneURL
-	}
+// saasControlPlanes maps a LangSmith SaaS API host to the control plane that
+// serves it. Any other host belongs to a self-hosted install, where both live on
+// the same origin.
+var saasControlPlanes = map[string]string{
+	"api.smith.langchain.com":    defaultControlPlaneURL,
+	"eu.api.smith.langchain.com": "https://eu.api.host.langchain.com",
+}
 
-	u, err := url.Parse(strings.TrimSpace(raw))
+// resolveControlPlaneURL returns the base URL for the deployment control plane:
+// the provider argument, then LANGSMITH_CONTROL_PLANE_URL, then whatever the
+// resolved LangSmith API URL implies.
+//
+// Deriving it from apiURL is what keeps a self-hosted install self-hosted.
+// Falling straight back to the SaaS default would send a self-hosted API key to
+// LangChain's servers for anyone who configured only api_url or
+// LANGSMITH_ENDPOINT, which is both a leak and a confusing 401.
+//
+// A profile supplies its endpoint inside the SDK, where the provider cannot read
+// it, so a profile-only configuration still needs control_plane_url set
+// explicitly to reach a self-hosted control plane.
+func resolveControlPlaneURL(configured, apiURL string) (string, error) {
+	if raw := strings.TrimSpace(configured); raw != "" {
+		return validateControlPlaneURL(raw, "the control_plane_url argument")
+	}
+	if raw := strings.TrimSpace(os.Getenv("LANGSMITH_CONTROL_PLANE_URL")); raw != "" {
+		return validateControlPlaneURL(raw, "LANGSMITH_CONTROL_PLANE_URL")
+	}
+	return controlPlaneURLForAPIURL(apiURL), nil
+}
+
+// controlPlaneURLForAPIURL derives the control-plane URL from an already
+// normalized LangSmith API URL. Self-hosted installs serve it from the same
+// origin under /api-host.
+func controlPlaneURLForAPIURL(apiURL string) string {
+	if apiURL == "" {
+		return defaultControlPlaneURL
+	}
+	u, err := url.Parse(apiURL)
+	if err != nil || u.Host == "" {
+		return defaultControlPlaneURL
+	}
+	if saas, ok := saasControlPlanes[strings.ToLower(u.Hostname())]; ok {
+		return saas
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + selfHostedControlPlanePath
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
+// validateControlPlaneURL rejects values that cannot address a control plane.
+// Both HTTP and HTTPS are accepted: self-hosted installs are documented as
+// http(s)://<host>/api-host, and api_url places no restriction on scheme either,
+// so requiring TLS here would reject a working install and, because this runs in
+// provider configuration, take every other resource down with it.
+func validateControlPlaneURL(raw, source string) (string, error) {
+	u, err := url.Parse(raw)
 	if err != nil || !u.IsAbs() || u.Host == "" {
-		return "", fmt.Errorf("must be an absolute URL")
+		return "", fmt.Errorf("%q from %s must be an absolute URL, such as https://api.host.langchain.com or https://langsmith.example.com/api-host", raw, source)
 	}
 	if u.User != nil {
-		return "", fmt.Errorf("must not include user information")
+		return "", fmt.Errorf("%q from %s must not include user information", raw, source)
 	}
 	if u.RawQuery != "" || u.ForceQuery {
-		return "", fmt.Errorf("must not include a query string")
+		return "", fmt.Errorf("%q from %s must not include a query string", raw, source)
 	}
 	if u.Fragment != "" || strings.Contains(raw, "#") {
-		return "", fmt.Errorf("must not include a fragment")
+		return "", fmt.Errorf("%q from %s must not include a fragment", raw, source)
 	}
-	if u.Scheme != "https" && (u.Scheme != "http" || !isLoopbackHost(u.Hostname())) {
-		return "", fmt.Errorf("must use HTTPS, or HTTP only for a loopback host")
+	if scheme := strings.ToLower(u.Scheme); scheme != "https" && scheme != "http" {
+		return "", fmt.Errorf("%q from %s must use HTTPS, or HTTP for an install that does not terminate TLS", raw, source)
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	return u.String(), nil
-}
-
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 func stringConfig(value types.String) string {

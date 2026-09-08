@@ -89,6 +89,6 @@ source it from a secret store.
 
 - `api_key` (String, Sensitive) LangSmith API key. Prefer SDK environment/profile configuration.
 - `api_url` (String) LangSmith API URL. Prefer SDK environment/profile configuration.
-- `control_plane_url` (String) LangSmith control-plane API URL. Defaults to `LANGSMITH_CONTROL_PLANE_URL`, then `https://api.host.langchain.com`.
+- `control_plane_url` (String) LangSmith control-plane API URL, used by `langsmith_deployment` and the deployment revision data sources. Defaults to `LANGSMITH_CONTROL_PLANE_URL`, then to whatever `api_url` implies: `https://api.host.langchain.com` for LangSmith SaaS, or `<api_url origin>/api-host` for a self-hosted install. Set it explicitly when selecting a self-hosted install through `profile`, because the provider cannot read a profile's endpoint.
 - `profile` (String) LangSmith profile name. Prefer `LANGSMITH_PROFILE` unless this Terraform root must select one explicitly.
 - `workspace_id` (String) LangSmith workspace ID. Prefer SDK environment/profile configuration.

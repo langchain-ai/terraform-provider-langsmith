@@ -3,12 +3,12 @@
 page_title: "langsmith_deployment Resource - langsmith"
 subcategory: ""
 description: |-
-  Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service.
+  Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the langsmith_deployment_revision data source to read one.
 ---
 
 # langsmith_deployment (Resource)
 
-Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service.
+Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.
 
 ## Example Usage
 
@@ -22,7 +22,7 @@ resource "langsmith_deployment" "agent" {
     integration_id  = var.github_integration_id
     repo_url        = "https://github.com/example/support-agent"
     deployment_type = "dev"
-    build_on_push    = true
+    build_on_push   = true
   }
 
   source_revision_config = {
@@ -30,13 +30,13 @@ resource "langsmith_deployment" "agent" {
     langgraph_config_path = "langgraph.json"
   }
 
+  # secrets is write-only, so Terraform cannot detect a change to it. Bump
+  # secrets_version whenever the map changes, otherwise the new values are
+  # never applied.
   secrets = {
     OPENAI_API_KEY = var.openai_api_key
   }
   secrets_version = "1"
-
-  shareable             = false
-  route_through_gateway = true
 }
 ```
 
@@ -45,59 +45,54 @@ resource "langsmith_deployment" "agent" {
 
 ### Required
 
-- `name` (String)
-- `source` (String) Deployment source.
-- `source_config` (Attributes) (see [below for nested schema](#nestedatt--source_config))
-- `source_revision_config` (Attributes) (see [below for nested schema](#nestedatt--source_revision_config))
+- `name` (String) Deployment name. A LangSmith tracing project of the same name is created alongside it. Changing this replaces the deployment.
+- `source` (String) Where the deployment builds from: `github`, `external_docker`, `internal_docker`, `internal_source`, or `internal_template`. Self-hosted installs support `external_docker`. Changing this replaces the deployment.
+- `source_config` (Attributes) Configuration that applies to the deployment as a whole. (see [below for nested schema](#nestedatt--source_config))
+- `source_revision_config` (Attributes) Configuration for the code or image a revision builds from. Changing any argument here creates a new revision. (see [below for nested schema](#nestedatt--source_revision_config))
 
 ### Optional
 
 > **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
 
-- `display_name` (String)
-- `route_through_gateway` (Boolean)
-- `secret_references` (Attributes List) (see [below for nested schema](#nestedatt--secret_references))
-- `secrets` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only environment variable values. Change secrets_version whenever this map changes.
-- `secrets_version` (String) Opaque trigger for applying a new secrets map as a revision.
-- `shareable` (Boolean)
+- `display_name` (String) Human-readable name. The service has no way to clear a display name once set, so removing this argument leaves the last value in place.
+- `secret_references` (Attributes List) References to existing Kubernetes Secrets to expose as environment variables. Only applicable to the `external_docker` source. Set this to `[]` to remove all references; removing the argument entirely leaves the previous revision's references in place. (see [below for nested schema](#nestedatt--secret_references))
+- `secrets` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only environment variable values, exposed to the deployment's container. Change `secrets_version` whenever this map changes, otherwise the new values are never applied. Set this to `{}` and bump the version to remove all secrets; removing the argument entirely leaves the previous revision's secrets in place.
+- `secrets_version` (String) Opaque trigger for applying a new `secrets` map as a revision. Any change to this value creates a revision carrying the current `secrets`.
 
 ### Read-Only
 
-- `active_revision_id` (String) Active revision UUID.
+- `active_revision_id` (String) UUID of the revision currently serving traffic.
 - `created_at` (String) Creation timestamp.
 - `id` (String) Deployment UUID.
-- `latest_revision_id` (String) Latest revision UUID.
-- `latest_revision_status` (String) Latest revision status.
-- `latest_revision_status_message` (String) Latest revision status detail.
-- `status` (String) Deployment status.
-- `tenant_id` (String) Owning tenant UUID.
-- `tracer_session_id` (String) Tracing project UUID.
+- `latest_revision_id` (String) UUID of the most recently created revision.
+- `latest_revision_status` (String) Status of the most recently created revision.
+- `status` (String) Deployment status, one of `AWAITING_DATABASE`, `READY`, `UNUSED`, `AWAITING_DELETE`, `AWAITING_FINAL_DELETE`, or `UNKNOWN`.
+- `tenant_id` (String) Owning workspace (tenant) UUID.
 - `updated_at` (String) Last update timestamp.
-- `url` (String) Serving URL.
 
 <a id="nestedatt--source_config"></a>
 ### Nested Schema for `source_config`
 
 Optional:
 
-- `build_command` (String)
-- `build_on_push` (Boolean)
-- `custom_url` (String)
-- `deployment_type` (String)
-- `install_command` (String)
-- `integration_id` (String)
-- `listener_config` (Attributes) (see [below for nested schema](#nestedatt--source_config--listener_config))
-- `listener_id` (String)
-- `repo_url` (String)
-- `resource_spec` (Attributes) (see [below for nested schema](#nestedatt--source_config--resource_spec))
-- `template_id` (String)
+- `build_command` (String) Command used to build the deployment. The service does not report this back, so Terraform is its source of truth.
+- `build_on_push` (Boolean) Rebuild automatically when the tracked git ref moves. Must be `false` when `source_revision_config.repo_ref` names a tag. The service has no way to clear this once set, so removing the argument leaves the last value in place.
+- `custom_url` (String) Custom hostname to serve the deployment on. The service has no way to clear this once set, so removing the argument leaves the last value in place.
+- `deployment_type` (String) Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. The service defaults this to `prod`. Changing it replaces the deployment.
+- `install_command` (String) Command used to install dependencies during a build. The service does not report this back, so Terraform is its source of truth.
+- `integration_id` (String) UUID of the GitHub integration to build through. Only applicable to the `github` source. Changing this replaces the deployment.
+- `listener_config` (Attributes) Listener settings. The service does not report these back, so Terraform is their source of truth. (see [below for nested schema](#nestedatt--source_config--listener_config))
+- `listener_id` (String) UUID of the listener to bind the deployment to. Changing this replaces the deployment.
+- `repo_url` (String) URL of the repository to build from. Only applicable to the `github` source. Changing this replaces the deployment.
+- `resource_spec` (Attributes) Compute resources for the deployment. The service materializes defaults and fields this schema does not model, so Terraform owns whatever is set here and leaves the rest alone. Changing any argument creates a new revision. (see [below for nested schema](#nestedatt--source_config--resource_spec))
+- `template_id` (String) Identifier of the LangChain template to deploy. Only applicable to the `internal_template` source. Changing this replaces the deployment.
 
 <a id="nestedatt--source_config--listener_config"></a>
 ### Nested Schema for `source_config.listener_config`
 
 Optional:
 
-- `k8s_namespace` (String)
+- `k8s_namespace` (String) Kubernetes namespace to deploy into. Changing this replaces the deployment.
 
 
 <a id="nestedatt--source_config--resource_spec"></a>
@@ -105,15 +100,15 @@ Optional:
 
 Optional:
 
-- `annotations` (Map of String)
-- `cpu` (Number)
-- `cpu_limit` (Number)
-- `labels` (Map of String)
-- `max_scale` (Number)
-- `memory_limit_mb` (Number)
-- `memory_mb` (Number)
-- `min_scale` (Number)
-- `service_account_name` (String)
+- `annotations` (Map of String) Kubernetes annotations to apply to the deployment's pods.
+- `cpu` (Number) CPU request, in cores.
+- `cpu_limit` (Number) CPU limit, in cores.
+- `labels` (Map of String) Kubernetes labels to apply to the deployment's pods.
+- `max_scale` (Number) Maximum replica count.
+- `memory_limit_mb` (Number) Memory limit, in MiB.
+- `memory_mb` (Number) Memory request, in MiB.
+- `min_scale` (Number) Minimum replica count. Only `dev_zero` deployment types may scale to 0.
+- `service_account_name` (String) Kubernetes service account to run the deployment under.
 
 
 
@@ -122,10 +117,10 @@ Optional:
 
 Optional:
 
-- `image_uri` (String)
-- `langgraph_config_path` (String)
-- `repo_ref` (String)
-- `source_tarball_path` (String)
+- `image_uri` (String) Docker image to deploy, as `<name>:<tag>`. Only applicable to the `external_docker` source.
+- `langgraph_config_path` (String) Path to `langgraph.json` within the repository. Required for the `github` and `internal_source` sources.
+- `repo_ref` (String) Git ref to build: a branch name, or a full ref path for a tag. Tags require `source_config.build_on_push` to be `false`. Only applicable to the `github` source.
+- `source_tarball_path` (String) Object path of an uploaded source tarball, obtained from the deployment's upload-url endpoint. Only applicable to the `internal_source` source, and only for a deployment that already exists.
 
 
 <a id="nestedatt--secret_references"></a>
@@ -133,6 +128,6 @@ Optional:
 
 Required:
 
-- `name` (String)
-- `secret_key` (String)
-- `secret_name` (String)
+- `name` (String) Name of the environment variable to populate.
+- `secret_key` (String) Key within that Secret to read the value from.
+- `secret_name` (String) Name of an existing Kubernetes Secret in the deployment's namespace.

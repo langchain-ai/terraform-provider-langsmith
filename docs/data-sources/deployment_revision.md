@@ -34,7 +34,6 @@ data "langsmith_deployment_revision" "example" {
 - `source` (String) Revision source.
 - `source_revision_config` (Attributes) Source configuration for the revision. (see [below for nested schema](#nestedatt--source_revision_config))
 - `status` (String) Revision status.
-- `status_message` (String) Revision status detail.
 - `updated_at` (String) Revision last update time.
 
 <a id="nestedatt--source_revision_config"></a>
