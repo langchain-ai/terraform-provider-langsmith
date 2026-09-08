@@ -145,9 +145,13 @@ func TestDeploymentUpdateSeparatesPatchAndRevision(t *testing.T) {
 	if _, err := r.update(context.Background(), state, plan); err != nil {
 		t.Fatal(err)
 	}
-	if len(requests) != 5 {
+	if len(requests) != 6 {
 		t.Fatalf("requests = %#v", requests)
 	}
+	if requests[0].Method != http.MethodGet || requests[0].Path != "/v2/deployments/"+testDeploymentID {
+		t.Fatalf("resource specification read = %#v", requests[0])
+	}
+	requests = requests[1:]
 	if requests[0].Method != http.MethodPatch || requests[0].Path != "/v2/deployments/"+testDeploymentID {
 		t.Fatalf("patch = %#v", requests[0])
 	}

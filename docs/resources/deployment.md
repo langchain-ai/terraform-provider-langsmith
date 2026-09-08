@@ -4,11 +4,14 @@ page_title: "langsmith_deployment Resource - langsmith"
 subcategory: ""
 description: |-
   Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the langsmith_deployment_revision data source to read one.
+  Import an existing deployment by UUID using the same workspace and control-plane URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Omit secrets and secrets_version to preserve the existing environment without copying values into state. Review the plan after import before applying changes.
 ---
 
 # langsmith_deployment (Resource)
 
 Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.
+
+Import an existing deployment by UUID using the same workspace and control-plane URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Omit `secrets` and `secrets_version` to preserve the existing environment without copying values into state. Review the plan after import before applying changes.
 
 ## Example Usage
 
@@ -56,7 +59,7 @@ resource "langsmith_deployment" "agent" {
 
 - `display_name` (String) Human-readable name. The service has no way to clear a display name once set, so removing this argument leaves the last value in place.
 - `secret_references` (Attributes List) References to existing Kubernetes Secrets to expose as environment variables. Only applicable to the `external_docker` source. Set this to `[]` to remove all references; removing the argument entirely leaves the previous revision's references in place. (see [below for nested schema](#nestedatt--secret_references))
-- `secrets` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only environment variable values, exposed to the deployment's container. Change `secrets_version` whenever this map changes, otherwise the new values are never applied. Set this to `{}` and bump the version to remove all secrets; removing the argument entirely leaves the previous revision's secrets in place.
+- `secrets` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only environment variable values, exposed to the deployment's container. Change `secrets_version` whenever this map changes, otherwise the new values are never applied. Removing the argument entirely preserves existing secrets. The v2 API currently treats an empty map on update as unchanged, so the provider rejects updates that would send `{}` rather than falsely reporting that all secrets were removed. An empty map is allowed on initial creation.
 - `secrets_version` (String) Opaque trigger for applying a new `secrets` map as a revision. Any change to this value creates a revision carrying the current `secrets`.
 
 ### Read-Only
@@ -75,16 +78,16 @@ resource "langsmith_deployment" "agent" {
 
 Optional:
 
-- `build_command` (String) Command used to build the deployment. The service does not report this back, so Terraform is its source of truth.
+- `build_command` (String) Command used to build a JS deployment. Retained as desired configuration because older API versions do not return it.
 - `build_on_push` (Boolean) Rebuild automatically when the tracked git ref moves. Must be `false` when `source_revision_config.repo_ref` names a tag. The service has no way to clear this once set, so removing the argument leaves the last value in place.
 - `custom_url` (String) Custom hostname to serve the deployment on. The service has no way to clear this once set, so removing the argument leaves the last value in place.
 - `deployment_type` (String) Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. The service defaults this to `prod`. Changing it replaces the deployment.
-- `install_command` (String) Command used to install dependencies during a build. The service does not report this back, so Terraform is its source of truth.
+- `install_command` (String) Command used to install dependencies during a JS build. Retained as desired configuration because older API versions do not return it.
 - `integration_id` (String) UUID of the GitHub integration to build through. Only applicable to the `github` source. Changing this replaces the deployment.
 - `listener_config` (Attributes) Listener settings. The service does not report these back, so Terraform is their source of truth. (see [below for nested schema](#nestedatt--source_config--listener_config))
 - `listener_id` (String) UUID of the listener to bind the deployment to. Changing this replaces the deployment.
 - `repo_url` (String) URL of the repository to build from. Only applicable to the `github` source. Changing this replaces the deployment.
-- `resource_spec` (Attributes) Compute resources for the deployment. The service materializes defaults and fields this schema does not model, so Terraform owns whatever is set here and leaves the rest alone. Changing any argument creates a new revision. (see [below for nested schema](#nestedatt--source_config--resource_spec))
+- `resource_spec` (Attributes) Compute resources for the deployment. Configured fields are merged with the current API resource specification before each revision, preserving unconfigured fields, defaults, and fields this schema does not model. Removing an argument relinquishes management of that field and preserves its current value. Changing any argument creates a new revision. (see [below for nested schema](#nestedatt--source_config--resource_spec))
 - `template_id` (String) Identifier of the LangChain template to deploy. Only applicable to the `internal_template` source. Changing this replaces the deployment.
 
 <a id="nestedatt--source_config--listener_config"></a>
@@ -131,3 +134,14 @@ Required:
 - `name` (String) Name of the environment variable to populate.
 - `secret_key` (String) Key within that Secret to read the value from.
 - `secret_name` (String) Name of an existing Kubernetes Secret in the deployment's namespace.
+
+## Import
+
+Import is supported using the following syntax:
+
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
+```shell
+# Configure the provider with the deployment's workspace and control-plane URL.
+terraform import langsmith_deployment.agent 11111111-1111-1111-1111-111111111111
+```

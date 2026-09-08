@@ -141,11 +141,10 @@ func (r *DeploymentResource) Configure(ctx context.Context, req resource.Configu
 
 // Attribute ownership
 //
-// The service returns a normalized view of a deployment: it defaults
-// deployment_type, always reports build_on_push, materializes a resource_spec
-// for external_docker deployments, and reports source_revision_config as the
-// latest revision's resolved values (repo_ref comes back as a commit SHA, not
-// the branch that was requested). Attributes it owns in that sense are
+// The service returns a normalized view of a deployment: it reports
+// deployment_type and build_on_push, materializes a resource_spec for external
+// images, and includes built artifacts in source_revision_config. Attributes
+// it owns in that sense are
 // Optional+Computed with UseStateForUnknown, so an omitted attribute adopts the
 // service's value once instead of diffing against null forever.
 //
@@ -162,7 +161,7 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 		return schema.StringAttribute{Computed: true, MarkdownDescription: description}
 	}
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.",
+		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.\n\nImport an existing deployment by UUID using the same workspace and control-plane URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Omit `secrets` and `secrets_version` to preserve the existing environment without copying values into state. Review the plan after import before applying changes.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -204,7 +203,7 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 				WriteOnly:           true,
 				ElementType:         types.StringType,
 				Validators:          []frameworkvalidator.Map{mapvalidator.AlsoRequires(path.MatchRoot("secrets_version"))},
-				MarkdownDescription: "Write-only environment variable values, exposed to the deployment's container. Change `secrets_version` whenever this map changes, otherwise the new values are never applied. Set this to `{}` and bump the version to remove all secrets; removing the argument entirely leaves the previous revision's secrets in place.",
+				MarkdownDescription: "Write-only environment variable values, exposed to the deployment's container. Change `secrets_version` whenever this map changes, otherwise the new values are never applied. Removing the argument entirely preserves existing secrets. The v2 API currently treats an empty map on update as unchanged, so the provider rejects updates that would send `{}` rather than falsely reporting that all secrets were removed. An empty map is allowed on initial creation.",
 			},
 			"secrets_version": schema.StringAttribute{
 				Optional:            true,
@@ -282,11 +281,11 @@ func sourceConfigSchema() map[string]schema.Attribute {
 		},
 		"install_command": schema.StringAttribute{
 			Optional:            true,
-			MarkdownDescription: "Command used to install dependencies during a build. The service does not report this back, so Terraform is its source of truth.",
+			MarkdownDescription: "Command used to install dependencies during a JS build. Retained as desired configuration because older API versions do not return it.",
 		},
 		"build_command": schema.StringAttribute{
 			Optional:            true,
-			MarkdownDescription: "Command used to build the deployment. The service does not report this back, so Terraform is its source of truth.",
+			MarkdownDescription: "Command used to build a JS deployment. Retained as desired configuration because older API versions do not return it.",
 		},
 		"listener_config": schema.SingleNestedAttribute{
 			Optional:            true,
@@ -301,7 +300,7 @@ func sourceConfigSchema() map[string]schema.Attribute {
 		},
 		"resource_spec": schema.SingleNestedAttribute{
 			Optional:            true,
-			MarkdownDescription: "Compute resources for the deployment. The service materializes defaults and fields this schema does not model, so Terraform owns whatever is set here and leaves the rest alone. Changing any argument creates a new revision.",
+			MarkdownDescription: "Compute resources for the deployment. Configured fields are merged with the current API resource specification before each revision, preserving unconfigured fields, defaults, and fields this schema does not model. Removing an argument relinquishes management of that field and preserves its current value. Changing any argument creates a new revision.",
 			Attributes: map[string]schema.Attribute{
 				"min_scale": schema.Int64Attribute{
 					Optional:            true,
@@ -503,25 +502,74 @@ func (r *DeploymentResource) read(ctx context.Context, id string, previous deplo
 
 func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentResourceModel) (deploymentResourceModel, error) {
 	id := state.ID.ValueString()
+	needsRevision := revisionChanged(state, plan)
+	var payload map[string]any
+	var revision deploymentResourceRevisionAPI
+	if needsRevision {
+		if !plan.Secrets.IsNull() && !plan.Secrets.IsUnknown() && len(plan.Secrets.Elements()) == 0 {
+			return state, errors.New("the v2 deployment API does not clear secrets when given an empty map; omit secrets to preserve existing values, or supply a non-empty map; clearing all secrets requires an API fix")
+		}
+		var err error
+		payload, err = r.revisionUpdatePayload(ctx, id, plan)
+		if err != nil {
+			return state, err
+		}
+	}
 	if mutable := mutablePayload(state, plan); len(mutable) > 0 {
 		var ignored deploymentAPI
 		if err := r.client.Patch(ctx, deploymentPath(id), mutable, &ignored); err != nil {
-			return plan, err
+			return state, err
 		}
 	}
-	if revisionChanged(state, plan) {
-		var revision deploymentResourceRevisionAPI
-		if err := r.client.Post(ctx, deploymentRevisionsPath(id), revisionPayload(plan), &revision); err != nil {
-			return plan, err
+	if needsRevision {
+		if err := r.client.Post(ctx, deploymentRevisionsPath(id), payload, &revision); err != nil {
+			return state, err
 		}
 		if revision.ID == "" {
 			return r.applied(ctx, id, state, plan, revision), errors.New("LangSmith did not return a revision ID")
 		}
-		if waited, err := r.waitForRevision(ctx, id, revision.ID); err != nil {
-			return r.applied(ctx, id, state, plan, waited), err
+		waited, err := r.waitForRevision(ctx, id, revision.ID)
+		if waited.ID != "" {
+			revision.ID = waited.ID
+		}
+		if waited.Status != "" {
+			revision.Status = waited.Status
+		}
+		if err != nil {
+			return r.applied(ctx, id, state, plan, revision), err
 		}
 	}
-	return r.read(ctx, id, plan)
+	model, err := r.read(ctx, id, plan)
+	if err != nil {
+		return r.applied(ctx, id, state, plan, revision), err
+	}
+	return model, nil
+}
+
+func (r *DeploymentResource) revisionUpdatePayload(ctx context.Context, id string, plan deploymentResourceModel) (map[string]any, error) {
+	payload := revisionPayload(plan)
+	if plan.SourceConfig == nil || plan.SourceConfig.ResourceSpec == nil {
+		return payload, nil
+	}
+	var current deploymentAPI
+	if err := r.client.Get(ctx, deploymentPath(id), nil, &current); err != nil {
+		return nil, fmt.Errorf("reading current resource specification before revision: %w", err)
+	}
+	// The API replaces the entire object, including fields Terraform does not
+	// model. Read immediately before writing so omitted fields keep their values.
+	merged := map[string]any{}
+	if existing, ok := current.SourceConfig["resource_spec"].(map[string]any); ok {
+		for key, value := range existing {
+			merged[key] = value
+		}
+	}
+	for key, value := range resourceSpecPayload(plan.SourceConfig.ResourceSpec) {
+		merged[key] = value
+	}
+	sourceConfig := revisionSourceConfig(plan.SourceConfig)
+	sourceConfig["resource_spec"] = merged
+	payload["source_config"] = sourceConfig
+	return payload, nil
 }
 
 // applied builds a state value that is safe to persist once the service has
@@ -709,7 +757,8 @@ func revisionPayload(m deploymentResourceModel) map[string]any {
 	}
 	// Secrets are write-only, so they are only in hand when the configuration
 	// still declares them. Omitting the key tells the service to carry the
-	// previous revision's values over; sending an empty list clears them.
+	// previous revision's values over. Updates reject empty maps because the API
+	// currently treats an empty list as omission, too.
 	if !m.Secrets.IsNull() && !m.Secrets.IsUnknown() {
 		p["secrets"] = secretsPayload(m.Secrets)
 	}
@@ -801,9 +850,8 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 	adopt := adoptServerState(previous)
 	sourceConfig := sourceConfigModelFromAPI(api.SourceConfig)
 	if !adopt && previous.SourceConfig != nil {
-		// Desired-only arguments: the service reports these back as null
-		// whatever was sent, so reading them would drop the configured value and
-		// fail the apply as inconsistent.
+		// Some API versions omit commands and listener settings. Resource specs
+		// include server defaults beyond Terraform's configured fields.
 		sourceConfig.InstallCommand = previous.SourceConfig.InstallCommand
 		sourceConfig.BuildCommand = previous.SourceConfig.BuildCommand
 		sourceConfig.ListenerConfig = previous.SourceConfig.ListenerConfig
@@ -816,7 +864,7 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 	// there is no prior state to keep -- an import, where the service's view is
 	// all there is.
 	if adopt && api.SourceRevisionConfig != nil {
-		next.SourceRevisionConfig = sourceRevisionModelFromAPI(api.SourceRevisionConfig)
+		next.SourceRevisionConfig = sourceRevisionModelFromAPI(api)
 	}
 	// With no prior state, adopt references only if there are any: turning an
 	// empty response list into an empty configured list would make an imported
@@ -875,8 +923,22 @@ func sourceConfigModelFromAPI(api map[string]any) *deploymentSourceConfigModel {
 	return model
 }
 
-func sourceRevisionModelFromAPI(api map[string]any) *sourceRevisionConfigModel {
-	return &sourceRevisionConfigModel{RepoRef: apiString(api, "repo_ref"), LanggraphConfigPath: apiString(api, "langgraph_config_path"), ImageURI: apiString(api, "image_uri"), SourceTarballPath: apiString(api, "source_tarball_path")}
+func sourceRevisionModelFromAPI(api deploymentAPI) *sourceRevisionConfigModel {
+	model := &sourceRevisionConfigModel{}
+	switch api.Source {
+	case "github":
+		model.RepoRef = apiString(api.SourceConfig, "repo_branch")
+		if model.RepoRef.IsNull() {
+			model.RepoRef = apiString(api.SourceRevisionConfig, "repo_ref")
+		}
+		model.LanggraphConfigPath = apiString(api.SourceRevisionConfig, "langgraph_config_path")
+	case "external_docker", "internal_docker":
+		model.ImageURI = apiString(api.SourceRevisionConfig, "image_uri")
+	case "internal_source":
+		model.LanggraphConfigPath = apiString(api.SourceRevisionConfig, "langgraph_config_path")
+		model.SourceTarballPath = apiString(api.SourceRevisionConfig, "source_tarball_path")
+	}
+	return model
 }
 
 func secretReferenceModelsFromAPI(api []deploymentSecretReferenceAPI) []deploymentSecretReferenceModel {

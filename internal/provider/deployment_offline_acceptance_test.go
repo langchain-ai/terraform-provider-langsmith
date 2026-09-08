@@ -54,10 +54,9 @@ func TestAccDeploymentOffline(t *testing.T) {
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "latest_revision_status", "DEPLOYED"),
 					// Adopted from the service rather than diffed against null.
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "source_config.build_on_push", "false"),
-					// resource_spec is desired state: omitting it leaves the
-					// service's materialized defaults out of Terraform's hands
-					// rather than importing them into the plan.
-					resource.TestCheckNoResourceAttr("langsmith_deployment.test", "source_config.resource_spec"),
+					// The API requires a resource_spec object for external images,
+					// but unconfigured defaults remain outside Terraform's state.
+					resource.TestCheckNoResourceAttr("langsmith_deployment.test", "source_config.resource_spec.cpu"),
 					// Terraform keeps owning what the service does not report.
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "source_revision_config.image_uri", "registry.example.com/agent:v1"),
 					resource.TestCheckResourceAttr("data.langsmith_deployment_revision.test", "id", offlineRevisionOne),
@@ -174,7 +173,7 @@ resource "langsmith_deployment" "test" {
   %s
 
   source_config = {
-    deployment_type = "prod"
+    resource_spec = {}
   }
 
   source_revision_config = {
@@ -299,8 +298,13 @@ func (b *deploymentContractBackend) create(w http.ResponseWriter, req *http.Requ
 	if !b.decode(w, req, body, &payload) {
 		return
 	}
-	if payload["name"] != "offline-agent" || payload["source"] != "external_docker" || deploymentNestedString(payload, "source_config", "deployment_type") != "prod" || deploymentNestedString(payload, "source_revision_config", "image_uri") != "registry.example.com/agent:v1" || !deploymentPayloadHasSecret(payload, offlineSecretOne) {
+	if payload["name"] != "offline-agent" || payload["source"] != "external_docker" || deploymentNestedString(payload, "source_revision_config", "image_uri") != "registry.example.com/agent:v1" || !deploymentPayloadHasSecret(payload, offlineSecretOne) {
 		b.reject(w, req, "invalid create payload")
+		return
+	}
+	sourceConfig, ok := payload["source_config"].(map[string]any)
+	if !ok || sourceConfig["deployment_type"] != nil || sourceConfig["resource_spec"] == nil {
+		b.reject(w, req, "external_docker requires resource_spec and rejects deployment_type on create")
 		return
 	}
 	// DeploymentCreateRequest has no display_name field, which is why the
