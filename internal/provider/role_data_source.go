@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -81,7 +80,7 @@ func (d *RoleDataSource) Schema(ctx context.Context, req datasource.SchemaReques
 }
 
 func (d *RoleDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	client, ok := configureDataSourceClient(req.ProviderData, &resp.Diagnostics)
+	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Data Source")
 	if !ok {
 		return
 	}
@@ -115,21 +114,6 @@ func (d *RoleDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	data.Permissions = stringListValue(role.Permissions)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-}
-
-func configureDataSourceClient(providerData any, diagnostics interface {
-	AddError(summary string, detail string)
-}) (*langsmith.Client, bool) {
-	if providerData == nil {
-		return nil, false
-	}
-
-	client, ok := providerData.(*langsmith.Client)
-	if !ok {
-		diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *langsmith.Client, got %T", providerData))
-		return nil, false
-	}
-	return client, true
 }
 
 func stringListValue(values []string) []types.String {

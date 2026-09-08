@@ -74,9 +74,9 @@ resource "langsmith_run_rule" "online_correctness" {
 
 The provider resolves credentials the same way as the LangSmith SDK and CLI:
 
-- **Provider arguments** — `api_key`, `api_url`, `workspace_id`, `profile`.
+- **Provider arguments** — `api_key`, `api_url`, `control_plane_url`, `workspace_id`, `profile`.
 - **Profile** — set `profile` (or `LANGSMITH_PROFILE`) to select a LangSmith CLI profile.
-- **Environment** — `LANGSMITH_API_KEY`, `LANGSMITH_ENDPOINT` (API URL), `LANGSMITH_WORKSPACE_ID`.
+- **Environment** — `LANGSMITH_API_KEY`, `LANGSMITH_ENDPOINT` (API URL), `LANGSMITH_CONTROL_PLANE_URL`, `LANGSMITH_WORKSPACE_ID`.
 
 Create an API key in your LangSmith workspace settings. Prefer environment or profile
 configuration over hardcoding `api_key`; if you set it inline, mark it sensitive and
@@ -89,5 +89,6 @@ source it from a secret store.
 
 - `api_key` (String, Sensitive) LangSmith API key. Prefer SDK environment/profile configuration.
 - `api_url` (String) LangSmith API URL. Prefer SDK environment/profile configuration.
+- `control_plane_url` (String) LangSmith control-plane API URL. Defaults to `LANGSMITH_CONTROL_PLANE_URL`, then `https://api.host.langchain.com`.
 - `profile` (String) LangSmith profile name. Prefer `LANGSMITH_PROFILE` unless this Terraform root must select one explicitly.
 - `workspace_id` (String) LangSmith workspace ID. Prefer SDK environment/profile configuration.

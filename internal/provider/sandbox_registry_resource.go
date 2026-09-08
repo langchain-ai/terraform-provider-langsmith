@@ -129,12 +129,8 @@ func (r *SandboxRegistryResource) Schema(ctx context.Context, req resource.Schem
 }
 
 func (r *SandboxRegistryResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-	client, ok := req.ProviderData.(*langsmith.Client)
+	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Resource")
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *langsmith.Client, got %T", req.ProviderData))
 		return
 	}
 	r.client = client

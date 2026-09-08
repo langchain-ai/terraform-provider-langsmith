@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -70,13 +69,8 @@ func (d *InfoDataSource) Schema(ctx context.Context, req datasource.SchemaReques
 }
 
 func (d *InfoDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-
-	client, ok := req.ProviderData.(*langsmith.Client)
+	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Data Source")
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *langsmith.Client, got %T", req.ProviderData))
 		return
 	}
 	d.client = client

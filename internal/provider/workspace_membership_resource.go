@@ -82,12 +82,8 @@ func (r *WorkspaceMembershipResource) Schema(ctx context.Context, req resource.S
 }
 
 func (r *WorkspaceMembershipResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-	client, ok := req.ProviderData.(*langsmith.Client)
+	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Resource")
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *langsmith.Client, got %T", req.ProviderData))
 		return
 	}
 	r.client = client

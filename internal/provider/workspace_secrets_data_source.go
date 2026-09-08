@@ -54,7 +54,7 @@ func (d *WorkspaceSecretsDataSource) Schema(ctx context.Context, req datasource.
 }
 
 func (d *WorkspaceSecretsDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	client, ok := configureDataSourceClient(req.ProviderData, &resp.Diagnostics)
+	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Data Source")
 	if !ok {
 		return
 	}

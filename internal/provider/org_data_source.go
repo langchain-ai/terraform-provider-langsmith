@@ -57,7 +57,7 @@ func (d *OrgDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 }
 
 func (d *OrgDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	client, ok := configureDataSourceClient(req.ProviderData, &resp.Diagnostics)
+	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Data Source")
 	if !ok {
 		return
 	}

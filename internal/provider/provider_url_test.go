@@ -59,6 +59,78 @@ func TestResolveAPIURL(t *testing.T) {
 // TestSelfHostedEndpointDoesNotDoublePrefix exercises the real SDK client the
 // provider builds, so a regression in either normalization or the SDK's
 // relative path resolution fails here rather than only against a live install.
+func TestResolveControlPlaneURL(t *testing.T) {
+	t.Run("configured value wins over environment and trims trailing slash", func(t *testing.T) {
+		t.Setenv("LANGSMITH_CONTROL_PLANE_URL", "https://environment.example.com")
+		got, err := resolveControlPlaneURL("https://configured.example.com/control///")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "https://configured.example.com/control"; got != want {
+			t.Fatalf("resolveControlPlaneURL() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("environment wins over default", func(t *testing.T) {
+		t.Setenv("LANGSMITH_CONTROL_PLANE_URL", "https://environment.example.com/")
+		got, err := resolveControlPlaneURL("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "https://environment.example.com"; got != want {
+			t.Fatalf("resolveControlPlaneURL() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("uses default", func(t *testing.T) {
+		t.Setenv("LANGSMITH_CONTROL_PLANE_URL", "")
+		got, err := resolveControlPlaneURL("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != defaultControlPlaneURL {
+			t.Fatalf("resolveControlPlaneURL() = %q, want %q", got, defaultControlPlaneURL)
+		}
+	})
+}
+
+func TestResolveControlPlaneURLValidation(t *testing.T) {
+	valid := []string{
+		"https://example.com",
+		"https://example.com/path",
+		"http://localhost:8080",
+		"http://127.0.0.1",
+		"http://127.255.255.255",
+		"http://[::1]:8080",
+	}
+	for _, value := range valid {
+		t.Run("valid "+value, func(t *testing.T) {
+			if _, err := resolveControlPlaneURL(value); err != nil {
+				t.Fatalf("resolveControlPlaneURL(%q) error = %v", value, err)
+			}
+		})
+	}
+
+	invalid := []string{
+		"example.com",
+		"ftp://example.com",
+		"http://example.com",
+		"http://192.168.1.1",
+		"https://user@example.com",
+		"https://example.com?query=value",
+		"https://example.com?",
+		"https://example.com#fragment",
+		"https://example.com#",
+	}
+	for _, value := range invalid {
+		t.Run("invalid "+value, func(t *testing.T) {
+			if _, err := resolveControlPlaneURL(value); err == nil {
+				t.Fatalf("resolveControlPlaneURL(%q) returned no error", value)
+			}
+		})
+	}
+}
+
 func TestSelfHostedEndpointDoesNotDoublePrefix(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -67,7 +67,7 @@ func (d *PermissionsDataSource) Schema(ctx context.Context, req datasource.Schem
 }
 
 func (d *PermissionsDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	client, ok := configureDataSourceClient(req.ProviderData, &resp.Diagnostics)
+	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Data Source")
 	if !ok {
 		return
 	}
