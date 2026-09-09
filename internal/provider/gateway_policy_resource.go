@@ -84,6 +84,7 @@ const (
 	gatewayPolicyTypeRateLimit        = "rate_limit"
 	gatewayPolicyTypeDefaultRateLimit = "default_rate_limit"
 	gatewayPolicyTypeGuard            = "guard"
+	gatewayPolicyTypeModelAccess      = "model_access"
 )
 
 var gatewayPolicyTypes = []string{
@@ -92,15 +93,17 @@ var gatewayPolicyTypes = []string{
 	gatewayPolicyTypeRateLimit,
 	gatewayPolicyTypeDefaultRateLimit,
 	gatewayPolicyTypeGuard,
+	gatewayPolicyTypeModelAccess,
 }
 
 // gatewayPolicyConfigModel maps gateway policy config schema data for the terraform configuration.
 type gatewayPolicyConfigModel struct {
-	SpendCap         *gatewayPolicySpendCapConfigModel  `tfsdk:"spend_cap"`
-	DefaultSpendCap  *gatewayPolicySpendCapConfigModel  `tfsdk:"default_spend_cap"`
-	RateLimit        *gatewayPolicyRateLimitConfigModel `tfsdk:"rate_limit"`
-	DefaultRateLimit *gatewayPolicyRateLimitConfigModel `tfsdk:"default_rate_limit"`
-	Guard            *gatewayPolicyGuardConfigModel     `tfsdk:"guard"`
+	SpendCap         *gatewayPolicySpendCapConfigModel    `tfsdk:"spend_cap"`
+	DefaultSpendCap  *gatewayPolicySpendCapConfigModel    `tfsdk:"default_spend_cap"`
+	RateLimit        *gatewayPolicyRateLimitConfigModel   `tfsdk:"rate_limit"`
+	DefaultRateLimit *gatewayPolicyRateLimitConfigModel   `tfsdk:"default_rate_limit"`
+	Guard            *gatewayPolicyGuardConfigModel       `tfsdk:"guard"`
+	ModelAccess      *gatewayPolicyModelAccessConfigModel `tfsdk:"model_access"`
 }
 
 // gatewayPolicySpendCapConfigModel maps gateway policy spend cap config schema data for the terraform configuration.
@@ -120,6 +123,18 @@ type gatewayPolicyRateLimitConfigLimitsModel struct {
 	Metric types.String `tfsdk:"metric"`
 	Window types.String `tfsdk:"window"`
 	Value  types.Int64  `tfsdk:"value"`
+}
+
+// gatewayPolicyModelAccessConfigModel maps a model_access policy config from the Terraform configuration.
+type gatewayPolicyModelAccessConfigModel struct {
+	Providers []gatewayPolicyModelAccessProviderModel `tfsdk:"providers"`
+}
+
+// gatewayPolicyModelAccessProviderModel maps the access allowed for one direct gateway provider.
+type gatewayPolicyModelAccessProviderModel struct {
+	Access        types.String   `tfsdk:"access"`
+	AllowedModels []types.String `tfsdk:"allowed_models"`
+	Provider      types.String   `tfsdk:"provider"`
 }
 
 // gatewayPolicyGuardConfigModel maps a gateway policy guard config schema data for the terraform configuration.
@@ -209,9 +224,39 @@ type gatewayPolicyRateLimitConfigWindowValueAPI struct {
 	Window string `json:"window"`
 }
 
+// gatewayPolicyModelAccessConfigAPI is the model_access config from the API.
+type gatewayPolicyModelAccessConfigAPI struct {
+	Providers []gatewayPolicyModelAccessProviderAPI `json:"providers"`
+}
+
+// gatewayPolicyModelAccessProviderAPI is the access allowed for one direct gateway provider.
+type gatewayPolicyModelAccessProviderAPI struct {
+	Access        string   `json:"access"`
+	AllowedModels []string `json:"allowed_models,omitempty"`
+	Provider      string   `json:"provider"`
+}
+
 var gatewayRateLimitMetricNames = []string{
 	"requests",
 	"tokens",
+}
+
+var gatewayModelAccessValues = []string{
+	"all",
+	"selected",
+}
+
+var gatewayModelAccessProviders = []string{
+	"anthropic",
+	"azure",
+	"baseten",
+	"bedrock",
+	"fireworks",
+	"gemini",
+	"langchain",
+	"openai",
+	"vertex",
+	"xai",
 }
 
 var gatewaySpendCapWindows = []string{
@@ -385,6 +430,28 @@ func gatewayPolicyConfigModelFromAPI(policyType string, raw json.RawMessage) (*g
 		return &gatewayPolicyConfigModel{
 			RateLimit: config,
 		}, nil
+	case gatewayPolicyTypeModelAccess:
+		var cfg gatewayPolicyModelAccessConfigAPI
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return nil, fmt.Errorf("decode model_access config: %w", err)
+		}
+		providers := make([]gatewayPolicyModelAccessProviderModel, 0, len(cfg.Providers))
+		for _, cfgProvider := range cfg.Providers {
+			var allowedModels []types.String
+			for _, model := range cfgProvider.AllowedModels {
+				allowedModels = append(allowedModels, types.StringValue(model))
+			}
+			providers = append(providers, gatewayPolicyModelAccessProviderModel{
+				Access:        types.StringValue(cfgProvider.Access),
+				AllowedModels: allowedModels,
+				Provider:      types.StringValue(cfgProvider.Provider),
+			})
+		}
+		return &gatewayPolicyConfigModel{
+			ModelAccess: &gatewayPolicyModelAccessConfigModel{
+				Providers: providers,
+			},
+		}, nil
 	case gatewayPolicyTypeGuard:
 		var cfg gatewayPolicyGuardConfigAPI
 		if err := json.Unmarshal(raw, &cfg); err != nil {
@@ -536,6 +603,21 @@ func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (string, json.RawM
 			Version: plan.Config.DefaultRateLimit.Version.ValueInt64(),
 			Limits:  limits,
 		}
+	case plan.Config.ModelAccess != nil:
+		policyType = gatewayPolicyTypeModelAccess
+		providers := make([]gatewayPolicyModelAccessProviderAPI, 0, len(plan.Config.ModelAccess.Providers))
+		for _, planProvider := range plan.Config.ModelAccess.Providers {
+			allowedModels := make([]string, 0, len(planProvider.AllowedModels))
+			for _, model := range planProvider.AllowedModels {
+				allowedModels = append(allowedModels, model.ValueString())
+			}
+			providers = append(providers, gatewayPolicyModelAccessProviderAPI{
+				Access:        planProvider.Access.ValueString(),
+				AllowedModels: allowedModels,
+				Provider:      planProvider.Provider.ValueString(),
+			})
+		}
+		policyConfig = gatewayPolicyModelAccessConfigAPI{Providers: providers}
 	case plan.Config.Guard != nil:
 		policyType = gatewayPolicyTypeGuard
 		var detect *gatewayPolicyGuardDetectAPI
@@ -648,6 +730,7 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 					gatewayPolicyTypeDefaultSpendCap:  gatewayPolicySpendCapConfigSchema,
 					gatewayPolicyTypeRateLimit:        gatewayPolicyRateLimitConfigSchema,
 					gatewayPolicyTypeDefaultRateLimit: gatewayPolicyRateLimitConfigSchema,
+					gatewayPolicyTypeModelAccess:      gatewayPolicyModelAccessConfigSchema,
 					gatewayPolicyTypeGuard: schema.SingleNestedAttribute{
 						Description: "guard config when policy_type is guard",
 						Optional:    true,
@@ -895,6 +978,46 @@ var (
 				Validators: []validator.List{
 					listvalidator.SizeAtLeast(1),
 					listvalidator.UniqueValues(),
+				},
+			},
+		},
+	}
+	gatewayPolicyModelAccessConfigSchema = schema.SingleNestedAttribute{
+		Description: "Model access allowlist. The most-specific matching subject tier applies.",
+		Optional:    true,
+		Attributes: map[string]schema.Attribute{
+			"providers": schema.ListNestedAttribute{
+				Description: "The direct gateway providers and models that are allowed. Providers not listed are denied.",
+				Required:    true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"provider": schema.StringAttribute{
+							Description: "The direct gateway provider to allow",
+							Required:    true,
+							Validators: []validator.String{
+								stringvalidator.OneOf(gatewayModelAccessProviders...),
+							},
+						},
+						"access": schema.StringAttribute{
+							Description: "Whether to allow every model from the provider or only selected models",
+							Required:    true,
+							Validators: []validator.String{
+								stringvalidator.OneOf(gatewayModelAccessValues...),
+							},
+						},
+						"allowed_models": schema.ListAttribute{
+							Description: "Provider-native model IDs to allow when access is selected. Omit this when access is all.",
+							Optional:    true,
+							ElementType: types.StringType,
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(50),
+								listvalidator.UniqueValues(),
+							},
+						},
+					},
+				},
+				Validators: []validator.List{
+					listvalidator.SizeAtLeast(1),
 				},
 			},
 		},

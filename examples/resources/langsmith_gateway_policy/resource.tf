@@ -55,6 +55,33 @@ resource "langsmith_gateway_policy" "burst_and_sustained_rate_limit" {
   }]
 }
 
+resource "langsmith_gateway_policy" "model_access" {
+  name        = "workspace-model-access"
+  description = "Only allow selected OpenAI models and every Anthropic model."
+  action      = "block"
+
+  config = {
+    model_access = {
+      providers = [
+        {
+          provider       = "openai"
+          access         = "selected"
+          allowed_models = ["gpt-5.4", "gpt-5-mini"]
+        },
+        {
+          provider = "anthropic"
+          access   = "all"
+        },
+      ]
+    }
+  }
+
+  subject_matchers = [{
+    key   = "workspace_id"
+    value = "00000000-0000-0000-0000-000000000000"
+  }]
+}
+
 resource "langsmith_gateway_policy" "pii_and_secrets_guard" {
   name        = "pii-and-secrets-guard"
   description = "Block requests that contain detected PII or secrets."

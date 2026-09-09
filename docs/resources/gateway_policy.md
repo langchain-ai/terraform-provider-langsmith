@@ -70,6 +70,33 @@ resource "langsmith_gateway_policy" "burst_and_sustained_rate_limit" {
   }]
 }
 
+resource "langsmith_gateway_policy" "model_access" {
+  name        = "workspace-model-access"
+  description = "Only allow selected OpenAI models and every Anthropic model."
+  action      = "block"
+
+  config = {
+    model_access = {
+      providers = [
+        {
+          provider       = "openai"
+          access         = "selected"
+          allowed_models = ["gpt-5.4", "gpt-5-mini"]
+        },
+        {
+          provider = "anthropic"
+          access   = "all"
+        },
+      ]
+    }
+  }
+
+  subject_matchers = [{
+    key   = "workspace_id"
+    value = "00000000-0000-0000-0000-000000000000"
+  }]
+}
+
 resource "langsmith_gateway_policy" "pii_and_secrets_guard" {
   name        = "pii-and-secrets-guard"
   description = "Block requests that contain detected PII or secrets."
@@ -129,6 +156,7 @@ Optional:
 - `default_rate_limit` (Attributes) rate-limit config when policy_type is rate_limit or default_rate_limit. (see [below for nested schema](#nestedatt--config--default_rate_limit))
 - `default_spend_cap` (Attributes) Spend-cap config when policy_type is spend_cap or default_spend_cap. (see [below for nested schema](#nestedatt--config--default_spend_cap))
 - `guard` (Attributes) guard config when policy_type is guard (see [below for nested schema](#nestedatt--config--guard))
+- `model_access` (Attributes) Model access allowlist. The most-specific matching subject tier applies. (see [below for nested schema](#nestedatt--config--model_access))
 - `rate_limit` (Attributes) rate-limit config when policy_type is rate_limit or default_rate_limit. (see [below for nested schema](#nestedatt--config--rate_limit))
 - `spend_cap` (Attributes) Spend-cap config when policy_type is spend_cap or default_spend_cap. (see [below for nested schema](#nestedatt--config--spend_cap))
 
@@ -206,6 +234,27 @@ Required:
 Required:
 
 - `capture_content` (Boolean) Whether to record model inputs and outputs ontraces. Metadata is still recorded on traces.
+
+
+
+<a id="nestedatt--config--model_access"></a>
+### Nested Schema for `config.model_access`
+
+Required:
+
+- `providers` (Attributes List) The direct gateway providers and models that are allowed. Providers not listed are denied. (see [below for nested schema](#nestedatt--config--model_access--providers))
+
+<a id="nestedatt--config--model_access--providers"></a>
+### Nested Schema for `config.model_access.providers`
+
+Required:
+
+- `access` (String) Whether to allow every model from the provider or only selected models
+- `provider` (String) The direct gateway provider to allow
+
+Optional:
+
+- `allowed_models` (List of String) Provider-native model IDs to allow when access is selected. Omit this when access is all.
 
 
 
