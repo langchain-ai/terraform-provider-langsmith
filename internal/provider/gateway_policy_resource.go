@@ -701,20 +701,6 @@ func (gatewayPolicyModelAccessConfigValidator) ValidateResource(ctx context.Cont
 
 	for providerName, provider := range config.Config.ModelAccess.Providers {
 		providerPath := path.Root("config").AtName(gatewayPolicyTypeModelAccess).AtName("providers").AtMapKey(providerName)
-
-		for modelIndex, model := range provider.AllowedModels {
-			if model.IsNull() || model.IsUnknown() {
-				continue
-			}
-			if len(model.ValueString()) > 120 {
-				resp.Diagnostics.AddAttributeError(
-					providerPath.AtName("allowed_models").AtListIndex(modelIndex),
-					"Model ID is too long",
-					"Model IDs must be at most 120 characters.",
-				)
-			}
-		}
-
 		if provider.Access.IsNull() || provider.Access.IsUnknown() {
 			continue
 		}
@@ -1057,6 +1043,11 @@ var (
 							Validators: []validator.List{
 								listvalidator.SizeAtMost(50),
 								listvalidator.UniqueValues(),
+								listvalidator.NoNullValues(),
+								listvalidator.ValueStringsAre(
+									stringvalidator.LengthAtLeast(1),
+									stringvalidator.LengthAtMost(120),
+								),
 							},
 						},
 					},

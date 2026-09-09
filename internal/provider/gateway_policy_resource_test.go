@@ -576,6 +576,131 @@ resource "langsmith_gateway_policy" "test" {
 }
 `
 
+const gatewayPolicyModelAccessConfig = `
+resource "langsmith_gateway_policy" "test" {
+  name        = "tf-provider-gateway-policy-model-access"
+  description = "created by TestAccGatewayPolicyModelAccess"
+  action      = "block"
+
+  config = {
+    model_access = {
+      providers = {
+        openai = {
+          access         = "selected"
+          allowed_models = ["gpt-5.4", "gpt-5-mini"]
+        }
+        anthropic = {
+          access = "all"
+        }
+      }
+    }
+  }
+
+  subject_matchers = [{
+    key   = "workspace_id"
+    value = "00000000-0000-4000-8000-00000000000c"
+  }]
+}
+`
+
+const gatewayPolicyModelAccessConfigUpdated = `
+resource "langsmith_gateway_policy" "test" {
+  name        = "tf-provider-gateway-policy-model-access-updated"
+  description = "updated by TestAccGatewayPolicyModelAccess"
+  action      = "block"
+  enabled     = false
+
+  config = {
+    model_access = {
+      providers = {
+        openai = {
+          access         = "selected"
+          allowed_models = ["gpt-5.4"]
+        }
+        anthropic = {
+          access = "selected"
+          allowed_models = ["claude-sonnet-4-6"]
+        }
+      }
+    }
+  }
+
+  subject_matchers = [{
+    key   = "workspace_id"
+    value = "00000000-0000-4000-8000-00000000000d"
+  }]
+}
+`
+
+// TestAccGatewayPolicyModelAccess exercises Terraform lifecycle.
+func TestAccGatewayPolicyModelAccess(t *testing.T) {
+	if os.Getenv("LANGSMITH_PROVIDER_ACC") != "1" {
+		t.Skip("set LANGSMITH_PROVIDER_ACC=1 TF_ACC=1 to run model_access gateway policy smoke test")
+	}
+
+	var policyID string
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+			"langsmith": providerserver.NewProtocol6WithError(New("test")()),
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: gatewayPolicyModelAccessConfig,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrWith("langsmith_gateway_policy.test", "id", func(value string) error {
+						if value == "" {
+							return fmt.Errorf("id is empty")
+						}
+						policyID = value
+						return nil
+					}),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "description", "created by TestAccGatewayPolicyModelAccess"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "policy_type", "model_access"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "enabled", "true"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "priority", "0"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.openai.access", "selected"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.openai.allowed_models.#", "2"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.openai.allowed_models.0", "gpt-5.4"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.openai.allowed_models.1", "gpt-5-mini"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.anthropic.access", "all"),
+					resource.TestCheckNoResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.anthropic.allowed_models"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.#", "1"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.key", "workspace_id"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.value", "00000000-0000-4000-8000-00000000000c"),
+					resource.TestCheckResourceAttrSet("langsmith_gateway_policy.test", "created_by"),
+					resource.TestCheckNoResourceAttr("langsmith_gateway_policy.test", "parent_policy_id"),
+				),
+			},
+			{
+				ResourceName:      "langsmith_gateway_policy.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				Config: gatewayPolicyModelAccessConfigUpdated,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrWith("langsmith_gateway_policy.test", "id", func(value string) error {
+						if value != policyID {
+							return fmt.Errorf("id = %q, want %q", value, policyID)
+						}
+						return nil
+					}),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "name", "tf-provider-gateway-policy-model-access-updated"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "description", "updated by TestAccGatewayPolicyModelAccess"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "enabled", "false"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.openai.access", "selected"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.openai.allowed_models.#", "1"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.openai.allowed_models.0", "gpt-5.4"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.anthropic.access", "selected"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.anthropic.allowed_models.#", "1"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "config.model_access.providers.anthropic.allowed_models.0", "claude-sonnet-4-6"),
+					resource.TestCheckResourceAttr("langsmith_gateway_policy.test", "subject_matchers.0.value", "00000000-0000-4000-8000-00000000000d"),
+				),
+			},
+		},
+	})
+}
+
 // TestAccGatewayPolicyGuard exercises Terraform lifecycle.
 func TestAccGatewayPolicyGuard(t *testing.T) {
 	if os.Getenv("LANGSMITH_PROVIDER_ACC") != "1" {
