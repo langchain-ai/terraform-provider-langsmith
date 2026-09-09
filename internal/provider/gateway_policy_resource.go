@@ -687,6 +687,76 @@ func gatewayPolicySubjectMatchersAPIFromModel(plan gatewayPolicyModel) ([]gatewa
 
 // Terraform resource implementation
 
+type gatewayPolicyModelAccessConfigValidator struct{}
+
+func (gatewayPolicyModelAccessConfigValidator) Description(context.Context) string {
+	return "Validates model access provider and model allowlist settings."
+}
+
+func (gatewayPolicyModelAccessConfigValidator) MarkdownDescription(context.Context) string {
+	return "Validates model access provider and model allowlist settings."
+}
+
+func (gatewayPolicyModelAccessConfigValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config gatewayPolicyModel
+	diags := req.Config.Get(ctx, &config)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() || config.Config == nil || config.Config.ModelAccess == nil {
+		return
+	}
+
+	providers := make(map[string]struct{}, len(config.Config.ModelAccess.Providers))
+	for index, provider := range config.Config.ModelAccess.Providers {
+		providerPath := path.Root("config").AtName(gatewayPolicyTypeModelAccess).AtName("providers").AtListIndex(index)
+		if !provider.Provider.IsNull() && !provider.Provider.IsUnknown() {
+			providerName := provider.Provider.ValueString()
+			if _, exists := providers[providerName]; exists {
+				resp.Diagnostics.AddAttributeError(
+					providerPath.AtName("provider"),
+					"Duplicate model access provider",
+					fmt.Sprintf("Provider %q may appear only once.", providerName),
+				)
+			}
+			providers[providerName] = struct{}{}
+		}
+
+		for modelIndex, model := range provider.AllowedModels {
+			if model.IsNull() || model.IsUnknown() {
+				continue
+			}
+			if len(model.ValueString()) > 120 {
+				resp.Diagnostics.AddAttributeError(
+					providerPath.AtName("allowed_models").AtListIndex(modelIndex),
+					"Model ID is too long",
+					"Model IDs must be at most 120 characters.",
+				)
+			}
+		}
+
+		if provider.Access.IsNull() || provider.Access.IsUnknown() {
+			continue
+		}
+		switch provider.Access.ValueString() {
+		case "all":
+			if len(provider.AllowedModels) > 0 {
+				resp.Diagnostics.AddAttributeError(
+					providerPath.AtName("allowed_models"),
+					"Allowed models are not valid with all access",
+					"Omit allowed_models when access is all.",
+				)
+			}
+		case "selected":
+			if len(provider.AllowedModels) == 0 {
+				resp.Diagnostics.AddAttributeError(
+					providerPath.AtName("allowed_models"),
+					"Allowed models are required with selected access",
+					"Set at least one allowed_models value when access is selected.",
+				)
+			}
+		}
+	}
+}
+
 // Ensure the implementation satisfies the expected interfaces.
 var (
 	_ resource.Resource                     = &gatewayPolicyResource{}
@@ -1033,6 +1103,7 @@ func (r *gatewayPolicyResource) ConfigValidators(ctx context.Context) []resource
 
 	return []resource.ConfigValidator{
 		policyTypeValidator,
+		gatewayPolicyModelAccessConfigValidator{},
 	}
 }
 
