@@ -62,17 +62,15 @@ resource "langsmith_gateway_policy" "model_access" {
 
   config = {
     model_access = {
-      providers = [
-        {
-          provider       = "openai"
+      providers = {
+        openai = {
           access         = "selected"
           allowed_models = ["gpt-5.4", "gpt-5-mini"]
-        },
-        {
-          provider = "anthropic"
-          access   = "all"
-        },
-      ]
+        }
+        anthropic = {
+          access = "all"
+        }
+      }
     }
   }
 

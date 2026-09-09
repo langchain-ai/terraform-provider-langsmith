@@ -12,15 +12,13 @@ func TestGatewayPolicyModelAccessConfigAPIFromModel(t *testing.T) {
 	plan := gatewayPolicyModel{
 		Config: &gatewayPolicyConfigModel{
 			ModelAccess: &gatewayPolicyModelAccessConfigModel{
-				Providers: []gatewayPolicyModelAccessProviderModel{
-					{
-						Provider:      types.StringValue("openai"),
+				Providers: map[string]gatewayPolicyModelAccessProviderModel{
+					"openai": {
 						Access:        types.StringValue("selected"),
 						AllowedModels: []types.String{types.StringValue("gpt-5.4")},
 					},
-					{
-						Provider: types.StringValue("anthropic"),
-						Access:   types.StringValue("all"),
+					"anthropic": {
+						Access: types.StringValue("all"),
 					},
 				},
 			},
@@ -37,8 +35,8 @@ func TestGatewayPolicyModelAccessConfigAPIFromModel(t *testing.T) {
 	}
 	want := gatewayPolicyModelAccessConfigAPI{
 		Providers: []gatewayPolicyModelAccessProviderAPI{
-			{Provider: "openai", Access: "selected", AllowedModels: []string{"gpt-5.4"}},
 			{Provider: "anthropic", Access: "all"},
+			{Provider: "openai", Access: "selected", AllowedModels: []string{"gpt-5.4"}},
 		},
 	}
 	if policyType != gatewayPolicyTypeModelAccess {
@@ -56,15 +54,13 @@ func TestGatewayPolicyModelAccessConfigModelFromAPI(t *testing.T) {
 	}
 	want := &gatewayPolicyConfigModel{
 		ModelAccess: &gatewayPolicyModelAccessConfigModel{
-			Providers: []gatewayPolicyModelAccessProviderModel{
-				{
-					Provider:      types.StringValue("openai"),
+			Providers: map[string]gatewayPolicyModelAccessProviderModel{
+				"openai": {
 					Access:        types.StringValue("selected"),
 					AllowedModels: []types.String{types.StringValue("gpt-5.4")},
 				},
-				{
-					Provider: types.StringValue("anthropic"),
-					Access:   types.StringValue("all"),
+				"anthropic": {
+					Access: types.StringValue("all"),
 				},
 			},
 		},

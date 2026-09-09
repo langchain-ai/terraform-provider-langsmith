@@ -32,12 +32,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -127,14 +129,13 @@ type gatewayPolicyRateLimitConfigLimitsModel struct {
 
 // gatewayPolicyModelAccessConfigModel maps a model_access policy config from the Terraform configuration.
 type gatewayPolicyModelAccessConfigModel struct {
-	Providers []gatewayPolicyModelAccessProviderModel `tfsdk:"providers"`
+	Providers map[string]gatewayPolicyModelAccessProviderModel `tfsdk:"providers"`
 }
 
 // gatewayPolicyModelAccessProviderModel maps the access allowed for one direct gateway provider.
 type gatewayPolicyModelAccessProviderModel struct {
 	Access        types.String   `tfsdk:"access"`
 	AllowedModels []types.String `tfsdk:"allowed_models"`
-	Provider      types.String   `tfsdk:"provider"`
 }
 
 // gatewayPolicyGuardConfigModel maps a gateway policy guard config schema data for the terraform configuration.
@@ -244,19 +245,6 @@ var gatewayRateLimitMetricNames = []string{
 var gatewayModelAccessValues = []string{
 	"all",
 	"selected",
-}
-
-var gatewayModelAccessProviders = []string{
-	"anthropic",
-	"azure",
-	"baseten",
-	"bedrock",
-	"fireworks",
-	"gemini",
-	"langchain",
-	"openai",
-	"vertex",
-	"xai",
 }
 
 var gatewaySpendCapWindows = []string{
@@ -435,17 +423,16 @@ func gatewayPolicyConfigModelFromAPI(policyType string, raw json.RawMessage) (*g
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return nil, fmt.Errorf("decode model_access config: %w", err)
 		}
-		providers := make([]gatewayPolicyModelAccessProviderModel, 0, len(cfg.Providers))
+		providers := make(map[string]gatewayPolicyModelAccessProviderModel, len(cfg.Providers))
 		for _, cfgProvider := range cfg.Providers {
 			var allowedModels []types.String
 			for _, model := range cfgProvider.AllowedModels {
 				allowedModels = append(allowedModels, types.StringValue(model))
 			}
-			providers = append(providers, gatewayPolicyModelAccessProviderModel{
+			providers[cfgProvider.Provider] = gatewayPolicyModelAccessProviderModel{
 				Access:        types.StringValue(cfgProvider.Access),
 				AllowedModels: allowedModels,
-				Provider:      types.StringValue(cfgProvider.Provider),
-			})
+			}
 		}
 		return &gatewayPolicyConfigModel{
 			ModelAccess: &gatewayPolicyModelAccessConfigModel{
@@ -605,8 +592,15 @@ func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (string, json.RawM
 		}
 	case plan.Config.ModelAccess != nil:
 		policyType = gatewayPolicyTypeModelAccess
-		providers := make([]gatewayPolicyModelAccessProviderAPI, 0, len(plan.Config.ModelAccess.Providers))
-		for _, planProvider := range plan.Config.ModelAccess.Providers {
+		providerNames := make([]string, 0, len(plan.Config.ModelAccess.Providers))
+		for providerName := range plan.Config.ModelAccess.Providers {
+			providerNames = append(providerNames, providerName)
+		}
+		sort.Strings(providerNames)
+
+		providers := make([]gatewayPolicyModelAccessProviderAPI, 0, len(providerNames))
+		for _, providerName := range providerNames {
+			planProvider := plan.Config.ModelAccess.Providers[providerName]
 			allowedModels := make([]string, 0, len(planProvider.AllowedModels))
 			for _, model := range planProvider.AllowedModels {
 				allowedModels = append(allowedModels, model.ValueString())
@@ -614,7 +608,7 @@ func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (string, json.RawM
 			providers = append(providers, gatewayPolicyModelAccessProviderAPI{
 				Access:        planProvider.Access.ValueString(),
 				AllowedModels: allowedModels,
-				Provider:      planProvider.Provider.ValueString(),
+				Provider:      providerName,
 			})
 		}
 		policyConfig = gatewayPolicyModelAccessConfigAPI{Providers: providers}
@@ -705,20 +699,8 @@ func (gatewayPolicyModelAccessConfigValidator) ValidateResource(ctx context.Cont
 		return
 	}
 
-	providers := make(map[string]struct{}, len(config.Config.ModelAccess.Providers))
-	for index, provider := range config.Config.ModelAccess.Providers {
-		providerPath := path.Root("config").AtName(gatewayPolicyTypeModelAccess).AtName("providers").AtListIndex(index)
-		if !provider.Provider.IsNull() && !provider.Provider.IsUnknown() {
-			providerName := provider.Provider.ValueString()
-			if _, exists := providers[providerName]; exists {
-				resp.Diagnostics.AddAttributeError(
-					providerPath.AtName("provider"),
-					"Duplicate model access provider",
-					fmt.Sprintf("Provider %q may appear only once.", providerName),
-				)
-			}
-			providers[providerName] = struct{}{}
-		}
+	for providerName, provider := range config.Config.ModelAccess.Providers {
+		providerPath := path.Root("config").AtName(gatewayPolicyTypeModelAccess).AtName("providers").AtMapKey(providerName)
 
 		for modelIndex, model := range provider.AllowedModels {
 			if model.IsNull() || model.IsUnknown() {
@@ -1056,18 +1038,11 @@ var (
 		Description: "Model access allowlist. The most-specific matching subject tier applies.",
 		Optional:    true,
 		Attributes: map[string]schema.Attribute{
-			"providers": schema.ListNestedAttribute{
-				Description: "The direct gateway providers and models that are allowed. Providers not listed are denied.",
+			"providers": schema.MapNestedAttribute{
+				Description: "The direct gateway providers and models that are allowed, keyed by provider name. Providers not listed are denied.",
 				Required:    true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
-						"provider": schema.StringAttribute{
-							Description: "The direct gateway provider to allow",
-							Required:    true,
-							Validators: []validator.String{
-								stringvalidator.OneOf(gatewayModelAccessProviders...),
-							},
-						},
 						"access": schema.StringAttribute{
 							Description: "Whether to allow every model from the provider or only selected models",
 							Required:    true,
@@ -1086,8 +1061,9 @@ var (
 						},
 					},
 				},
-				Validators: []validator.List{
-					listvalidator.SizeAtLeast(1),
+				Validators: []validator.Map{
+					mapvalidator.SizeAtLeast(1),
+					mapvalidator.KeysAre(stringvalidator.LengthAtLeast(1)),
 				},
 			},
 		},

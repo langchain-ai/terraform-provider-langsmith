@@ -77,17 +77,15 @@ resource "langsmith_gateway_policy" "model_access" {
 
   config = {
     model_access = {
-      providers = [
-        {
-          provider       = "openai"
+      providers = {
+        openai = {
           access         = "selected"
           allowed_models = ["gpt-5.4", "gpt-5-mini"]
-        },
-        {
-          provider = "anthropic"
-          access   = "all"
-        },
-      ]
+        }
+        anthropic = {
+          access = "all"
+        }
+      }
     }
   }
 
@@ -242,7 +240,7 @@ Required:
 
 Required:
 
-- `providers` (Attributes List) The direct gateway providers and models that are allowed. Providers not listed are denied. (see [below for nested schema](#nestedatt--config--model_access--providers))
+- `providers` (Attributes Map) The direct gateway providers and models that are allowed, keyed by provider name. Providers not listed are denied. (see [below for nested schema](#nestedatt--config--model_access--providers))
 
 <a id="nestedatt--config--model_access--providers"></a>
 ### Nested Schema for `config.model_access.providers`
@@ -250,7 +248,6 @@ Required:
 Required:
 
 - `access` (String) Whether to allow every model from the provider or only selected models
-- `provider` (String) The direct gateway provider to allow
 
 Optional:
 
