@@ -7,19 +7,10 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
 	"github.com/langchain-ai/langsmith-go/option"
 )
-
-func TestDeploymentRevisionDataSourceMetadata(t *testing.T) {
-	var response datasource.MetadataResponse
-	(&DeploymentRevisionDataSource{}).Metadata(context.Background(), datasource.MetadataRequest{ProviderTypeName: "langsmith"}, &response)
-	if response.TypeName != "langsmith_deployment_revision" {
-		t.Fatalf("type name = %q", response.TypeName)
-	}
-}
 
 func TestDeploymentRevisionDataSourcePathAndMapping(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

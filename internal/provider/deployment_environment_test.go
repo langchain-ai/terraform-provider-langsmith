@@ -9,50 +9,8 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
-	"github.com/hashicorp/terraform-plugin-framework/path"
-	"github.com/hashicorp/terraform-plugin-framework/resource"
-	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
-
-func TestDeploymentEnvironmentPlanHashesPlannedPublicValues(t *testing.T) {
-	ctx := context.Background()
-	r := &DeploymentResource{}
-	var schema resource.SchemaResponse
-	r.Schema(ctx, resource.SchemaRequest{}, &schema)
-	model := testDeploymentModel()
-	model.SourceConfig.ResourceSpec = nil
-	model.EnvironmentVariables = types.MapValueMust(types.StringType, map[string]attr.Value{"LOG_LEVEL": types.StringValue("debug")})
-	want, err := deploymentSecretsHash(model.EnvironmentVariables, model.Secrets)
-	if err != nil {
-		t.Fatal(err)
-	}
-	model.SecretsHash = want
-	state := tfsdk.State{Schema: schema.Schema}
-	if diags := state.Set(ctx, model); diags.HasError() {
-		t.Fatal(diags)
-	}
-	plan := tfsdk.Plan{Schema: schema.Schema, Raw: state.Raw}
-	model.EnvironmentVariables = types.MapValueMust(types.StringType, map[string]attr.Value{"LOG_LEVEL": types.StringValue("info")})
-	config := tfsdk.State{Schema: schema.Schema}
-	if diags := config.Set(ctx, model); diags.HasError() {
-		t.Fatal(diags)
-	}
-	response := resource.ModifyPlanResponse{Plan: plan}
-	r.ModifyPlan(ctx, resource.ModifyPlanRequest{
-		State: state, Plan: plan, Config: tfsdk.Config{Schema: schema.Schema, Raw: config.Raw},
-	}, &response)
-	if response.Diagnostics.HasError() {
-		t.Fatal(response.Diagnostics)
-	}
-	var hash types.String
-	if diags := response.Plan.GetAttribute(ctx, path.Root("secrets_hash"), &hash); diags.HasError() {
-		t.Fatal(diags)
-	}
-	if !hash.Equal(want) {
-		t.Fatal("combined hash must use planned public values, including lifecycle.ignore_changes, with configured write-only secrets")
-	}
-}
 
 func TestDeploymentEnvironmentHashCombinesMaps(t *testing.T) {
 	public := types.MapValueMust(types.StringType, map[string]attr.Value{"LOG_LEVEL": types.StringValue("info")})

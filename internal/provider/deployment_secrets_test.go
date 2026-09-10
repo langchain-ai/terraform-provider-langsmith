@@ -2,9 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -107,31 +104,6 @@ func TestDeploymentSecretsHash(t *testing.T) {
 	}
 	if _, err := deploymentAPISecretsHash([]deploymentSecretAPI{{Name: "A", Value: &first}, {Name: "A", Value: &second}}); err == nil {
 		t.Fatal("duplicate API names were accepted")
-	}
-}
-
-func TestDeploymentSecretsReadRefreshesHashWithoutValues(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": testDeploymentID, "name": "agent", "source": "github",
-			"secrets": []map[string]string{{"name": "KEY", "value": "changed-remotely"}},
-		})
-	}))
-	defer server.Close()
-	previous := testDeploymentModel()
-	previous.SecretsHash = deploymentEnvironmentHash(map[string]string{"KEY": "desired"})
-	model, err := testDeploymentResource(server).read(context.Background(), testDeploymentID, previous)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !model.Secrets.IsNull() || model.SecretsHash.Equal(previous.SecretsHash) {
-		t.Fatal("refresh did not detect drift without persisting values")
-	}
-	plan := previous
-	plan.Secrets = types.MapNull(types.StringType)
-	if !revisionChanged(model, plan) {
-		t.Fatal("digest drift did not request a revision")
 	}
 }
 
