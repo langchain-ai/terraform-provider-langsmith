@@ -59,7 +59,7 @@ resource "langsmith_deployment" "agent" {
 ### Required
 
 - `name` (String) Deployment name. A LangSmith tracing project of the same name is created alongside it. Changing this replaces the deployment.
-- `source` (String) Where the deployment builds from: `github`, `external_docker`, `internal_docker`, `internal_source`, or `internal_template`. Self-hosted installs support `external_docker`. Changing this replaces the deployment.
+- `source` (String) Where the deployment builds from: `github`, `external_docker`, `internal_docker`, `internal_source`, or `internal_template`. Self-hosted installs support `external_docker`. The `internal_docker` and `internal_source` sources are created without an initial revision; push an image or upload source afterward to deploy the first revision. Changing this replaces the deployment.
 - `source_config` (Attributes) Configuration that applies to the deployment as a whole. (see [below for nested schema](#nestedatt--source_config))
 - `source_revision_config` (Attributes) Configuration for the code or image a revision builds from. Changing any argument here creates a new revision. (see [below for nested schema](#nestedatt--source_revision_config))
 
@@ -80,7 +80,7 @@ resource "langsmith_deployment" "agent" {
 - `id` (String) Deployment UUID.
 - `latest_revision_id` (String) UUID of the most recently created revision.
 - `latest_revision_status` (String) Status of the most recently created revision.
-- `secrets_hash` (String, Sensitive) SHA-256 digest of the combined `environment_variables` and `secrets` maps, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Secret values remain write-only; ordinary environment values are also stored in state. APIs that omit secrets cannot report remote environment drift. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.
+- `secrets_hash` (String, Sensitive) SHA-256 digest of the combined `environment_variables` and `secrets` maps, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Secret values remain write-only; ordinary environment values are also stored in state. Remote environment drift is detectable only after the first revision exists and when the API returns secrets. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.
 - `status` (String) Deployment status, one of `AWAITING_DATABASE`, `READY`, `UNUSED`, `AWAITING_DELETE`, `AWAITING_FINAL_DELETE`, or `UNKNOWN`.
 - `tenant_id` (String) Owning workspace (tenant) UUID.
 - `updated_at` (String) Last update timestamp.
@@ -91,9 +91,9 @@ resource "langsmith_deployment" "agent" {
 Optional:
 
 - `build_command` (String) Command used to build a JS deployment. Retained as desired configuration because older API versions do not return it.
-- `build_on_push` (Boolean) Rebuild automatically when the tracked git ref moves. Must be `false` when `source_revision_config.repo_ref` names a tag. The service has no way to clear this once set, so removing the argument leaves the last value in place.
+- `build_on_push` (Boolean) Rebuild automatically when the tracked git ref moves. Defaults to `false` when creating a GitHub deployment. Must be `false` when `source_revision_config.repo_ref` names a tag. The service has no way to clear this once set, so removing the argument leaves the last value in place.
 - `custom_url` (String) Custom hostname to serve the deployment on. The service has no way to clear this once set, so removing the argument leaves the last value in place.
-- `deployment_type` (String) Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. The service defaults this to `prod`. Changing it replaces the deployment.
+- `deployment_type` (String) Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. The provider defaults this to `prod` when creating a Cloud deployment. Omitted values on existing deployments retain the service's tier. Changing it replaces the deployment.
 - `install_command` (String) Command used to install dependencies during a JS build. Retained as desired configuration because older API versions do not return it.
 - `integration_id` (String) UUID of the GitHub integration to build through. Only applicable to the `github` source. Changing this replaces the deployment.
 - `listener_config` (Attributes) Listener settings. The service does not report these back, so Terraform is their source of truth. (see [below for nested schema](#nestedatt--source_config--listener_config))

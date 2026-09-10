@@ -220,3 +220,68 @@ func TestDeploymentResourceSpecReadFailurePreventsWrites(t *testing.T) {
 		t.Fatalf("failed resource read must preserve state without writes: err=%v, writes=%d", err, writes)
 	}
 }
+
+func TestDeploymentGithubRevisionFailurePreservesRefAndPush(t *testing.T) {
+	for _, failure := range []string{"post", "wait", "read"} {
+		t.Run(failure, func(t *testing.T) {
+			posts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case req.Method == http.MethodPost:
+					posts++
+					if failure == "post" {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					_, _ = w.Write([]byte(`{"id":"` + testRevisionID + `","status":"CREATING"}`))
+				case req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/revisions/"):
+					status := "DEPLOYED"
+					if failure == "wait" {
+						status = "DEPLOY_FAILED"
+					}
+					_ = json.NewEncoder(w).Encode(deploymentResourceRevisionAPI{ID: testRevisionID, Status: status})
+				default:
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			}))
+			defer server.Close()
+			state := deploymentResourceModel{
+				ID: types.StringValue(testDeploymentID), Source: types.StringValue("github"),
+				SourceConfig:         &deploymentSourceConfigModel{BuildOnPush: types.BoolValue(true)},
+				SourceRevisionConfig: &sourceRevisionConfigModel{RepoRef: types.StringValue("main")},
+			}
+			plan := state
+			plan.SourceConfig = &deploymentSourceConfigModel{BuildOnPush: types.BoolValue(false)}
+			plan.SourceRevisionConfig = &sourceRevisionConfigModel{RepoRef: types.StringValue("refs/tags/v1")}
+			result, err := testDeploymentResource(server).update(context.Background(), state, plan)
+			if err == nil || posts != 1 {
+				t.Fatalf("expected %s failure after one revision POST, got %d POSTs and %v", failure, posts, err)
+			}
+			want := plan
+			if failure == "post" {
+				want = state
+			}
+			if !result.SourceConfig.BuildOnPush.Equal(want.SourceConfig.BuildOnPush) || !result.SourceRevisionConfig.RepoRef.Equal(want.SourceRevisionConfig.RepoRef) {
+				t.Fatal("recovered ref and push flag do not match the accepted inputs")
+			}
+			if revisionChanged(result, plan) != (failure == "post") {
+				t.Fatal("retry must repeat a rejected revision and preserve an accepted revision")
+			}
+		})
+	}
+}
+
+func TestDeploymentCreatePreservesExplicitCloudSettings(t *testing.T) {
+	model := deploymentResourceModel{
+		Source: types.StringValue("github"),
+		SourceConfig: &deploymentSourceConfigModel{
+			DeploymentType: types.StringValue("dev_zero"),
+			BuildOnPush:    types.BoolValue(true),
+		},
+	}
+	config, ok := createPayload(model)["source_config"].(map[string]any)
+	if !ok || config["deployment_type"] != "dev_zero" || config["build_on_push"] != true {
+		t.Fatalf("creation defaults overwrote explicit settings: %#v", config)
+	}
+}

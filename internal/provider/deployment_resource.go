@@ -168,7 +168,7 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Required:            true,
 				PlanModifiers:       replace,
 				Validators:          []frameworkvalidator.String{oneOfStringValidator{values: []string{"github", "external_docker", "internal_docker", "internal_source", "internal_template"}}},
-				MarkdownDescription: "Where the deployment builds from: `github`, `external_docker`, `internal_docker`, `internal_source`, or `internal_template`. Self-hosted installs support `external_docker`. Changing this replaces the deployment.",
+				MarkdownDescription: "Where the deployment builds from: `github`, `external_docker`, `internal_docker`, `internal_source`, or `internal_template`. Self-hosted installs support `external_docker`. The `internal_docker` and `internal_source` sources are created without an initial revision; push an image or upload source afterward to deploy the first revision. Changing this replaces the deployment.",
 			},
 			"display_name": schema.StringAttribute{
 				Optional:            true,
@@ -206,7 +206,7 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 			"secrets_hash": schema.StringAttribute{
 				Computed:            true,
 				Sensitive:           true,
-				MarkdownDescription: "SHA-256 digest of the combined `environment_variables` and `secrets` maps, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Secret values remain write-only; ordinary environment values are also stored in state. APIs that omit secrets cannot report remote environment drift. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.",
+				MarkdownDescription: "SHA-256 digest of the combined `environment_variables` and `secrets` maps, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Secret values remain write-only; ordinary environment values are also stored in state. Remote environment drift is detectable only after the first revision exists and when the API returns secrets. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.",
 			},
 			"secret_references": schema.ListNestedAttribute{
 				Optional:            true,
@@ -266,7 +266,7 @@ func sourceConfigSchema() map[string]schema.Attribute {
 	return map[string]schema.Attribute{
 		"integration_id":  serverOwnedString("UUID of the GitHub integration to build through. Only applicable to the `github` source. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
 		"repo_url":        serverOwnedString("URL of the repository to build from. Only applicable to the `github` source. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
-		"deployment_type": serverOwnedString("Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. The service defaults this to `prod`. Changing it replaces the deployment.", true, oneOfStringValidator{values: []string{"dev_free", "dev", "prod", "dev_zero", "dev_free_zero"}}),
+		"deployment_type": serverOwnedString("Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. The provider defaults this to `prod` when creating a Cloud deployment. Omitted values on existing deployments retain the service's tier. Changing it replaces the deployment.", true, oneOfStringValidator{values: []string{"dev_free", "dev", "prod", "dev_zero", "dev_free_zero"}}),
 		"listener_id":     serverOwnedString("UUID of the listener to bind the deployment to. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
 		"template_id":     serverOwnedString("Identifier of the LangChain template to deploy. Only applicable to the `internal_template` source. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
 		"custom_url":      serverOwnedString("Custom hostname to serve the deployment on. The service has no way to clear this once set, so removing the argument leaves the last value in place.", false),
@@ -274,7 +274,7 @@ func sourceConfigSchema() map[string]schema.Attribute {
 			Optional:            true,
 			Computed:            true,
 			PlanModifiers:       []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
-			MarkdownDescription: "Rebuild automatically when the tracked git ref moves. Must be `false` when `source_revision_config.repo_ref` names a tag. The service has no way to clear this once set, so removing the argument leaves the last value in place.",
+			MarkdownDescription: "Rebuild automatically when the tracked git ref moves. Defaults to `false` when creating a GitHub deployment. Must be `false` when `source_revision_config.repo_ref` names a tag. The service has no way to clear this once set, so removing the argument leaves the last value in place.",
 		},
 		"install_command": schema.StringAttribute{
 			Optional:            true,
@@ -459,7 +459,11 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 		return plan, err
 	}
 	interim := deploymentModelFromAPI(result, deploymentResourceRevisionAPI{}, plan)
-	if result.ID == "" || result.LatestRevisionID == nil {
+	if result.ID == "" {
+		return interim, errors.New("LangSmith did not return a deployment ID")
+	}
+	hasRevision := result.LatestRevisionID != nil && *result.LatestRevisionID != ""
+	if !hasRevision && plan.Source.ValueString() != "internal_docker" && plan.Source.ValueString() != "internal_source" {
 		return interim, errors.New("LangSmith did not return deployment and revision IDs")
 	}
 	// Display names require a separate PATCH. Preserve the ID if it fails.
@@ -469,10 +473,14 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 			return interim, err
 		}
 	}
-	revision, err := r.waitForRevision(ctx, result.ID, *result.LatestRevisionID)
-	if err != nil {
-		interim.LatestRevisionStatus = nullableString(revision.Status)
-		return interim, err
+	var revision deploymentResourceRevisionAPI
+	if hasRevision {
+		var err error
+		revision, err = r.waitForRevision(ctx, result.ID, *result.LatestRevisionID)
+		if err != nil {
+			interim.LatestRevisionStatus = nullableString(revision.Status)
+			return interim, err
+		}
 	}
 	// Keep the created ID if the final read fails; the plan's ID is unknown.
 	model, err := r.read(ctx, result.ID, plan)
@@ -496,7 +504,9 @@ func (r *DeploymentResource) read(ctx context.Context, id string, previous deplo
 		}
 	}
 	model := deploymentModelFromAPI(result, revision, previous)
-	if result.Secrets != nil {
+	// Before the first revision, the API returns [] even when project secrets
+	// were accepted at creation. Only revisions expose the stored environment.
+	if result.LatestRevisionID != nil && result.Secrets != nil {
 		hash, err := deploymentAPISecretsHash(result.Secrets)
 		if err != nil {
 			return previous, err
@@ -521,6 +531,7 @@ func (r *DeploymentResource) read(ctx context.Context, id string, previous deplo
 func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentResourceModel) (deploymentResourceModel, error) {
 	id := state.ID.ValueString()
 	needsRevision := revisionChanged(state, plan)
+	mutable := mutablePayload(state, plan)
 	var payload map[string]any
 	var revision deploymentResourceRevisionAPI
 	if needsRevision {
@@ -532,8 +543,26 @@ func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentR
 		if err != nil {
 			return state, err
 		}
+		if plan.Source.ValueString() == "github" && plan.SourceConfig != nil {
+			// The API validates the ref and push flag together. A separate PATCH
+			// would validate the new flag against the old ref during transitions.
+			sourceConfig, ok := payload["source_config"].(map[string]any)
+			if !ok {
+				sourceConfig = map[string]any{}
+			}
+			putBool(sourceConfig, "build_on_push", plan.SourceConfig.BuildOnPush)
+			if len(sourceConfig) > 0 {
+				payload["source_config"] = sourceConfig
+			}
+			if fields, ok := mutable["source_config"].(map[string]any); ok {
+				delete(fields, "build_on_push")
+				if len(fields) == 0 {
+					delete(mutable, "source_config")
+				}
+			}
+		}
 	}
-	if mutable := mutablePayload(state, plan); len(mutable) > 0 {
+	if len(mutable) > 0 {
 		var ignored deploymentAPI
 		if err := r.client.Patch(ctx, deploymentPath(id), mutable, &ignored); err != nil {
 			return state, err
@@ -607,6 +636,9 @@ func (r *DeploymentResource) applied(ctx context.Context, id string, state, plan
 			merged.BuildCommand = plan.SourceConfig.BuildCommand
 			merged.ListenerConfig = plan.SourceConfig.ListenerConfig
 			merged.ResourceSpec = plan.SourceConfig.ResourceSpec
+			if plan.Source.ValueString() == "github" && !plan.SourceConfig.BuildOnPush.IsNull() && !plan.SourceConfig.BuildOnPush.IsUnknown() {
+				merged.BuildOnPush = plan.SourceConfig.BuildOnPush
+			}
 			model.SourceConfig = &merged
 		}
 	}
@@ -685,10 +717,20 @@ func (r *DeploymentResource) waitForRevision(ctx context.Context, id, revisionID
 }
 
 func createPayload(m deploymentResourceModel) map[string]any {
+	sourceConfig := sourceConfigPayload(m.SourceConfig)
+	switch m.Source.ValueString() {
+	case "github", "internal_docker", "internal_source", "internal_template":
+		if sourceConfig["deployment_type"] == nil {
+			sourceConfig["deployment_type"] = "prod"
+		}
+	}
+	if m.Source.ValueString() == "github" && sourceConfig["build_on_push"] == nil {
+		sourceConfig["build_on_push"] = false
+	}
 	p := map[string]any{
 		"name":                   m.Name.ValueString(),
 		"source":                 m.Source.ValueString(),
-		"source_config":          sourceConfigPayload(m.SourceConfig),
+		"source_config":          sourceConfig,
 		"source_revision_config": sourceRevisionPayload(m.SourceRevisionConfig),
 		"secrets":                secretsPayload(m.EnvironmentVariables, m.Secrets),
 	}

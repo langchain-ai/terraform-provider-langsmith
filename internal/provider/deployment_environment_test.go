@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -72,8 +73,13 @@ func TestDeploymentEnvironmentPayload(t *testing.T) {
 func TestDeploymentEnvironmentReadOnlyRefreshesDeclaredPublicKeys(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(req.URL.Path, "/revisions/") {
+			_ = json.NewEncoder(w).Encode(deploymentResourceRevisionAPI{ID: testRevisionID, Status: "DEPLOYED"})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": testDeploymentID, "name": "orders", "source": "external_docker",
+			"latest_revision_id": testRevisionID,
 			"secrets": []map[string]string{
 				{"name": "LOG_LEVEL", "value": "debug"},
 				{"name": "API_TOKEN", "value": offlineSecretOne},
