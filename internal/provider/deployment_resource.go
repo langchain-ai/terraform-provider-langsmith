@@ -136,28 +136,14 @@ func (r *DeploymentResource) Metadata(ctx context.Context, req resource.Metadata
 }
 
 func (r *DeploymentResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	client, ok := configureControlPlaneClient(req.ProviderData, &resp.Diagnostics, "Resource")
-	if ok {
-		r.client = client
+	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
+		r.client = data.ControlPlaneClient
 	}
 }
 
-// Attribute ownership
-//
-// The service returns a normalized view of a deployment: it reports
-// deployment_type and build_on_push, materializes a resource_spec for external
-// images, and includes built artifacts in source_revision_config. Attributes
-// it owns in that sense are
-// Optional+Computed with UseStateForUnknown, so an omitted attribute adopts the
-// service's value once instead of diffing against null forever.
-//
-// The remaining inputs are desired state that the service either never echoes
-// back or reports in a shape of its own -- install_command, build_command,
-// listener_config, resource_spec, source_revision_config, secrets and
-// secret_references. Those stay Optional-only and Terraform remains
-// their source of truth; observed revision values are available from the
-// langsmith_deployment_revision data source. environment_variables is also
-// Optional-only, but refreshes only the keys already classified as public.
+// Optional+Computed fields adopt API defaults. Desired-only inputs retain
+// Terraform's configuration because the API may omit or normalize them.
+// Public environment values refresh only previously classified keys.
 func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	replace := []planmodifier.String{stringplanmodifier.RequiresReplace()}
 	immutable := []planmodifier.String{stringplanmodifier.UseStateForUnknown()}
@@ -263,9 +249,7 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 }
 
 func sourceConfigSchema() map[string]schema.Attribute {
-	// Every argument here that the service echoes back is Optional+Computed, so
-	// omitting one adopts the service's value rather than fighting it. See the
-	// ownership note on Schema.
+	// Optional+Computed adopts server values when an argument is omitted.
 	serverOwnedString := func(description string, replaces bool, validators ...frameworkvalidator.String) schema.StringAttribute {
 		modifiers := []planmodifier.String{stringplanmodifier.UseStateForUnknown()}
 		if replaces {
@@ -478,9 +462,7 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 	if result.ID == "" || result.LatestRevisionID == nil {
 		return interim, errors.New("LangSmith did not return deployment and revision IDs")
 	}
-	// The create endpoint does not accept a display name, so it takes a second
-	// write. A failure here leaves a working deployment, so report the error but
-	// keep the state that proves it exists.
+	// Display names require a separate PATCH. Preserve the ID if it fails.
 	if !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() {
 		var ignored deploymentAPI
 		if err := r.client.Patch(ctx, deploymentPath(result.ID), map[string]any{"display_name": plan.DisplayName.ValueString()}, &ignored); err != nil {
@@ -492,8 +474,7 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 		interim.LatestRevisionStatus = nullableString(revision.Status)
 		return interim, err
 	}
-	// Never fall back to the plan here: its ID is unknown, Create would decline
-	// to persist it, and the deployment we just built would be orphaned.
+	// Keep the created ID if the final read fails; the plan's ID is unknown.
 	model, err := r.read(ctx, result.ID, plan)
 	if err != nil {
 		interim.LatestRevisionStatus = nullableString(revision.Status)
@@ -509,9 +490,7 @@ func (r *DeploymentResource) read(ctx context.Context, id string, previous deplo
 	}
 	var revision deploymentResourceRevisionAPI
 	if result.LatestRevisionID != nil {
-		// A revision can 404 on its own -- pruned, or reassigned to another
-		// deployment. Callers treat a not-found as "the deployment is gone", so
-		// that must only come from the deployment request above.
+		// Only a deployment 404 may remove the resource from state.
 		if err := r.client.Get(ctx, deploymentRevisionPath(id, *result.LatestRevisionID), nil, &revision); err != nil && !isLangSmithNotFound(err) {
 			return previous, err
 		}
@@ -611,13 +590,8 @@ func (r *DeploymentResource) revisionUpdatePayload(ctx context.Context, id strin
 	return payload, nil
 }
 
-// applied builds a state value that is safe to persist once the service has
-// accepted a revision but the wait for it failed. The plan on its own is not:
-// Terraform leaves every Computed attribute an unset config omits unknown, and
-// unknown values in applied state are reported back as a provider bug. A fresh
-// read fills them in, and the prior state covers the case where that read fails
-// too. The desired inputs come from the plan either way, so a retry recognizes
-// the revision as already applied instead of creating a second one.
+// Preserve accepted revision inputs and known computed values if polling fails,
+// so retries do not create another revision.
 func (r *DeploymentResource) applied(ctx context.Context, id string, state, plan deploymentResourceModel, revision deploymentResourceRevisionAPI) deploymentResourceModel {
 	model, err := r.read(ctx, id, plan)
 	if err != nil {
@@ -686,11 +660,7 @@ func (r *DeploymentResource) pollSettings() (time.Duration, time.Duration) {
 	return interval, timeout
 }
 
-// waitForRevision polls until the revision stops moving. Only the three failure
-// statuses are errors: SKIPPED means a newer revision superseded this one before
-// the service promoted it, and INTERRUPTED and UNKNOWN are transient states with
-// onward transitions, so treating any of them as failure would abort an apply
-// the service goes on to complete.
+// SKIPPED revisions were superseded; INTERRUPTED and UNKNOWN can still progress.
 func (r *DeploymentResource) waitForRevision(ctx context.Context, id, revisionID string) (deploymentResourceRevisionAPI, error) {
 	interval, timeout := r.pollSettings()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -748,12 +718,7 @@ func mutablePayload(state, plan deploymentResourceModel) map[string]any {
 	return p
 }
 
-// changedValue reports whether plan carries a new value worth sending. An
-// unknown plan value holds no user intent -- it is what the framework leaves
-// behind for a Computed attribute whose config and prior state are both null --
-// and a null one cannot be sent, because the service merges request nulls into
-// the existing row rather than clearing it. Sending either would serialize an
-// empty string, which the service rejects for display_name.
+// Null cannot clear an API field; unknown carries no value to send.
 func changedValue(state, plan types.String) bool {
 	if plan.IsUnknown() || plan.IsNull() {
 		return false
@@ -761,10 +726,6 @@ func changedValue(state, plan types.String) bool {
 	return !state.Equal(plan)
 }
 
-// revisionChanged reports whether any input the service turns into a new
-// revision differs from the applied state. Unknown plan values are excluded for
-// the reason given on changedValue: they mean "unset", not "changed", and
-// treating them as a change would rebuild and redeploy on every apply.
 func revisionChanged(state, plan deploymentResourceModel) bool {
 	if changedValue(state.SecretsVersion, plan.SecretsVersion) || changedValue(state.SecretsHash, plan.SecretsHash) {
 		return true
@@ -891,7 +852,7 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 	next.Source = types.StringValue(api.Source)
 	next.DisplayName = nullableStringPointer(api.DisplayName)
 
-	adopt := adoptServerState(previous)
+	adopt := previous.Name.IsNull() || previous.Name.IsUnknown()
 	sourceConfig := sourceConfigModelFromAPI(api.SourceConfig)
 	if !adopt && previous.SourceConfig != nil {
 		// Some API versions omit commands and listener settings. Resource specs
@@ -903,21 +864,12 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 	}
 	next.SourceConfig = sourceConfig
 
-	// source_revision_config describes the latest revision rather than the
-	// request that produced it, so Terraform keeps its own desired values unless
-	// there is no prior state to keep -- an import, where the service's view is
-	// all there is.
+	// Import adopts observed revision inputs; later reads preserve desired inputs.
 	if adopt && api.SourceRevisionConfig != nil {
 		next.SourceRevisionConfig = sourceRevisionModelFromAPI(api)
 	}
-	// With no prior state, adopt references only if there are any: turning an
-	// empty response list into an empty configured list would make an imported
-	// deployment differ from an applied one.
-	if adopt {
-		if len(api.SecretReferences) > 0 {
-			next.SecretReferences = secretReferenceModelsFromAPI(api.SecretReferences)
-		}
-	} else if previous.SecretReferences != nil {
+	// An empty imported list stays null to match an omitted argument.
+	if (adopt && len(api.SecretReferences) > 0) || (!adopt && previous.SecretReferences != nil) {
 		next.SecretReferences = secretReferenceModelsFromAPI(api.SecretReferences)
 	}
 
@@ -933,14 +885,6 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 		next.SecretsHash = types.StringNull()
 	}
 	return next
-}
-
-// adoptServerState reports whether there is no prior desired state to preserve.
-// That is the shape ImportState leaves behind, where only the ID is set, and it
-// is the one case where the service's view of the desired-only arguments is
-// better than nothing.
-func adoptServerState(previous deploymentResourceModel) bool {
-	return previous.Name.IsNull() || previous.Name.IsUnknown()
 }
 
 func sourceConfigModelFromAPI(api map[string]any) *deploymentSourceConfigModel {

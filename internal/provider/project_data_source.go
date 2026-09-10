@@ -51,11 +51,9 @@ func (d *ProjectDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 }
 
 func (d *ProjectDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Data Source")
-	if !ok {
-		return
+	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
+		d.client = data.LangSmithClient
 	}
-	d.client = client
 }
 
 func (d *ProjectDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {

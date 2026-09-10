@@ -17,10 +17,6 @@ import (
 func TestDeploymentSecretsPlan(t *testing.T) {
 	ctx := context.Background()
 	r := &DeploymentResource{}
-	modifier, ok := any(r).(resource.ResourceWithModifyPlan)
-	if !ok {
-		t.Fatal("write-only environment changes need resource plan modification")
-	}
 	var schema resource.SchemaResponse
 	r.Schema(ctx, resource.SchemaRequest{}, &schema)
 	for _, tc := range []struct {
@@ -54,7 +50,7 @@ func TestDeploymentSecretsPlan(t *testing.T) {
 			}
 			plan := tfsdk.Plan{Schema: schema.Schema, Raw: state.Raw}
 			response := resource.ModifyPlanResponse{Plan: plan}
-			modifier.ModifyPlan(ctx, resource.ModifyPlanRequest{
+			r.ModifyPlan(ctx, resource.ModifyPlanRequest{
 				State: state, Plan: plan,
 				Config: tfsdk.Config{Schema: schema.Schema, Raw: config.Raw},
 			}, &response)

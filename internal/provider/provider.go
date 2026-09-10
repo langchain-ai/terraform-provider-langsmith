@@ -170,12 +170,8 @@ func (p *LangSmithProvider) Resources(ctx context.Context) []func() resource.Res
 	}
 }
 
-// resolveAPIURL returns the normalized base URL to configure the SDK client
-// with, or "" to leave the SDK's own resolution (profile, then default) alone.
-//
-// LANGSMITH_ENDPOINT is read here rather than left to the SDK because the SDK
-// passes it through unnormalized, and provider options are applied after the
-// SDK's env defaults — so normalizing it here is what makes it take effect.
+// Normalize explicit endpoints before SDK options override environment defaults.
+// An empty URL leaves profile/default resolution to the SDK.
 func resolveAPIURL(configured string) string {
 	raw := configured
 	if raw == "" {
@@ -187,13 +183,7 @@ func resolveAPIURL(configured string) string {
 	return normalizeAPIURL(raw)
 }
 
-// normalizeAPIURL strips a trailing "/api/v1" so the SDK's relative request
-// paths resolve against the origin. Self-hosted installs are documented with
-// an endpoint of https://<host>/api/v1, which would otherwise double the
-// prefix into https://<host>/api/v1/api/v1/....
-//
-// Kept identical to normalizeConfigURL in langsmith-go so the CLI, the SDK and
-// this provider all agree on what a normalized endpoint looks like.
+// Match the SDK's normalization to avoid doubling /api/v1 on self-hosted URLs.
 func normalizeAPIURL(raw string) string {
 	u := strings.TrimRight(strings.TrimSpace(raw), "/")
 	return strings.TrimSuffix(u, "/api/v1")
@@ -204,26 +194,14 @@ const (
 	selfHostedControlPlanePath = "/api-host"
 )
 
-// saasControlPlanes maps a LangSmith SaaS API host to the control plane that
-// serves it. Any other host belongs to a self-hosted install, where both live on
-// the same origin.
 var saasControlPlanes = map[string]string{
 	"api.smith.langchain.com":    defaultControlPlaneURL,
 	"eu.api.smith.langchain.com": "https://eu.api.host.langchain.com",
 }
 
-// resolveControlPlaneURL returns the base URL for the deployment control plane:
-// the provider argument, then LANGSMITH_CONTROL_PLANE_URL, then whatever the
-// resolved LangSmith API URL implies.
-//
-// Deriving it from apiURL is what keeps a self-hosted install self-hosted.
-// Falling straight back to the SaaS default would send a self-hosted API key to
-// LangChain's servers for anyone who configured only api_url or
-// LANGSMITH_ENDPOINT, which is both a leak and a confusing 401.
-//
-// A profile supplies its endpoint inside the SDK, where the provider cannot read
-// it, so a profile-only configuration still needs control_plane_url set
-// explicitly to reach a self-hosted control plane.
+// Explicit control-plane settings override derivation from api_url.
+// Derive self-hosted URLs locally to avoid sending their credentials to SaaS.
+// Profile endpoints are opaque to the provider and need an explicit override.
 func resolveControlPlaneURL(configured, apiURL string) (string, error) {
 	if raw := strings.TrimSpace(configured); raw != "" {
 		return validateControlPlaneURL(raw, "the control_plane_url argument")
@@ -234,9 +212,6 @@ func resolveControlPlaneURL(configured, apiURL string) (string, error) {
 	return controlPlaneURLForAPIURL(apiURL), nil
 }
 
-// controlPlaneURLForAPIURL derives the control-plane URL from an already
-// normalized LangSmith API URL. Self-hosted installs serve it from the same
-// origin under /api-host.
 func controlPlaneURLForAPIURL(apiURL string) string {
 	if apiURL == "" {
 		return defaultControlPlaneURL
@@ -254,11 +229,7 @@ func controlPlaneURLForAPIURL(apiURL string) string {
 	return u.String()
 }
 
-// validateControlPlaneURL rejects values that cannot address a control plane.
-// Both HTTP and HTTPS are accepted: self-hosted installs are documented as
-// http(s)://<host>/api-host, and api_url places no restriction on scheme either,
-// so requiring TLS here would reject a working install and, because this runs in
-// provider configuration, take every other resource down with it.
+// Self-hosted installs may use HTTP when TLS terminates elsewhere.
 func validateControlPlaneURL(raw, source string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil || !u.IsAbs() || u.Host == "" {

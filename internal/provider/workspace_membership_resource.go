@@ -82,11 +82,9 @@ func (r *WorkspaceMembershipResource) Schema(ctx context.Context, req resource.S
 }
 
 func (r *WorkspaceMembershipResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Resource")
-	if !ok {
-		return
+	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
+		r.client = data.LangSmithClient
 	}
-	r.client = client
 }
 
 func (r *WorkspaceMembershipResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

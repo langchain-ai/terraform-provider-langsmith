@@ -22,14 +22,9 @@ type DeploymentRevisionDataSource struct {
 }
 
 type deploymentRevisionDataSourceModel struct {
-	DeploymentID         types.String                         `tfsdk:"deployment_id"`
-	RevisionID           types.String                         `tfsdk:"revision_id"`
-	ID                   types.String                         `tfsdk:"id"`
-	CreatedAt            types.String                         `tfsdk:"created_at"`
-	UpdatedAt            types.String                         `tfsdk:"updated_at"`
-	Status               types.String                         `tfsdk:"status"`
-	Source               types.String                         `tfsdk:"source"`
-	SourceRevisionConfig *deploymentRevisionSourceConfigModel `tfsdk:"source_revision_config"`
+	deploymentRevisionModel
+	DeploymentID types.String `tfsdk:"deployment_id"`
+	RevisionID   types.String `tfsdk:"revision_id"`
 }
 
 type deploymentRevisionModel struct {
@@ -75,18 +70,23 @@ func (d *DeploymentRevisionDataSource) Metadata(ctx context.Context, req datasou
 }
 
 func (d *DeploymentRevisionDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	attributes := deploymentRevisionAttributes()
+	attributes["deployment_id"] = schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}, MarkdownDescription: "Deployment ID."}
+	attributes["revision_id"] = schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}, MarkdownDescription: "Revision ID."}
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Reads a deployment revision.",
-		Attributes: map[string]schema.Attribute{
-			"deployment_id":          schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}, MarkdownDescription: "Deployment ID."},
-			"revision_id":            schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}, MarkdownDescription: "Revision ID."},
-			"id":                     schema.StringAttribute{Computed: true, MarkdownDescription: "Revision ID."},
-			"created_at":             schema.StringAttribute{Computed: true, MarkdownDescription: "Revision creation time."},
-			"updated_at":             schema.StringAttribute{Computed: true, MarkdownDescription: "Revision last update time."},
-			"status":                 schema.StringAttribute{Computed: true, MarkdownDescription: "Revision status."},
-			"source":                 schema.StringAttribute{Computed: true, MarkdownDescription: "Revision source."},
-			"source_revision_config": deploymentRevisionSourceConfigSchema(),
-		},
+		Attributes:          attributes,
+	}
+}
+
+func deploymentRevisionAttributes() map[string]schema.Attribute {
+	return map[string]schema.Attribute{
+		"id":                     schema.StringAttribute{Computed: true, MarkdownDescription: "Revision ID."},
+		"created_at":             schema.StringAttribute{Computed: true, MarkdownDescription: "Revision creation time."},
+		"updated_at":             schema.StringAttribute{Computed: true, MarkdownDescription: "Revision last update time."},
+		"status":                 schema.StringAttribute{Computed: true, MarkdownDescription: "Revision status."},
+		"source":                 schema.StringAttribute{Computed: true, MarkdownDescription: "Revision source."},
+		"source_revision_config": deploymentRevisionSourceConfigSchema(),
 	}
 }
 
@@ -107,11 +107,9 @@ func deploymentRevisionSourceConfigSchema() schema.SingleNestedAttribute {
 }
 
 func (d *DeploymentRevisionDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	client, ok := configureControlPlaneClient(req.ProviderData, &resp.Diagnostics, "Data Source")
-	if !ok {
-		return
+	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
+		d.client = data.ControlPlaneClient
 	}
-	d.client = client
 }
 
 func (d *DeploymentRevisionDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
@@ -132,12 +130,7 @@ func (d *DeploymentRevisionDataSource) Read(ctx context.Context, req datasource.
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	data.ID = model.ID
-	data.CreatedAt = model.CreatedAt
-	data.UpdatedAt = model.UpdatedAt
-	data.Status = model.Status
-	data.Source = model.Source
-	data.SourceRevisionConfig = model.SourceRevisionConfig
+	data.deploymentRevisionModel = model
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 

@@ -431,11 +431,9 @@ func (r *serviceKeyResource) Delete(ctx context.Context, req resource.DeleteRequ
 
 // Configure adds the provider configured client to the resource.
 func (r *serviceKeyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Resource")
-	if !ok {
-		return
+	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
+		r.client = data.LangSmithClient
 	}
-	r.client = client
 }
 
 // helpers

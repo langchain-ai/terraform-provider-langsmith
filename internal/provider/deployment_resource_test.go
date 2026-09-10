@@ -265,10 +265,7 @@ func TestDeploymentRevisionFailure(t *testing.T) {
 	}
 }
 
-// The service marks a revision SKIPPED when a newer one supersedes it before
-// promotion, and moves INTERRUPTED and UNKNOWN revisions onward. Treating any of
-// them as failure aborted applies that the service went on to complete, and
-// tainted the resource so the next apply destroyed a healthy deployment.
+// Superseded and transient revisions must not cause Terraform to taint a deployment.
 func TestDeploymentWaitTreatsSupersededAndTransientStatusesAsNonFailures(t *testing.T) {
 	t.Run("skipped is not a failure", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -508,10 +505,7 @@ func deploymentResponseJSON(status string) string {
 	return `{"id":"` + testDeploymentID + `","name":"orders","source":"external_docker","display_name":"Orders","source_config":{"custom_url":"orders.example.com","listener_id":"listener","listener_config":{"k8s_namespace":"agents"},"resource_spec":{"min_scale":1,"max_scale":3,"cpu":0.5,"memory_mb":1024,"labels":{"team":"agents"}}},"source_revision_config":{"image_uri":"registry.example.com/orders:v1"},"secret_references":[{"name":"DATABASE_URL","secret_name":"orders","secret_key":"url"}],"tenant_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:01Z","status":"` + status + `","latest_revision_id":"` + testRevisionID + `","active_revision_id":"` + testRevisionID + `"}`
 }
 
-// A deployment that was built successfully must not be lost because the read
-// that follows failed: Create only persists state when the ID is known, so
-// falling back to the plan there orphaned the deployment and the next apply
-// created a duplicate.
+// A failed final read must preserve the created ID to prevent duplicate deployments.
 func TestDeploymentCreateKeepsIDWhenFinalReadFails(t *testing.T) {
 	var gets int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -547,9 +541,7 @@ func TestDeploymentCreateKeepsIDWhenFinalReadFails(t *testing.T) {
 	}
 }
 
-// A revision can 404 on its own, without the deployment having gone anywhere.
-// Reporting that as not-found made Read drop the resource from state, and the
-// next apply created a second deployment with the same name.
+// A missing revision must not remove its deployment from state.
 func TestDeploymentReadKeepsDeploymentWhenRevisionMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

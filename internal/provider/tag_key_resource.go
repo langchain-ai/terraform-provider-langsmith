@@ -66,11 +66,9 @@ func (r *TagKeyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 }
 
 func (r *TagKeyResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Resource")
-	if !ok {
-		return
+	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
+		r.client = data.LangSmithClient
 	}
-	r.client = client
 }
 
 func (r *TagKeyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

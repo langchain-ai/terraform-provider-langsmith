@@ -52,14 +52,7 @@ func (d *DeploymentRevisionsDataSource) Schema(ctx context.Context, req datasour
 			"revisions": schema.ListNestedAttribute{
 				Computed:            true,
 				MarkdownDescription: "Deployment revisions.",
-				NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
-					"id":                     schema.StringAttribute{Computed: true},
-					"created_at":             schema.StringAttribute{Computed: true},
-					"updated_at":             schema.StringAttribute{Computed: true},
-					"status":                 schema.StringAttribute{Computed: true},
-					"source":                 schema.StringAttribute{Computed: true},
-					"source_revision_config": deploymentRevisionSourceConfigSchema(),
-				}},
+				NestedObject:        schema.NestedAttributeObject{Attributes: deploymentRevisionAttributes()},
 			},
 			"next_offset": schema.Int64Attribute{Computed: true, MarkdownDescription: "Offset to pass to a subsequent request."},
 		},
@@ -67,11 +60,9 @@ func (d *DeploymentRevisionsDataSource) Schema(ctx context.Context, req datasour
 }
 
 func (d *DeploymentRevisionsDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	client, ok := configureControlPlaneClient(req.ProviderData, &resp.Diagnostics, "Data Source")
-	if !ok {
-		return
+	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
+		d.client = data.ControlPlaneClient
 	}
-	d.client = client
 }
 
 func (d *DeploymentRevisionsDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {

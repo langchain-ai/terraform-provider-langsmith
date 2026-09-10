@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-testing/config"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 )
@@ -21,27 +20,7 @@ func TestAccDeploymentOfflineAutomaticSecrets(t *testing.T) {
 	backend := newDeploymentContractBackend(t)
 	server := httptest.NewServer(backend)
 	defer server.Close()
-	hcl := fmt.Sprintf(`
-provider "langsmith" {
-  control_plane_url = %q
-  api_key = "offline-test-key"
-  workspace_id = "offline-workspace"
-}
-variable "environment" {
-  type = map(string)
-  sensitive = true
-  ephemeral = true
-}
-resource "langsmith_deployment" "test" {
-  name = "offline-agent"
-  source = "external_docker"
-  source_config = { resource_spec = {} }
-  source_revision_config = { image_uri = "registry.example.com/agent:v1" }
-  secrets = var.environment
-}`, server.URL+"/api-host")
-	variables := func(value string) config.Variables {
-		return config.Variables{"environment": config.MapVariable(map[string]config.Variable{"API_TOKEN": config.StringVariable(value)})}
-	}
+	hcl := deploymentEnvironmentAcceptanceConfig(server.URL, "", "secrets = var.environment")
 	drift := func() {
 		backend.mu.Lock()
 		defer backend.mu.Unlock()
@@ -51,13 +30,13 @@ resource "langsmith_deployment" "test" {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: offlineDeploymentFactories(),
 		Steps: []resource.TestStep{
-			{Config: hcl, ConfigVariables: variables(offlineSecretOne), ConfigPlanChecks: checks, Check: deploymentStateExcludesSecrets},
-			{Config: hcl, ConfigVariables: variables(offlineSecretTwo), ConfigPlanChecks: checks,
+			{Config: hcl, ConfigVariables: deploymentEnvironmentTestVariables(offlineSecretOne), ConfigPlanChecks: checks, Check: deploymentStateExcludesSecrets},
+			{Config: hcl, ConfigVariables: deploymentEnvironmentTestVariables(offlineSecretTwo), ConfigPlanChecks: checks,
 				Check: resource.ComposeAggregateTestCheckFunc(backend.expectRevisionPosts(1), deploymentStateExcludesSecrets)},
-			{Config: hcl, ConfigVariables: variables(offlineSecretTwo), PlanOnly: true, ExpectNonEmptyPlan: false},
-			{PreConfig: drift, Config: hcl, ConfigVariables: variables(offlineSecretTwo), ConfigPlanChecks: checks,
+			{Config: hcl, ConfigVariables: deploymentEnvironmentTestVariables(offlineSecretTwo), PlanOnly: true, ExpectNonEmptyPlan: false},
+			{PreConfig: drift, Config: hcl, ConfigVariables: deploymentEnvironmentTestVariables(offlineSecretTwo), ConfigPlanChecks: checks,
 				Check: resource.ComposeAggregateTestCheckFunc(backend.expectRevisionPosts(2), deploymentStateExcludesSecrets)},
-			{PreConfig: drift, Config: strings.Replace(hcl, "  secrets = var.environment", "", 1), ConfigVariables: variables(offlineSecretTwo),
+			{PreConfig: drift, Config: strings.Replace(hcl, "  secrets = var.environment", "", 1), ConfigVariables: deploymentEnvironmentTestVariables(offlineSecretTwo),
 				PlanOnly: true, ExpectNonEmptyPlan: false},
 		},
 	})

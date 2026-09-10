@@ -44,12 +44,12 @@ data "langsmith_deployment_revisions" "example" {
 
 Read-Only:
 
-- `created_at` (String)
-- `id` (String)
-- `source` (String)
+- `created_at` (String) Revision creation time.
+- `id` (String) Revision ID.
+- `source` (String) Revision source.
 - `source_revision_config` (Attributes) Source configuration for the revision. (see [below for nested schema](#nestedatt--revisions--source_revision_config))
-- `status` (String)
-- `updated_at` (String)
+- `status` (String) Revision status.
+- `updated_at` (String) Revision last update time.
 
 <a id="nestedatt--revisions--source_revision_config"></a>
 ### Nested Schema for `revisions.source_revision_config`

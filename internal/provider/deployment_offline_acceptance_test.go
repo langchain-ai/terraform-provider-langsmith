@@ -1,12 +1,6 @@
 package provider
 
-// The backend in this file deliberately answers the way host-backend does
-// rather than echoing back whatever the configuration sent. That matters: every
-// key of source_config is present with a null value when unset, build_on_push is
-// always a boolean, an external_docker deployment always carries a
-// resource_spec, deployment_type defaults to prod, and display_name has a
-// minimum length of 1 on PATCH. A fake that only replays the request cannot
-// catch a provider that mishandles any of it.
+// The fake API reproduces server defaults, normalization, and validation.
 
 import (
 	"encoding/json"
@@ -111,10 +105,7 @@ func TestAccDeploymentOffline(t *testing.T) {
 	})
 }
 
-// TestAccDeploymentOfflineWithoutDisplayName covers the configuration shape that
-// used to be unmanageable: every optional argument omitted. The service defaults
-// or materializes several of them, and it rejects an empty display_name, so both
-// a create and a later update have to work without one.
+// Omitted optional arguments must remain stable across API defaults and updates.
 func TestAccDeploymentOfflineWithoutDisplayName(t *testing.T) {
 	if os.Getenv("TF_ACC") != "1" {
 		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
@@ -231,8 +222,6 @@ func newDeploymentContractBackend(t *testing.T) *deploymentContractBackend {
 	return &deploymentContractBackend{t: t, revisionGets: map[string]int{}, revisionSecret: offlineSecretTwo}
 }
 
-// expectRevisionPosts asserts how many revisions the service has been asked to
-// create so far, so a step that must not create one says so at that step.
 func (b *deploymentContractBackend) expectRevisionPosts(want int) resource.TestCheckFunc {
 	return func(*terraform.State) error {
 		b.mu.Lock()
@@ -395,9 +384,7 @@ func (b *deploymentContractBackend) readDeployment(w http.ResponseWriter, req *h
 	b.writeDeployment(w)
 }
 
-// writeDeployment mirrors host-backend's serializer: absent values are present
-// as null rather than omitted, build_on_push is always a boolean, and an
-// external_docker deployment always reports a resource_spec.
+// Mirror API nulls, defaults, and the resource spec for external images.
 func (b *deploymentContractBackend) writeDeployment(w http.ResponseWriter) {
 	response := map[string]any{
 		"id": offlineDeploymentID, "name": "offline-agent", "source": "external_docker", "display_name": b.displayName,
@@ -468,9 +455,7 @@ func (b *deploymentContractBackend) decode(w http.ResponseWriter, req *http.Requ
 	return true
 }
 
-// reject fails the test: the provider sent something the service would not
-// accept. unprocessable instead answers the way the service does, for cases the
-// provider is expected to avoid rather than recover from.
+// Unexpected invalid requests fail the test; unprocessable models expected API errors.
 func (b *deploymentContractBackend) reject(w http.ResponseWriter, req *http.Request, reason string) {
 	b.t.Errorf("%s %s: %s", req.Method, req.URL.RequestURI(), reason)
 	http.Error(w, reason, http.StatusBadRequest)

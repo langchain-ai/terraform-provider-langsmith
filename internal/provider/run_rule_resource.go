@@ -386,11 +386,9 @@ func (r *RunRuleResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 }
 
 func (r *RunRuleResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Resource")
-	if !ok {
-		return
+	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
+		r.client = data.LangSmithClient
 	}
-	r.client = client
 }
 
 func (r *RunRuleResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

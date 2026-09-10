@@ -78,11 +78,9 @@ func (d *WorkspaceDataSource) Schema(ctx context.Context, req datasource.SchemaR
 }
 
 func (d *WorkspaceDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	client, ok := configureLangSmithClient(req.ProviderData, &resp.Diagnostics, "Data Source")
-	if !ok {
-		return
+	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
+		d.client = data.LangSmithClient
 	}
-	d.client = client
 }
 
 func (d *WorkspaceDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
