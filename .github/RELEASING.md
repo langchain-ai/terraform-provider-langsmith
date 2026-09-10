@@ -60,6 +60,12 @@ git tag --list 'v*' --sort=-v:refname | head
 
 ## Tag and publish
 
+For a development candidate, use a SemVer prerelease tag such as
+`v0.0.14-rc.1` on the tested feature-branch commit. Confirm the five CI jobs
+listed above passed for that commit before tagging. GoReleaser marks these
+releases as prereleases; stable releases continue to come from `main`.
+Consumers must pin the exact prerelease version in `required_providers`.
+
 Set `version` to the next SemVer tag, then create and push an annotated tag:
 
 ```bash
