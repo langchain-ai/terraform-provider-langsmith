@@ -9,7 +9,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -27,6 +26,7 @@ const deploymentsPath = "v2/deployments"
 var (
 	_ resource.Resource                = &DeploymentResource{}
 	_ resource.ResourceWithImportState = &DeploymentResource{}
+	_ resource.ResourceWithModifyPlan  = &DeploymentResource{}
 )
 
 type DeploymentResource struct {
@@ -44,6 +44,7 @@ type deploymentResourceModel struct {
 	SourceRevisionConfig *sourceRevisionConfigModel       `tfsdk:"source_revision_config"`
 	Secrets              types.Map                        `tfsdk:"secrets"`
 	SecretsVersion       types.String                     `tfsdk:"secrets_version"`
+	SecretsHash          types.String                     `tfsdk:"secrets_hash"`
 	SecretReferences     []deploymentSecretReferenceModel `tfsdk:"secret_references"`
 	TenantID             types.String                     `tfsdk:"tenant_id"`
 	CreatedAt            types.String                     `tfsdk:"created_at"`
@@ -104,6 +105,7 @@ type deploymentAPI struct {
 	DisplayName          *string                        `json:"display_name"`
 	SourceConfig         map[string]any                 `json:"source_config"`
 	SourceRevisionConfig map[string]any                 `json:"source_revision_config"`
+	Secrets              []deploymentSecretAPI          `json:"secrets"`
 	SecretReferences     []deploymentSecretReferenceAPI `json:"secret_references"`
 	TenantID             string                         `json:"tenant_id"`
 	CreatedAt            string                         `json:"created_at"`
@@ -202,12 +204,16 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Sensitive:           true,
 				WriteOnly:           true,
 				ElementType:         types.StringType,
-				Validators:          []frameworkvalidator.Map{mapvalidator.AlsoRequires(path.MatchRoot("secrets_version"))},
-				MarkdownDescription: "Write-only environment variable values, exposed to the deployment's container. Change `secrets_version` whenever this map changes, otherwise the new values are never applied. Removing the argument entirely preserves existing secrets. The v2 API currently treats an empty map on update as unchanged, so the provider rejects updates that would send `{}` rather than falsely reporting that all secrets were removed. An empty map is allowed on initial creation.",
+				MarkdownDescription: "Write-only environment variable values, exposed to the deployment's container. Supply the complete map: updates replace the existing environment. The provider hashes the entire map to detect configuration changes and remote drift without storing plaintext values. Removing the argument relinquishes management and preserves existing values. The v2 API currently treats an empty map on update as unchanged, so the provider rejects updates that would send `{}`. An empty map is allowed on initial creation.",
 			},
 			"secrets_version": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Opaque trigger for applying a new `secrets` map as a revision. Any change to this value creates a revision carrying the current `secrets`.",
+				MarkdownDescription: "Optional manual trigger for creating a revision carrying the current `secrets`. Environment changes are detected automatically through `secrets_hash`; this argument is not required. Removing the trigger does not create a revision.",
+			},
+			"secrets_hash": schema.StringAttribute{
+				Computed:            true,
+				Sensitive:           true,
+				MarkdownDescription: "SHA-256 digest of the entire environment map, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Only the digest is stored in state; secrets remain write-only. APIs that omit secrets cannot report remote environment drift. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.",
 			},
 			"secret_references": schema.ListNestedAttribute{
 				Optional:            true,
@@ -373,7 +379,10 @@ func (r *DeploymentResource) Create(ctx context.Context, req resource.CreateRequ
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	plan.Secrets = config.Secrets
+	if err := setDeploymentSecrets(&plan, config); err != nil {
+		resp.Diagnostics.AddError("Invalid Deployment Secrets", err.Error())
+		return
+	}
 	model, err := r.create(ctx, plan)
 	model.Secrets = types.MapNull(types.StringType)
 	if err != nil {
@@ -412,7 +421,10 @@ func (r *DeploymentResource) Update(ctx context.Context, req resource.UpdateRequ
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	plan.Secrets = config.Secrets
+	if err := setDeploymentSecrets(&plan, config); err != nil {
+		resp.Diagnostics.AddError("Invalid Deployment Secrets", err.Error())
+		return
+	}
 	model, err := r.update(ctx, state, plan)
 	model.Secrets = types.MapNull(types.StringType)
 	if err != nil {
@@ -497,7 +509,15 @@ func (r *DeploymentResource) read(ctx context.Context, id string, previous deplo
 			return previous, err
 		}
 	}
-	return deploymentModelFromAPI(result, revision, previous), nil
+	model := deploymentModelFromAPI(result, revision, previous)
+	if result.Secrets != nil {
+		hash, err := deploymentAPISecretsHash(result.Secrets)
+		if err != nil {
+			return previous, err
+		}
+		model.SecretsHash = hash
+	}
+	return model, nil
 }
 
 func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentResourceModel) (deploymentResourceModel, error) {
@@ -584,6 +604,7 @@ func (r *DeploymentResource) applied(ctx context.Context, id string, state, plan
 	if err != nil {
 		model = state
 		model.SecretsVersion = plan.SecretsVersion
+		model.SecretsHash = plan.SecretsHash
 		model.SecretReferences = plan.SecretReferences
 		model.SourceRevisionConfig = plan.SourceRevisionConfig
 		if model.SourceConfig != nil && plan.SourceConfig != nil {
@@ -725,7 +746,7 @@ func changedValue(state, plan types.String) bool {
 // the reason given on changedValue: they mean "unset", not "changed", and
 // treating them as a change would rebuild and redeploy on every apply.
 func revisionChanged(state, plan deploymentResourceModel) bool {
-	if !state.SecretsVersion.Equal(plan.SecretsVersion) {
+	if changedValue(state.SecretsVersion, plan.SecretsVersion) || changedValue(state.SecretsHash, plan.SecretsHash) {
 		return true
 	}
 	if !reflect.DeepEqual(state.SourceRevisionConfig, plan.SourceRevisionConfig) {
@@ -885,6 +906,9 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 	next.ActiveRevisionID = nullableStringPointer(api.ActiveRevisionID)
 	next.LatestRevisionStatus = nullableString(revision.Status)
 	next.Secrets = types.MapNull(types.StringType)
+	if next.SecretsHash.IsUnknown() {
+		next.SecretsHash = types.StringNull()
+	}
 	return next
 }
 

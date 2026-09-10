@@ -223,6 +223,7 @@ type deploymentContractBackend struct {
 	deleted        bool
 	createPosts    int
 	revisionPosts  int
+	secrets        []any
 }
 
 func newDeploymentContractBackend(t *testing.T) *deploymentContractBackend {
@@ -320,6 +321,7 @@ func (b *deploymentContractBackend) create(w http.ResponseWriter, req *http.Requ
 	b.latestRevision = offlineRevisionOne
 	b.revisions = []string{offlineRevisionOne}
 	b.createPosts++
+	b.secrets, _ = payload["secrets"].([]any)
 	w.WriteHeader(http.StatusCreated)
 	b.writeDeployment(w)
 }
@@ -366,7 +368,8 @@ func (b *deploymentContractBackend) createRevision(w http.ResponseWriter, req *h
 	if !b.decode(w, req, body, &payload) {
 		return
 	}
-	if deploymentNestedString(payload, "source_revision_config", "image_uri") != "registry.example.com/agent:v2" || !deploymentPayloadHasSecret(payload, offlineSecretTwo) {
+	image := deploymentNestedString(payload, "source_revision_config", "image_uri")
+	if (image != "registry.example.com/agent:v1" && image != "registry.example.com/agent:v2") || !deploymentPayloadHasSecret(payload, offlineSecretTwo) {
 		b.reject(w, req, "invalid nested revision payload")
 		return
 	}
@@ -374,7 +377,8 @@ func (b *deploymentContractBackend) createRevision(w http.ResponseWriter, req *h
 		b.reject(w, req, "revision payload contains display_name")
 		return
 	}
-	b.image = "registry.example.com/agent:v2"
+	b.image = image
+	b.secrets, _ = payload["secrets"].([]any)
 	b.latestRevision = offlineRevisionTwo
 	b.revisions = append([]string{offlineRevisionTwo}, b.revisions...)
 	b.revisionPosts++
@@ -414,6 +418,7 @@ func (b *deploymentContractBackend) writeDeployment(w http.ResponseWriter) {
 		"created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-01T00:00:01Z", "status": "READY",
 		"latest_revision_id": b.latestRevision, "active_revision_id": b.latestRevision,
 		"image_version": nil, "is_managed_deep_agent": false,
+		"secrets": b.secrets,
 	}
 	_ = json.NewEncoder(w).Encode(response)
 }

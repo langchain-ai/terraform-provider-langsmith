@@ -1,3 +1,9 @@
+variable "environment" {
+  type      = map(string)
+  sensitive = true
+  ephemeral = true
+}
+
 resource "langsmith_deployment" "agent" {
   name         = "support-agent"
   display_name = "Support Agent"
@@ -15,11 +21,7 @@ resource "langsmith_deployment" "agent" {
     langgraph_config_path = "langgraph.json"
   }
 
-  # secrets is write-only, so Terraform cannot detect a change to it. Bump
-  # secrets_version whenever the map changes, otherwise the new values are
-  # never applied.
-  secrets = {
-    OPENAI_API_KEY = var.openai_api_key
-  }
-  secrets_version = "1"
+  # Supply the complete environment; updates replace the existing map.
+  # The provider compares a digest and keeps plaintext out of state.
+  secrets = var.environment
 }

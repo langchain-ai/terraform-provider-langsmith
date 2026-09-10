@@ -574,25 +574,3 @@ func TestDeploymentReadKeepsDeploymentWhenRevisionMissing(t *testing.T) {
 		t.Fatalf("revision status = %#v, want null", model.LatestRevisionStatus)
 	}
 }
-
-// secrets is write-only, so Terraform cannot see it change. Without a paired
-// secrets_version there is no trigger, and every later edit to the map was
-// silently discarded -- the worst possible outcome for credential rotation.
-func TestDeploymentSecretsRequireSecretsVersion(t *testing.T) {
-	var response resource.SchemaResponse
-	(&DeploymentResource{}).Schema(context.Background(), resource.SchemaRequest{}, &response)
-	attribute, ok := response.Schema.Attributes["secrets"].(schema.MapAttribute)
-	if !ok {
-		t.Fatalf("secrets schema type = %T", response.Schema.Attributes["secrets"])
-	}
-	if len(attribute.Validators) == 0 {
-		t.Fatal("secrets declares no validators, so a missing secrets_version goes unreported")
-	}
-	var described []string
-	for _, v := range attribute.Validators {
-		described = append(described, v.Description(context.Background()))
-	}
-	if !strings.Contains(strings.Join(described, " "), "secrets_version") {
-		t.Fatalf("no validator ties secrets to secrets_version: %v", described)
-	}
-}

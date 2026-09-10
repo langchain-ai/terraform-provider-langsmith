@@ -16,6 +16,12 @@ Import an existing deployment by UUID using the same workspace and control-plane
 ## Example Usage
 
 ```terraform
+variable "environment" {
+  type      = map(string)
+  sensitive = true
+  ephemeral = true
+}
+
 resource "langsmith_deployment" "agent" {
   name         = "support-agent"
   display_name = "Support Agent"
@@ -33,13 +39,9 @@ resource "langsmith_deployment" "agent" {
     langgraph_config_path = "langgraph.json"
   }
 
-  # secrets is write-only, so Terraform cannot detect a change to it. Bump
-  # secrets_version whenever the map changes, otherwise the new values are
-  # never applied.
-  secrets = {
-    OPENAI_API_KEY = var.openai_api_key
-  }
-  secrets_version = "1"
+  # Supply the complete environment; updates replace the existing map.
+  # The provider compares a digest and keeps plaintext out of state.
+  secrets = var.environment
 }
 ```
 
@@ -59,8 +61,8 @@ resource "langsmith_deployment" "agent" {
 
 - `display_name` (String) Human-readable name. The service has no way to clear a display name once set, so removing this argument leaves the last value in place.
 - `secret_references` (Attributes List) References to existing Kubernetes Secrets to expose as environment variables. Only applicable to the `external_docker` source. Set this to `[]` to remove all references; removing the argument entirely leaves the previous revision's references in place. (see [below for nested schema](#nestedatt--secret_references))
-- `secrets` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only environment variable values, exposed to the deployment's container. Change `secrets_version` whenever this map changes, otherwise the new values are never applied. Removing the argument entirely preserves existing secrets. The v2 API currently treats an empty map on update as unchanged, so the provider rejects updates that would send `{}` rather than falsely reporting that all secrets were removed. An empty map is allowed on initial creation.
-- `secrets_version` (String) Opaque trigger for applying a new `secrets` map as a revision. Any change to this value creates a revision carrying the current `secrets`.
+- `secrets` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only environment variable values, exposed to the deployment's container. Supply the complete map: updates replace the existing environment. The provider hashes the entire map to detect configuration changes and remote drift without storing plaintext values. Removing the argument relinquishes management and preserves existing values. The v2 API currently treats an empty map on update as unchanged, so the provider rejects updates that would send `{}`. An empty map is allowed on initial creation.
+- `secrets_version` (String) Optional manual trigger for creating a revision carrying the current `secrets`. Environment changes are detected automatically through `secrets_hash`; this argument is not required. Removing the trigger does not create a revision.
 
 ### Read-Only
 
@@ -69,6 +71,7 @@ resource "langsmith_deployment" "agent" {
 - `id` (String) Deployment UUID.
 - `latest_revision_id` (String) UUID of the most recently created revision.
 - `latest_revision_status` (String) Status of the most recently created revision.
+- `secrets_hash` (String, Sensitive) SHA-256 digest of the entire environment map, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Only the digest is stored in state; secrets remain write-only. APIs that omit secrets cannot report remote environment drift. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.
 - `status` (String) Deployment status, one of `AWAITING_DATABASE`, `READY`, `UNUSED`, `AWAITING_DELETE`, `AWAITING_FINAL_DELETE`, or `UNKNOWN`.
 - `tenant_id` (String) Owning workspace (tenant) UUID.
 - `updated_at` (String) Last update timestamp.

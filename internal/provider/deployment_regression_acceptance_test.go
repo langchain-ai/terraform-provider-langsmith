@@ -14,6 +14,14 @@ import (
 )
 
 func TestAccDeploymentOfflineGithubImportHasEmptyPlan(t *testing.T) {
+	for _, managed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("managed_secrets=%t", managed), func(t *testing.T) {
+			testDeploymentGithubImport(t, managed)
+		})
+	}
+}
+
+func testDeploymentGithubImport(t *testing.T, managed bool) {
 	if os.Getenv("TF_ACC") != "1" {
 		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
 	}
@@ -73,6 +81,10 @@ resource "langsmith_deployment" "test" {
     langgraph_config_path = "langgraph.json"
   }
 }`, server.URL)
+	if managed {
+		config = strings.Replace(config, `source = "github"`, `source = "github"
+  secrets = { API_TOKEN = "`+offlineSecretOne+`" }`, 1)
+	}
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: offlineDeploymentFactories(),
 		Steps: []resource.TestStep{
