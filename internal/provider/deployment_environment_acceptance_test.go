@@ -37,8 +37,16 @@ func TestAccDeploymentOfflineSplitEnvironment(t *testing.T) {
 				defer backend.mu.Unlock()
 				actual := map[string]string{}
 				for _, entry := range backend.secrets {
-					item := entry.(map[string]any)
-					actual[item["name"].(string)] = item["value"].(string)
+					item, ok := entry.(map[string]any)
+					if !ok {
+						return fmt.Errorf("API environment entry is not an object")
+					}
+					name, nameOK := item["name"].(string)
+					value, valueOK := item["value"].(string)
+					if !nameOK || !valueOK {
+						return fmt.Errorf("API environment entry must have string name and value")
+					}
+					actual[name] = value
 				}
 				if !reflect.DeepEqual(actual, environment) {
 					return fmt.Errorf("API environment does not match desired public and secret entries")
@@ -230,8 +238,14 @@ func (check deploymentPublicEnvironmentPlan) CheckPlan(_ context.Context, req pl
 		if change.Address != "langsmith_deployment.test" {
 			continue
 		}
-		before := change.Change.Before.(map[string]any)["environment_variables"]
-		after := change.Change.After.(map[string]any)["environment_variables"]
+		beforeState, beforeOK := change.Change.Before.(map[string]any)
+		afterState, afterOK := change.Change.After.(map[string]any)
+		if !beforeOK || !afterOK {
+			resp.Error = fmt.Errorf("public environment plan must have before and after objects")
+			return
+		}
+		before := beforeState["environment_variables"]
+		after := afterState["environment_variables"]
 		if !reflect.DeepEqual(before, map[string]any{"LOG_LEVEL": check.before}) ||
 			!reflect.DeepEqual(after, map[string]any{"LOG_LEVEL": check.after}) {
 			resp.Error = fmt.Errorf("public environment drift was not visible in the Terraform plan")
