@@ -32,12 +32,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -84,6 +86,7 @@ const (
 	gatewayPolicyTypeRateLimit        = "rate_limit"
 	gatewayPolicyTypeDefaultRateLimit = "default_rate_limit"
 	gatewayPolicyTypeGuard            = "guard"
+	gatewayPolicyTypeModelAccess      = "model_access"
 )
 
 var gatewayPolicyTypes = []string{
@@ -92,15 +95,17 @@ var gatewayPolicyTypes = []string{
 	gatewayPolicyTypeRateLimit,
 	gatewayPolicyTypeDefaultRateLimit,
 	gatewayPolicyTypeGuard,
+	gatewayPolicyTypeModelAccess,
 }
 
 // gatewayPolicyConfigModel maps gateway policy config schema data for the terraform configuration.
 type gatewayPolicyConfigModel struct {
-	SpendCap         *gatewayPolicySpendCapConfigModel  `tfsdk:"spend_cap"`
-	DefaultSpendCap  *gatewayPolicySpendCapConfigModel  `tfsdk:"default_spend_cap"`
-	RateLimit        *gatewayPolicyRateLimitConfigModel `tfsdk:"rate_limit"`
-	DefaultRateLimit *gatewayPolicyRateLimitConfigModel `tfsdk:"default_rate_limit"`
-	Guard            *gatewayPolicyGuardConfigModel     `tfsdk:"guard"`
+	SpendCap         *gatewayPolicySpendCapConfigModel    `tfsdk:"spend_cap"`
+	DefaultSpendCap  *gatewayPolicySpendCapConfigModel    `tfsdk:"default_spend_cap"`
+	RateLimit        *gatewayPolicyRateLimitConfigModel   `tfsdk:"rate_limit"`
+	DefaultRateLimit *gatewayPolicyRateLimitConfigModel   `tfsdk:"default_rate_limit"`
+	Guard            *gatewayPolicyGuardConfigModel       `tfsdk:"guard"`
+	ModelAccess      *gatewayPolicyModelAccessConfigModel `tfsdk:"model_access"`
 }
 
 // gatewayPolicySpendCapConfigModel maps gateway policy spend cap config schema data for the terraform configuration.
@@ -120,6 +125,17 @@ type gatewayPolicyRateLimitConfigLimitsModel struct {
 	Metric types.String `tfsdk:"metric"`
 	Window types.String `tfsdk:"window"`
 	Value  types.Int64  `tfsdk:"value"`
+}
+
+// gatewayPolicyModelAccessConfigModel maps a model_access policy config from the Terraform configuration.
+type gatewayPolicyModelAccessConfigModel struct {
+	Providers map[string]gatewayPolicyModelAccessProviderModel `tfsdk:"providers"`
+}
+
+// gatewayPolicyModelAccessProviderModel maps the access allowed for one direct gateway provider.
+type gatewayPolicyModelAccessProviderModel struct {
+	Access        types.String   `tfsdk:"access"`
+	AllowedModels []types.String `tfsdk:"allowed_models"`
 }
 
 // gatewayPolicyGuardConfigModel maps a gateway policy guard config schema data for the terraform configuration.
@@ -209,9 +225,26 @@ type gatewayPolicyRateLimitConfigWindowValueAPI struct {
 	Window string `json:"window"`
 }
 
+// gatewayPolicyModelAccessConfigAPI is the model_access config from the API.
+type gatewayPolicyModelAccessConfigAPI struct {
+	Providers []gatewayPolicyModelAccessProviderAPI `json:"providers"`
+}
+
+// gatewayPolicyModelAccessProviderAPI is the access allowed for one direct gateway provider.
+type gatewayPolicyModelAccessProviderAPI struct {
+	Access        string   `json:"access"`
+	AllowedModels []string `json:"allowed_models,omitempty"`
+	Provider      string   `json:"provider"`
+}
+
 var gatewayRateLimitMetricNames = []string{
 	"requests",
 	"tokens",
+}
+
+var gatewayModelAccessValues = []string{
+	"all",
+	"selected",
 }
 
 var gatewaySpendCapWindows = []string{
@@ -385,6 +418,27 @@ func gatewayPolicyConfigModelFromAPI(policyType string, raw json.RawMessage) (*g
 		return &gatewayPolicyConfigModel{
 			RateLimit: config,
 		}, nil
+	case gatewayPolicyTypeModelAccess:
+		var cfg gatewayPolicyModelAccessConfigAPI
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return nil, fmt.Errorf("decode model_access config: %w", err)
+		}
+		providers := make(map[string]gatewayPolicyModelAccessProviderModel, len(cfg.Providers))
+		for _, cfgProvider := range cfg.Providers {
+			var allowedModels []types.String
+			for _, model := range cfgProvider.AllowedModels {
+				allowedModels = append(allowedModels, types.StringValue(model))
+			}
+			providers[cfgProvider.Provider] = gatewayPolicyModelAccessProviderModel{
+				Access:        types.StringValue(cfgProvider.Access),
+				AllowedModels: allowedModels,
+			}
+		}
+		return &gatewayPolicyConfigModel{
+			ModelAccess: &gatewayPolicyModelAccessConfigModel{
+				Providers: providers,
+			},
+		}, nil
 	case gatewayPolicyTypeGuard:
 		var cfg gatewayPolicyGuardConfigAPI
 		if err := json.Unmarshal(raw, &cfg); err != nil {
@@ -536,6 +590,28 @@ func gatewayPolicyConfigAPIFromModel(plan gatewayPolicyModel) (string, json.RawM
 			Version: plan.Config.DefaultRateLimit.Version.ValueInt64(),
 			Limits:  limits,
 		}
+	case plan.Config.ModelAccess != nil:
+		policyType = gatewayPolicyTypeModelAccess
+		providerNames := make([]string, 0, len(plan.Config.ModelAccess.Providers))
+		for providerName := range plan.Config.ModelAccess.Providers {
+			providerNames = append(providerNames, providerName)
+		}
+		sort.Strings(providerNames)
+
+		providers := make([]gatewayPolicyModelAccessProviderAPI, 0, len(providerNames))
+		for _, providerName := range providerNames {
+			planProvider := plan.Config.ModelAccess.Providers[providerName]
+			allowedModels := make([]string, 0, len(planProvider.AllowedModels))
+			for _, model := range planProvider.AllowedModels {
+				allowedModels = append(allowedModels, model.ValueString())
+			}
+			providers = append(providers, gatewayPolicyModelAccessProviderAPI{
+				Access:        planProvider.Access.ValueString(),
+				AllowedModels: allowedModels,
+				Provider:      providerName,
+			})
+		}
+		policyConfig = gatewayPolicyModelAccessConfigAPI{Providers: providers}
 	case plan.Config.Guard != nil:
 		policyType = gatewayPolicyTypeGuard
 		var detect *gatewayPolicyGuardDetectAPI
@@ -605,6 +681,50 @@ func gatewayPolicySubjectMatchersAPIFromModel(plan gatewayPolicyModel) ([]gatewa
 
 // Terraform resource implementation
 
+type gatewayPolicyModelAccessConfigValidator struct{}
+
+func (gatewayPolicyModelAccessConfigValidator) Description(context.Context) string {
+	return "Validates model access provider and model allowlist settings."
+}
+
+func (gatewayPolicyModelAccessConfigValidator) MarkdownDescription(context.Context) string {
+	return "Validates model access provider and model allowlist settings."
+}
+
+func (gatewayPolicyModelAccessConfigValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config gatewayPolicyModel
+	diags := req.Config.Get(ctx, &config)
+	resp.Diagnostics.Append(diags...)
+	if diags.HasError() || config.Config == nil || config.Config.ModelAccess == nil {
+		return
+	}
+
+	for providerName, provider := range config.Config.ModelAccess.Providers {
+		providerPath := path.Root("config").AtName(gatewayPolicyTypeModelAccess).AtName("providers").AtMapKey(providerName)
+		if provider.Access.IsNull() || provider.Access.IsUnknown() {
+			continue
+		}
+		switch provider.Access.ValueString() {
+		case "all":
+			if len(provider.AllowedModels) > 0 {
+				resp.Diagnostics.AddAttributeError(
+					providerPath.AtName("allowed_models"),
+					"Allowed models are not valid with all access",
+					"Omit allowed_models when access is all.",
+				)
+			}
+		case "selected":
+			if len(provider.AllowedModels) == 0 {
+				resp.Diagnostics.AddAttributeError(
+					providerPath.AtName("allowed_models"),
+					"Allowed models are required with selected access",
+					"Set at least one allowed_models value when access is selected.",
+				)
+			}
+		}
+	}
+}
+
 // Ensure the implementation satisfies the expected interfaces.
 var (
 	_ resource.Resource                     = &gatewayPolicyResource{}
@@ -648,6 +768,7 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 					gatewayPolicyTypeDefaultSpendCap:  gatewayPolicySpendCapConfigSchema,
 					gatewayPolicyTypeRateLimit:        gatewayPolicyRateLimitConfigSchema,
 					gatewayPolicyTypeDefaultRateLimit: gatewayPolicyRateLimitConfigSchema,
+					gatewayPolicyTypeModelAccess:      gatewayPolicyModelAccessConfigSchema,
 					gatewayPolicyTypeGuard: schema.SingleNestedAttribute{
 						Description: "guard config when policy_type is guard",
 						Optional:    true,
@@ -899,6 +1020,45 @@ var (
 			},
 		},
 	}
+	gatewayPolicyModelAccessConfigSchema = schema.SingleNestedAttribute{
+		Description: "Model access allowlist. The most-specific matching subject tier applies.",
+		Optional:    true,
+		Attributes: map[string]schema.Attribute{
+			"providers": schema.MapNestedAttribute{
+				Description: "The direct gateway providers and models that are allowed, keyed by provider name. Providers not listed are denied.",
+				Required:    true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"access": schema.StringAttribute{
+							Description: "Whether to allow every model from the provider or only selected models",
+							Required:    true,
+							Validators: []validator.String{
+								stringvalidator.OneOf(gatewayModelAccessValues...),
+							},
+						},
+						"allowed_models": schema.ListAttribute{
+							Description: "Provider-native model IDs to allow when access is selected. Omit this when access is all.",
+							Optional:    true,
+							ElementType: types.StringType,
+							Validators: []validator.List{
+								listvalidator.SizeAtMost(50),
+								listvalidator.UniqueValues(),
+								listvalidator.NoNullValues(),
+								listvalidator.ValueStringsAre(
+									stringvalidator.LengthAtLeast(1),
+									stringvalidator.LengthAtMost(120),
+								),
+							},
+						},
+					},
+				},
+				Validators: []validator.Map{
+					mapvalidator.SizeAtLeast(1),
+					mapvalidator.KeysAre(stringvalidator.LengthAtLeast(1)),
+				},
+			},
+		},
+	}
 )
 
 func (r *gatewayPolicyResource) ConfigValidators(ctx context.Context) []resource.ConfigValidator {
@@ -910,6 +1070,7 @@ func (r *gatewayPolicyResource) ConfigValidators(ctx context.Context) []resource
 
 	return []resource.ConfigValidator{
 		policyTypeValidator,
+		gatewayPolicyModelAccessConfigValidator{},
 	}
 }
 
