@@ -42,6 +42,7 @@ type deploymentResourceModel struct {
 	DisplayName          types.String                     `tfsdk:"display_name"`
 	SourceConfig         *deploymentSourceConfigModel     `tfsdk:"source_config"`
 	SourceRevisionConfig *sourceRevisionConfigModel       `tfsdk:"source_revision_config"`
+	EnvironmentVariables types.Map                        `tfsdk:"environment_variables"`
 	Secrets              types.Map                        `tfsdk:"secrets"`
 	SecretsVersion       types.String                     `tfsdk:"secrets_version"`
 	SecretsHash          types.String                     `tfsdk:"secrets_hash"`
@@ -155,7 +156,8 @@ func (r *DeploymentResource) Configure(ctx context.Context, req resource.Configu
 // listener_config, resource_spec, source_revision_config, secrets and
 // secret_references. Those stay Optional-only and Terraform remains
 // their source of truth; observed revision values are available from the
-// langsmith_deployment_revision data source.
+// langsmith_deployment_revision data source. environment_variables is also
+// Optional-only, but refreshes only the keys already classified as public.
 func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	replace := []planmodifier.String{stringplanmodifier.RequiresReplace()}
 	immutable := []planmodifier.String{stringplanmodifier.UseStateForUnknown()}
@@ -163,7 +165,7 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 		return schema.StringAttribute{Computed: true, MarkdownDescription: description}
 	}
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.\n\nImport an existing deployment by UUID using the same workspace and control-plane URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Omit `secrets` and `secrets_version` to preserve the existing environment without copying values into state. Review the plan after import before applying changes.",
+		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.\n\nThe v2 API has one environment map. Terraform separates it into ordinary `environment_variables`, which appear in plans and state, and sensitive write-only `secrets`. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing `secrets` map, move ordinary entries into `environment_variables` without changing the combined keys or values; this records the public values in state without creating a revision.\n\nImport an existing deployment by UUID using the same workspace and control-plane URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -199,21 +201,26 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Attributes:          sourceRevisionConfigSchema(),
 				MarkdownDescription: "Configuration for the code or image a revision builds from. Changing any argument here creates a new revision.",
 			},
+			"environment_variables": schema.MapAttribute{
+				Optional:            true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "Non-sensitive environment variables, stored in plaintext in Terraform plans and state. Together with `secrets`, this is the complete desired environment; updates replace the combined map. Keys must not overlap. Refresh reads only keys previously declared here and never discovers other API environment values. Keep credentials in `secrets`. Omit both maps to preserve the existing environment without managing it.",
+			},
 			"secrets": schema.MapAttribute{
 				Optional:            true,
 				Sensitive:           true,
 				WriteOnly:           true,
 				ElementType:         types.StringType,
-				MarkdownDescription: "Write-only environment variable values, exposed to the deployment's container. Supply the complete map: updates replace the existing environment. The provider hashes the entire map to detect configuration changes and remote drift without storing plaintext values. Removing the argument relinquishes management and preserves existing values. The v2 API currently treats an empty map on update as unchanged, so the provider rejects updates that would send `{}`. An empty map is allowed on initial creation.",
+				MarkdownDescription: "Write-only sensitive environment variable values, merged with `environment_variables` before sending to the deployment. Supply the complete environment across both maps; keys must not overlap. The provider hashes the combined map to detect configuration changes and remote drift without storing secret values. Omit both maps to relinquish management and preserve existing values. Omitting only this map while `environment_variables` remains configured removes secret-only entries on the next revision. The v2 API currently treats an empty combined map on update as unchanged, so the provider rejects those updates. An empty map is allowed on initial creation.",
 			},
 			"secrets_version": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "Optional manual trigger for creating a revision carrying the current `secrets`. Environment changes are detected automatically through `secrets_hash`; this argument is not required. Removing the trigger does not create a revision.",
+				MarkdownDescription: "Optional manual trigger for creating a revision carrying the current combined environment. Environment changes are detected automatically through `secrets_hash`; this argument is not required. Removing the trigger does not create a revision.",
 			},
 			"secrets_hash": schema.StringAttribute{
 				Computed:            true,
 				Sensitive:           true,
-				MarkdownDescription: "SHA-256 digest of the entire environment map, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Only the digest is stored in state; secrets remain write-only. APIs that omit secrets cannot report remote environment drift. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.",
+				MarkdownDescription: "SHA-256 digest of the combined `environment_variables` and `secrets` maps, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Secret values remain write-only; ordinary environment values are also stored in state. APIs that omit secrets cannot report remote environment drift. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.",
 			},
 			"secret_references": schema.ListNestedAttribute{
 				Optional:            true,
@@ -516,6 +523,18 @@ func (r *DeploymentResource) read(ctx context.Context, id string, previous deplo
 			return previous, err
 		}
 		model.SecretsHash = hash
+		if !previous.EnvironmentVariables.IsNull() && !previous.EnvironmentVariables.IsUnknown() {
+			// The API does not distinguish public and secret entries. Only keys
+			// already classified as public may be copied into ordinary state.
+			public := make(map[string]attr.Value)
+			declared := previous.EnvironmentVariables.Elements()
+			for _, entry := range result.Secrets {
+				if _, ok := declared[entry.Name]; ok {
+					public[entry.Name] = types.StringValue(*entry.Value)
+				}
+			}
+			model.EnvironmentVariables = types.MapValueMust(types.StringType, public)
+		}
 	}
 	return model, nil
 }
@@ -526,8 +545,8 @@ func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentR
 	var payload map[string]any
 	var revision deploymentResourceRevisionAPI
 	if needsRevision {
-		if !plan.Secrets.IsNull() && !plan.Secrets.IsUnknown() && len(plan.Secrets.Elements()) == 0 {
-			return state, errors.New("the v2 deployment API does not clear secrets when given an empty map; omit secrets to preserve existing values, or supply a non-empty map; clearing all secrets requires an API fix")
+		if (!plan.Secrets.IsNull() || !plan.EnvironmentVariables.IsNull()) && len(secretsPayload(plan.EnvironmentVariables, plan.Secrets)) == 0 {
+			return state, errors.New("the v2 deployment API does not clear secrets when given an empty combined map; omit both environment_variables and secrets to preserve existing values, or supply a non-empty combined map; clearing the entire environment requires an API fix")
 		}
 		var err error
 		payload, err = r.revisionUpdatePayload(ctx, id, plan)
@@ -605,6 +624,7 @@ func (r *DeploymentResource) applied(ctx context.Context, id string, state, plan
 		model = state
 		model.SecretsVersion = plan.SecretsVersion
 		model.SecretsHash = plan.SecretsHash
+		model.EnvironmentVariables = plan.EnvironmentVariables
 		model.SecretReferences = plan.SecretReferences
 		model.SourceRevisionConfig = plan.SourceRevisionConfig
 		if model.SourceConfig != nil && plan.SourceConfig != nil {
@@ -700,7 +720,7 @@ func createPayload(m deploymentResourceModel) map[string]any {
 		"source":                 m.Source.ValueString(),
 		"source_config":          sourceConfigPayload(m.SourceConfig),
 		"source_revision_config": sourceRevisionPayload(m.SourceRevisionConfig),
-		"secrets":                secretsPayload(m.Secrets),
+		"secrets":                secretsPayload(m.EnvironmentVariables, m.Secrets),
 	}
 	if m.SecretReferences != nil {
 		p["secret_references"] = secretReferencesPayload(m.SecretReferences)
@@ -776,12 +796,10 @@ func revisionPayload(m deploymentResourceModel) map[string]any {
 	if sourceConfig := revisionSourceConfig(m.SourceConfig); len(sourceConfig) > 0 {
 		p["source_config"] = sourceConfig
 	}
-	// Secrets are write-only, so they are only in hand when the configuration
-	// still declares them. Omitting the key tells the service to carry the
-	// previous revision's values over. Updates reject empty maps because the API
-	// currently treats an empty list as omission, too.
-	if !m.Secrets.IsNull() && !m.Secrets.IsUnknown() {
-		p["secrets"] = secretsPayload(m.Secrets)
+	// Either configured map manages the complete environment. Omitting both
+	// carries the previous revision's values over; an empty update is rejected.
+	if (!m.Secrets.IsNull() || !m.EnvironmentVariables.IsNull()) && !m.Secrets.IsUnknown() && !m.EnvironmentVariables.IsUnknown() {
+		p["secrets"] = secretsPayload(m.EnvironmentVariables, m.Secrets)
 	}
 	if m.SecretReferences != nil {
 		p["secret_references"] = secretReferencesPayload(m.SecretReferences)
@@ -839,8 +857,13 @@ func resourceSpecPayload(s *deploymentResourceSpecModel) map[string]any {
 	return p
 }
 
-func secretsPayload(v types.Map) []map[string]string {
-	values := stringMap(v)
+func secretsPayload(maps ...types.Map) []map[string]string {
+	values := map[string]string{}
+	for _, m := range maps {
+		for key, value := range stringMap(m) {
+			values[key] = value
+		}
+	}
 	keys := make([]string, 0, len(values))
 	for k := range values {
 		keys = append(keys, k)

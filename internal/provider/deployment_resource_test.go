@@ -498,6 +498,7 @@ func testDeploymentModel() deploymentResourceModel {
 		Name: types.StringValue("orders"), Source: types.StringValue("external_docker"), DisplayName: types.StringValue("Orders"),
 		SourceConfig:         &deploymentSourceConfigModel{CustomURL: types.StringValue("orders.example.com"), ListenerID: types.StringValue("listener"), ListenerConfig: &deploymentListenerConfigModel{K8sNamespace: types.StringValue("agents")}, ResourceSpec: &deploymentResourceSpecModel{MinScale: types.Int64Value(1), MaxScale: types.Int64Value(3), CPU: types.Float64Value(0.5), MemoryMB: types.Int64Value(1024), Labels: types.MapValueMust(types.StringType, map[string]attr.Value{"team": types.StringValue("agents")})}},
 		SourceRevisionConfig: &sourceRevisionConfigModel{ImageURI: types.StringValue("registry.example.com/orders:v1")},
+		EnvironmentVariables: types.MapNull(types.StringType),
 		Secrets:              types.MapValueMust(types.StringType, map[string]attr.Value{"API_KEY": types.StringValue("secret")}), SecretsVersion: types.StringValue("1"),
 		SecretReferences: []deploymentSecretReferenceModel{{Name: types.StringValue("DATABASE_URL"), SecretName: types.StringValue("orders"), SecretKey: types.StringValue("url")}},
 	}

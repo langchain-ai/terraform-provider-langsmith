@@ -224,10 +224,11 @@ type deploymentContractBackend struct {
 	createPosts    int
 	revisionPosts  int
 	secrets        []any
+	revisionSecret string
 }
 
 func newDeploymentContractBackend(t *testing.T) *deploymentContractBackend {
-	return &deploymentContractBackend{t: t, revisionGets: map[string]int{}}
+	return &deploymentContractBackend{t: t, revisionGets: map[string]int{}, revisionSecret: offlineSecretTwo}
 }
 
 // expectRevisionPosts asserts how many revisions the service has been asked to
@@ -369,7 +370,7 @@ func (b *deploymentContractBackend) createRevision(w http.ResponseWriter, req *h
 		return
 	}
 	image := deploymentNestedString(payload, "source_revision_config", "image_uri")
-	if (image != "registry.example.com/agent:v1" && image != "registry.example.com/agent:v2") || !deploymentPayloadHasSecret(payload, offlineSecretTwo) {
+	if (image != "registry.example.com/agent:v1" && image != "registry.example.com/agent:v2") || (b.revisionSecret != "" && !deploymentPayloadHasSecret(payload, b.revisionSecret)) {
 		b.reject(w, req, "invalid nested revision payload")
 		return
 	}
@@ -488,9 +489,14 @@ func deploymentNestedString(payload map[string]any, object, key string) string {
 
 func deploymentPayloadHasSecret(payload map[string]any, expected string) bool {
 	secrets, ok := payload["secrets"].([]any)
-	if !ok || len(secrets) != 1 {
+	if !ok {
 		return false
 	}
-	secret, ok := secrets[0].(map[string]any)
-	return ok && secret["name"] == "API_TOKEN" && secret["value"] == expected
+	for _, entry := range secrets {
+		secret, ok := entry.(map[string]any)
+		if ok && secret["name"] == "API_TOKEN" && secret["value"] == expected {
+			return true
+		}
+	}
+	return false
 }

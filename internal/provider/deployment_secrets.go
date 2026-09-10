@@ -21,8 +21,9 @@ func (r *DeploymentResource) ModifyPlan(ctx context.Context, req resource.Modify
 	if req.Plan.Raw.IsNull() {
 		return
 	}
-	var secrets types.Map
+	var secrets, environment types.Map
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("secrets"), &secrets)...)
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("environment_variables"), &environment)...)
 	var previous types.String
 	if !req.State.Raw.IsNull() {
 		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("secrets_hash"), &previous)...)
@@ -30,19 +31,20 @@ func (r *DeploymentResource) ModifyPlan(ctx context.Context, req resource.Modify
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	hash, err := deploymentSecretsHash(secrets)
+	hash, err := deploymentSecretsHash(environment, secrets)
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("secrets"), "Invalid Deployment Secrets", err.Error())
 		return
 	}
-	if secrets.IsNull() {
+	managed := !secrets.IsNull() || !environment.IsNull()
+	if !managed {
 		hash = previous
 		if req.State.Raw.IsNull() {
 			hash = types.StringUnknown()
 		}
 	}
 	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("secrets_hash"), hash)...)
-	if !secrets.IsNull() && !hash.Equal(previous) {
+	if managed && !hash.Equal(previous) {
 		// Write-only edits do not cause the framework to invalidate computed
 		// fields. A revision will change them even when every other input matches.
 		for _, name := range []string{"updated_at", "status", "latest_revision_id", "active_revision_id", "latest_revision_status"} {
@@ -51,22 +53,27 @@ func (r *DeploymentResource) ModifyPlan(ctx context.Context, req resource.Modify
 	}
 }
 
-func deploymentSecretsHash(secrets types.Map) (types.String, error) {
-	if secrets.IsNull() {
-		return types.StringNull(), nil
-	}
-	if secrets.IsUnknown() {
-		return types.StringUnknown(), nil
-	}
-	values := make(map[string]string, len(secrets.Elements()))
+func deploymentSecretsHash(maps ...types.Map) (types.String, error) {
+	values := make(map[string]string)
 	unknown := false
-	for name, value := range secrets.Elements() {
-		text, ok := value.(types.String)
-		if !ok || text.IsNull() || name == "" {
-			return types.StringNull(), errors.New("environment entries must have non-empty names and non-null string values")
+	managed := false
+	for _, m := range maps {
+		managed = managed || !m.IsNull()
+		unknown = unknown || m.IsUnknown()
+		for name, value := range m.Elements() {
+			text, ok := value.(types.String)
+			if !ok || text.IsNull() || name == "" {
+				return types.StringNull(), errors.New("environment entries must have non-empty names and non-null string values")
+			}
+			if _, duplicate := values[name]; duplicate {
+				return types.StringNull(), errors.New("environment_variables and secrets must not contain overlapping keys")
+			}
+			unknown = unknown || text.IsUnknown()
+			values[name] = text.ValueString()
 		}
-		unknown = unknown || text.IsUnknown()
-		values[name] = text.ValueString()
+	}
+	if !managed {
+		return types.StringNull(), nil
 	}
 	if unknown {
 		return types.StringUnknown(), nil
@@ -95,10 +102,10 @@ func deploymentAPISecretsHash(secrets []deploymentSecretAPI) (types.String, erro
 
 func setDeploymentSecrets(plan *deploymentResourceModel, config deploymentResourceModel) error {
 	plan.Secrets = config.Secrets
-	if config.Secrets.IsNull() {
+	if config.Secrets.IsNull() && plan.EnvironmentVariables.IsNull() {
 		return nil
 	}
-	hash, err := deploymentSecretsHash(config.Secrets)
+	hash, err := deploymentSecretsHash(plan.EnvironmentVariables, config.Secrets)
 	if err != nil {
 		return err
 	}

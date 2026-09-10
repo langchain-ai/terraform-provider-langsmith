@@ -4,19 +4,22 @@ page_title: "langsmith_deployment Resource - langsmith"
 subcategory: ""
 description: |-
   Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the langsmith_deployment_revision data source to read one.
-  Import an existing deployment by UUID using the same workspace and control-plane URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Omit secrets and secrets_version to preserve the existing environment without copying values into state. Review the plan after import before applying changes.
+  The v2 API has one environment map. Terraform separates it into ordinary environment_variables, which appear in plans and state, and sensitive write-only secrets. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing secrets map, move ordinary entries into environment_variables without changing the combined keys or values; this records the public values in state without creating a revision.
+  Import an existing deployment by UUID using the same workspace and control-plane URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit environment_variables, secrets, and secrets_version to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.
 ---
 
 # langsmith_deployment (Resource)
 
 Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.
 
-Import an existing deployment by UUID using the same workspace and control-plane URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Omit `secrets` and `secrets_version` to preserve the existing environment without copying values into state. Review the plan after import before applying changes.
+The v2 API has one environment map. Terraform separates it into ordinary `environment_variables`, which appear in plans and state, and sensitive write-only `secrets`. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing `secrets` map, move ordinary entries into `environment_variables` without changing the combined keys or values; this records the public values in state without creating a revision.
+
+Import an existing deployment by UUID using the same workspace and control-plane URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.
 
 ## Example Usage
 
 ```terraform
-variable "environment" {
+variable "deployment_secrets" {
   type      = map(string)
   sensitive = true
   ephemeral = true
@@ -39,9 +42,14 @@ resource "langsmith_deployment" "agent" {
     langgraph_config_path = "langgraph.json"
   }
 
-  # Supply the complete environment; updates replace the existing map.
-  # The provider compares a digest and keeps plaintext out of state.
-  secrets = var.environment
+  # Ordinary values appear in Terraform plans and state.
+  environment_variables = {
+    LOG_LEVEL = "info"
+  }
+
+  # Both maps together replace the complete API environment.
+  # Secret values remain ephemeral and write-only.
+  secrets = var.deployment_secrets
 }
 ```
 
@@ -60,9 +68,10 @@ resource "langsmith_deployment" "agent" {
 > **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
 
 - `display_name` (String) Human-readable name. The service has no way to clear a display name once set, so removing this argument leaves the last value in place.
+- `environment_variables` (Map of String) Non-sensitive environment variables, stored in plaintext in Terraform plans and state. Together with `secrets`, this is the complete desired environment; updates replace the combined map. Keys must not overlap. Refresh reads only keys previously declared here and never discovers other API environment values. Keep credentials in `secrets`. Omit both maps to preserve the existing environment without managing it.
 - `secret_references` (Attributes List) References to existing Kubernetes Secrets to expose as environment variables. Only applicable to the `external_docker` source. Set this to `[]` to remove all references; removing the argument entirely leaves the previous revision's references in place. (see [below for nested schema](#nestedatt--secret_references))
-- `secrets` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only environment variable values, exposed to the deployment's container. Supply the complete map: updates replace the existing environment. The provider hashes the entire map to detect configuration changes and remote drift without storing plaintext values. Removing the argument relinquishes management and preserves existing values. The v2 API currently treats an empty map on update as unchanged, so the provider rejects updates that would send `{}`. An empty map is allowed on initial creation.
-- `secrets_version` (String) Optional manual trigger for creating a revision carrying the current `secrets`. Environment changes are detected automatically through `secrets_hash`; this argument is not required. Removing the trigger does not create a revision.
+- `secrets` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only sensitive environment variable values, merged with `environment_variables` before sending to the deployment. Supply the complete environment across both maps; keys must not overlap. The provider hashes the combined map to detect configuration changes and remote drift without storing secret values. Omit both maps to relinquish management and preserve existing values. Omitting only this map while `environment_variables` remains configured removes secret-only entries on the next revision. The v2 API currently treats an empty combined map on update as unchanged, so the provider rejects those updates. An empty map is allowed on initial creation.
+- `secrets_version` (String) Optional manual trigger for creating a revision carrying the current combined environment. Environment changes are detected automatically through `secrets_hash`; this argument is not required. Removing the trigger does not create a revision.
 
 ### Read-Only
 
@@ -71,7 +80,7 @@ resource "langsmith_deployment" "agent" {
 - `id` (String) Deployment UUID.
 - `latest_revision_id` (String) UUID of the most recently created revision.
 - `latest_revision_status` (String) Status of the most recently created revision.
-- `secrets_hash` (String, Sensitive) SHA-256 digest of the entire environment map, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Only the digest is stored in state; secrets remain write-only. APIs that omit secrets cannot report remote environment drift. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.
+- `secrets_hash` (String, Sensitive) SHA-256 digest of the combined `environment_variables` and `secrets` maps, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Secret values remain write-only; ordinary environment values are also stored in state. APIs that omit secrets cannot report remote environment drift. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.
 - `status` (String) Deployment status, one of `AWAITING_DATABASE`, `READY`, `UNUSED`, `AWAITING_DELETE`, `AWAITING_FINAL_DELETE`, or `UNKNOWN`.
 - `tenant_id` (String) Owning workspace (tenant) UUID.
 - `updated_at` (String) Last update timestamp.

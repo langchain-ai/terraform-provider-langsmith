@@ -1,4 +1,4 @@
-variable "environment" {
+variable "deployment_secrets" {
   type      = map(string)
   sensitive = true
   ephemeral = true
@@ -21,7 +21,12 @@ resource "langsmith_deployment" "agent" {
     langgraph_config_path = "langgraph.json"
   }
 
-  # Supply the complete environment; updates replace the existing map.
-  # The provider compares a digest and keeps plaintext out of state.
-  secrets = var.environment
+  # Ordinary values appear in Terraform plans and state.
+  environment_variables = {
+    LOG_LEVEL = "info"
+  }
+
+  # Both maps together replace the complete API environment.
+  # Secret values remain ephemeral and write-only.
+  secrets = var.deployment_secrets
 }
