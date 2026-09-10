@@ -57,7 +57,7 @@ func (p *LangSmithProvider) Schema(ctx context.Context, req frameworkprovider.Sc
 			},
 			"control_plane_url": schema.StringAttribute{
 				Optional:            true,
-				MarkdownDescription: "LangSmith control-plane API URL, used by `langsmith_deployment` and the deployment revision data sources. Defaults to `LANGSMITH_CONTROL_PLANE_URL`, then to whatever `api_url` implies: `https://api.host.langchain.com` for LangSmith SaaS, or `<api_url origin>/api-host` for a self-hosted install. Set it explicitly when selecting a self-hosted install through `profile`, because the provider cannot read a profile's endpoint.",
+				MarkdownDescription: "LangSmith control-plane API URL, used by `langsmith_deployment` and the deployment revision data sources. Defaults to `LANGSMITH_CONTROL_PLANE_URL`, then to the matching regional control plane for a LangSmith SaaS `api_url` (GCP US, EU, APAC, or AWS US), or `<api_url>/api-host` for a self-hosted install. Set it explicitly when selecting an endpoint through `profile`, because the provider cannot read a profile's endpoint.",
 			},
 			"workspace_id": schema.StringAttribute{
 				Optional:            true,
@@ -195,8 +195,10 @@ const (
 )
 
 var saasControlPlanes = map[string]string{
-	"api.smith.langchain.com":    defaultControlPlaneURL,
-	"eu.api.smith.langchain.com": "https://eu.api.host.langchain.com",
+	"api.smith.langchain.com":      defaultControlPlaneURL,
+	"eu.api.smith.langchain.com":   "https://eu.api.host.langchain.com",
+	"aws.api.smith.langchain.com":  "https://aws.api.host.langchain.com",
+	"apac.api.smith.langchain.com": "https://apac.api.host.langchain.com",
 }
 
 // Explicit control-plane settings override derivation from api_url.

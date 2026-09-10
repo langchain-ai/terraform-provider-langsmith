@@ -99,6 +99,8 @@ func TestResolveControlPlaneURLDerivesFromAPIURL(t *testing.T) {
 	cases := map[string]struct{ apiURL, want string }{
 		"saas":                {"https://api.smith.langchain.com", "https://api.host.langchain.com"},
 		"saas eu":             {"https://eu.api.smith.langchain.com", "https://eu.api.host.langchain.com"},
+		"saas aws":            {"https://aws.api.smith.langchain.com", "https://aws.api.host.langchain.com"},
+		"saas apac":           {"https://apac.api.smith.langchain.com", "https://apac.api.host.langchain.com"},
 		"saas mixed case":     {"https://API.smith.langchain.com", "https://api.host.langchain.com"},
 		"self hosted":         {"https://langsmith.example.com", "https://langsmith.example.com/api-host"},
 		"self hosted subpath": {"https://example.com/langsmith", "https://example.com/langsmith/api-host"},
