@@ -216,10 +216,18 @@ type deploymentContractBackend struct {
 	revisionPosts  int
 	secrets        []any
 	revisionSecret string
+	resourceSpec   map[string]any
 }
 
 func newDeploymentContractBackend(t *testing.T) *deploymentContractBackend {
-	return &deploymentContractBackend{t: t, revisionGets: map[string]int{}, revisionSecret: offlineSecretTwo}
+	return &deploymentContractBackend{
+		t: t, revisionGets: map[string]int{}, revisionSecret: offlineSecretTwo,
+		resourceSpec: map[string]any{
+			"min_scale": 1, "max_scale": 1, "cpu": 1, "cpu_limit": nil,
+			"memory_mb": 2048, "memory_limit_mb": nil,
+			"labels": nil, "annotations": nil, "service_account_name": nil,
+		},
+	}
 }
 
 func (b *deploymentContractBackend) expectRevisionPosts(want int) resource.TestCheckFunc {
@@ -298,6 +306,11 @@ func (b *deploymentContractBackend) create(w http.ResponseWriter, req *http.Requ
 		b.reject(w, req, "external_docker requires resource_spec and rejects deployment_type on create")
 		return
 	}
+	if spec, ok := sourceConfig["resource_spec"].(map[string]any); ok {
+		for key, value := range spec {
+			b.resourceSpec[key] = value
+		}
+	}
 	// DeploymentCreateRequest has no display_name field, which is why the
 	// provider needs a follow-up PATCH to set one.
 	if _, ok := payload["display_name"]; ok {
@@ -368,6 +381,11 @@ func (b *deploymentContractBackend) createRevision(w http.ResponseWriter, req *h
 		return
 	}
 	b.image = image
+	if sourceConfig, ok := payload["source_config"].(map[string]any); ok {
+		if spec, ok := sourceConfig["resource_spec"].(map[string]any); ok {
+			b.resourceSpec = spec
+		}
+	}
 	b.secrets, _ = payload["secrets"].([]any)
 	b.latestRevision = offlineRevisionTwo
 	b.revisions = append([]string{offlineRevisionTwo}, b.revisions...)
@@ -392,11 +410,7 @@ func (b *deploymentContractBackend) writeDeployment(w http.ResponseWriter) {
 			"integration_id": nil, "repo_url": nil, "deployment_type": "prod", "build_on_push": false,
 			"custom_url": nil, "listener_id": nil, "listener_config": nil,
 			"install_command": nil, "build_command": nil, "template_id": nil,
-			"resource_spec": map[string]any{
-				"min_scale": 1, "max_scale": 1, "cpu": 1, "cpu_limit": nil,
-				"memory_mb": 2048, "memory_limit_mb": nil,
-				"labels": nil, "annotations": nil, "service_account_name": nil,
-			},
+			"resource_spec": b.resourceSpec,
 		},
 		"source_revision_config": map[string]any{
 			"repo_ref": nil, "langgraph_config_path": nil, "image_uri": b.image,

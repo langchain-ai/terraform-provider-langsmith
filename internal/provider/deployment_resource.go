@@ -297,7 +297,7 @@ func sourceConfigSchema() map[string]schema.Attribute {
 		},
 		"resource_spec": schema.SingleNestedAttribute{
 			Optional:            true,
-			MarkdownDescription: "Compute resources for the deployment. Configured fields are merged with the current API resource specification before each revision, preserving unconfigured fields, defaults, and fields this schema does not model. Removing an argument relinquishes management of that field and preserves its current value. Changing any argument creates a new revision.",
+			MarkdownDescription: "Compute resources for the deployment. Refresh detects remote changes to previously configured fields. Configured fields are merged with the current API resource specification before each revision, preserving unconfigured fields, defaults, and fields this schema does not model. Removing an argument relinquishes management of that field and preserves its current value. Changing any argument creates a new revision.",
 			Attributes: map[string]schema.Attribute{
 				"min_scale": schema.Int64Attribute{
 					Optional:            true,
@@ -897,12 +897,19 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 	adopt := previous.Name.IsNull() || previous.Name.IsUnknown()
 	sourceConfig := sourceConfigModelFromAPI(api.SourceConfig)
 	if !adopt && previous.SourceConfig != nil {
-		// Some API versions omit commands and listener settings. Resource specs
-		// include server defaults beyond Terraform's configured fields.
+		// Some API versions omit commands and listener settings.
 		sourceConfig.InstallCommand = previous.SourceConfig.InstallCommand
 		sourceConfig.BuildCommand = previous.SourceConfig.BuildCommand
 		sourceConfig.ListenerConfig = previous.SourceConfig.ListenerConfig
 		sourceConfig.ResourceSpec = previous.SourceConfig.ResourceSpec
+		if observed, ok := api.SourceConfig["resource_spec"].(map[string]any); ok && previous.SourceConfig.ResourceSpec != nil {
+			// Refresh managed fields without adopting service defaults or extras.
+			managed := resourceSpecPayload(previous.SourceConfig.ResourceSpec)
+			for name := range managed {
+				managed[name] = observed[name]
+			}
+			sourceConfig.ResourceSpec = resourceSpecModelFromAPI(managed)
+		}
 	}
 	next.SourceConfig = sourceConfig
 
@@ -948,12 +955,16 @@ func sourceConfigModelFromAPI(api map[string]any) *deploymentSourceConfigModel {
 		model.ListenerConfig = &deploymentListenerConfigModel{K8sNamespace: apiString(listener, "k8s_namespace")}
 	}
 	if spec, ok := api["resource_spec"].(map[string]any); ok {
-		model.ResourceSpec = &deploymentResourceSpecModel{
-			MinScale: apiInt(spec, "min_scale"), MaxScale: apiInt(spec, "max_scale"), CPU: apiFloat(spec, "cpu"), CPULimit: apiFloat(spec, "cpu_limit"),
-			MemoryMB: apiInt(spec, "memory_mb"), MemoryLimitMB: apiInt(spec, "memory_limit_mb"), Labels: apiMap(spec, "labels"), Annotations: apiMap(spec, "annotations"), ServiceAccountName: apiString(spec, "service_account_name"),
-		}
+		model.ResourceSpec = resourceSpecModelFromAPI(spec)
 	}
 	return model
+}
+
+func resourceSpecModelFromAPI(spec map[string]any) *deploymentResourceSpecModel {
+	return &deploymentResourceSpecModel{
+		MinScale: apiInt(spec, "min_scale"), MaxScale: apiInt(spec, "max_scale"), CPU: apiFloat(spec, "cpu"), CPULimit: apiFloat(spec, "cpu_limit"),
+		MemoryMB: apiInt(spec, "memory_mb"), MemoryLimitMB: apiInt(spec, "memory_limit_mb"), Labels: apiMap(spec, "labels"), Annotations: apiMap(spec, "annotations"), ServiceAccountName: apiString(spec, "service_account_name"),
+	}
 }
 
 func sourceRevisionModelFromAPI(api deploymentAPI) *sourceRevisionConfigModel {

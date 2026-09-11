@@ -285,3 +285,45 @@ func TestDeploymentCreatePreservesExplicitCloudSettings(t *testing.T) {
 		t.Fatalf("creation defaults overwrote explicit settings: %#v", config)
 	}
 }
+
+func TestDeploymentRefreshesManagedResourceFields(t *testing.T) {
+	api := deploymentAPI{
+		Name: "orders", Source: "external_docker",
+		SourceConfig: map[string]any{"resource_spec": map[string]any{
+			"cpu": float64(4), "cpu_limit": nil, "memory_mb": float64(8192), "min_scale": float64(3),
+			"labels":      map[string]any{"team": "updated", "remote": "label"},
+			"annotations": map[string]any{"remote": "annotation"}, "service_account_name": "new-account",
+		}},
+	}
+	for _, tc := range []struct {
+		name string
+		spec *deploymentResourceSpecModel
+		want map[string]any
+	}{
+		{"managed", &deploymentResourceSpecModel{
+			CPU: types.Float64Value(2), CPULimit: types.Float64Value(2), MemoryMB: types.Int64Value(4096),
+			Labels:             types.MapValueMust(types.StringType, map[string]attr.Value{"team": types.StringValue("agents")}),
+			Annotations:        types.MapValueMust(types.StringType, map[string]attr.Value{}),
+			ServiceAccountName: types.StringValue("old-account"),
+		}, map[string]any{
+			"cpu": float64(4), "memory_mb": int64(8192),
+			"labels":      map[string]string{"team": "updated", "remote": "label"},
+			"annotations": map[string]string{"remote": "annotation"}, "service_account_name": "new-account",
+		}},
+		{"empty", &deploymentResourceSpecModel{}, map[string]any{}},
+		{"unmanaged", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previous := testDeploymentModel()
+			previous.SourceConfig.ResourceSpec = tc.spec
+			model := deploymentModelFromAPI(api, deploymentResourceRevisionAPI{}, previous)
+			var got map[string]any
+			if model.SourceConfig.ResourceSpec != nil {
+				got = resourceSpecPayload(model.SourceConfig.ResourceSpec)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("refreshed resource fields = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}

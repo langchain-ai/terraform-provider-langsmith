@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 func TestAccDeploymentOfflineGithubImportHasEmptyPlan(t *testing.T) {
@@ -117,6 +118,50 @@ func TestAccDeploymentOfflineRejectedRevisionRetry(t *testing.T) {
 			{Config: config1},
 			{Config: config2, ExpectError: regexp.MustCompile("Unable to Update LangSmith Deployment")},
 			{Config: config2, PlanOnly: true, ExpectNonEmptyPlan: true},
+		},
+	})
+}
+
+func TestAccDeploymentOfflineResourceSpecDrift(t *testing.T) {
+	if os.Getenv("TF_ACC") != "1" {
+		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
+	}
+	backend := newDeploymentContractBackend(t)
+	backend.revisionSecret = offlineSecretOne
+	server := httptest.NewServer(backend)
+	defer server.Close()
+	unmanaged := deploymentAcceptanceConfig(server.URL, "", "registry.example.com/agent:v1", "1", offlineSecretOne)
+	managed := strings.Replace(unmanaged, "resource_spec = {}", `resource_spec = { cpu = 2, labels = { team = "agents" } }`, 1)
+	drift := func() {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		backend.resourceSpec["cpu"] = float64(4)
+		backend.resourceSpec["labels"] = map[string]any{"team": "changed"}
+		backend.resourceSpec["memory_mb"] = float64(4096)
+		backend.resourceSpec["queue_cpu"] = float64(4)
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: offlineDeploymentFactories(),
+		Steps: []resource.TestStep{
+			{Config: managed, Check: resource.TestCheckNoResourceAttr("langsmith_deployment.test", "source_config.resource_spec.memory_mb")},
+			{PreConfig: drift, Config: managed, PlanOnly: true, ExpectNonEmptyPlan: true},
+			{Config: managed, Check: resource.ComposeAggregateTestCheckFunc(
+				backend.expectRevisionPosts(1),
+				resource.TestCheckResourceAttr("langsmith_deployment.test", "source_config.resource_spec.cpu", "2"),
+				resource.TestCheckResourceAttr("langsmith_deployment.test", "source_config.resource_spec.labels.team", "agents"),
+				resource.TestCheckNoResourceAttr("langsmith_deployment.test", "source_config.resource_spec.memory_mb"),
+				func(*terraform.State) error {
+					backend.mu.Lock()
+					defer backend.mu.Unlock()
+					if backend.resourceSpec["cpu"] != float64(2) || backend.resourceSpec["memory_mb"] != float64(4096) || backend.resourceSpec["queue_cpu"] != float64(4) {
+						return fmt.Errorf("drift correction did not restore CPU while preserving unmanaged fields: %#v", backend.resourceSpec)
+					}
+					return nil
+				},
+			)},
+			{Config: managed, PlanOnly: true, ExpectNonEmptyPlan: false},
+			{Config: unmanaged, Check: backend.expectRevisionPosts(2)},
+			{PreConfig: drift, Config: unmanaged, PlanOnly: true, ExpectNonEmptyPlan: false},
 		},
 	})
 }

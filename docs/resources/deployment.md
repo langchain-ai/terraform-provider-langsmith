@@ -99,7 +99,7 @@ Optional:
 - `listener_config` (Attributes) Listener settings. The service does not report these back, so Terraform is their source of truth. (see [below for nested schema](#nestedatt--source_config--listener_config))
 - `listener_id` (String) UUID of the listener to bind the deployment to. Changing this replaces the deployment.
 - `repo_url` (String) URL of the repository to build from. Only applicable to the `github` source. Changing this replaces the deployment.
-- `resource_spec` (Attributes) Compute resources for the deployment. Configured fields are merged with the current API resource specification before each revision, preserving unconfigured fields, defaults, and fields this schema does not model. Removing an argument relinquishes management of that field and preserves its current value. Changing any argument creates a new revision. (see [below for nested schema](#nestedatt--source_config--resource_spec))
+- `resource_spec` (Attributes) Compute resources for the deployment. Refresh detects remote changes to previously configured fields. Configured fields are merged with the current API resource specification before each revision, preserving unconfigured fields, defaults, and fields this schema does not model. Removing an argument relinquishes management of that field and preserves its current value. Changing any argument creates a new revision. (see [below for nested schema](#nestedatt--source_config--resource_spec))
 - `template_id` (String) Identifier of the LangChain template to deploy. Only applicable to the `internal_template` source. Changing this replaces the deployment.
 
 <a id="nestedatt--source_config--listener_config"></a>
