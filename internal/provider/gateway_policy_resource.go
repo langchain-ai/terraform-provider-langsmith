@@ -1030,7 +1030,15 @@ func (r *gatewayPolicyResource) Delete(ctx context.Context, req resource.DeleteR
 
 // Configure adds the provider configured client to the resource.
 func (r *gatewayPolicyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
-		r.client = data.LangSmithClient
+	// Add a nil check when handling ProviderData because Terraform
+	// sets that data after it calls the ConfigureProvider RPC.
+	if req.ProviderData == nil {
+		return
 	}
+	client, ok := req.ProviderData.(*langsmith.Client)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *langsmith.Client, got %T", req.ProviderData))
+		return
+	}
+	r.client = client
 }

@@ -88,7 +88,7 @@ func (p *LangSmithProvider) Configure(ctx context.Context, req frameworkprovider
 	}
 
 	apiKey := stringConfig(config.APIKey)
-	apiURL := resolveAPIURL(stringConfig(config.APIURL))
+	apiURL := stringConfig(config.APIURL)
 	workspaceID := stringConfig(config.WorkspaceID)
 	profileName := stringConfig(config.Profile)
 
@@ -96,8 +96,8 @@ func (p *LangSmithProvider) Configure(ctx context.Context, req frameworkprovider
 	if profileName != "" {
 		opts = append(opts, langsmith.WithProfile(profileName))
 	}
-	if apiURL != "" {
-		opts = append(opts, option.WithBaseURL(apiURL))
+	if endpoint := resolveAPIURL(apiURL); endpoint != "" {
+		opts = append(opts, option.WithBaseURL(endpoint))
 	}
 	if workspaceID != "" {
 		opts = append(opts, option.WithTenantID(workspaceID))
@@ -106,11 +106,9 @@ func (p *LangSmithProvider) Configure(ctx context.Context, req frameworkprovider
 		opts = append(opts, option.WithAPIKey(apiKey))
 	}
 
-	data := &providerData{
-		LangSmithClient: langsmith.NewClient(opts...),
-	}
-	resp.DataSourceData = data
-	resp.ResourceData = data
+	client := langsmith.NewClient(opts...)
+	resp.DataSourceData = client
+	resp.ResourceData = client
 }
 
 func (p *LangSmithProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
@@ -152,8 +150,12 @@ func (p *LangSmithProvider) Resources(ctx context.Context) []func() resource.Res
 	}
 }
 
-// Normalize explicit endpoints before SDK options override environment defaults.
-// An empty URL leaves profile/default resolution to the SDK.
+// resolveAPIURL returns the normalized base URL to configure the SDK client
+// with, or "" to leave the SDK's own resolution (profile, then default) alone.
+//
+// LANGSMITH_ENDPOINT is read here rather than left to the SDK because the SDK
+// passes it through unnormalized, and provider options are applied after the
+// SDK's env defaults — so normalizing it here is what makes it take effect.
 func resolveAPIURL(configured string) string {
 	raw := configured
 	if raw == "" {
@@ -165,7 +167,13 @@ func resolveAPIURL(configured string) string {
 	return normalizeAPIURL(raw)
 }
 
-// Match the SDK's normalization to avoid doubling /api/v1 on self-hosted URLs.
+// normalizeAPIURL strips a trailing "/api/v1" so the SDK's relative request
+// paths resolve against the origin. Self-hosted installs are documented with
+// an endpoint of https://<host>/api/v1, which would otherwise double the
+// prefix into https://<host>/api/v1/api/v1/....
+//
+// Kept identical to normalizeConfigURL in langsmith-go so the CLI, the SDK and
+// this provider all agree on what a normalized endpoint looks like.
 func normalizeAPIURL(raw string) string {
 	u := strings.TrimRight(strings.TrimSpace(raw), "/")
 	return strings.TrimSuffix(u, "/api/v1")

@@ -135,9 +135,15 @@ func (r *DeploymentResource) Metadata(ctx context.Context, req resource.Metadata
 }
 
 func (r *DeploymentResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
-		r.client = data.LangSmithClient
+	if req.ProviderData == nil {
+		return
 	}
+	client, ok := req.ProviderData.(*langsmith.Client)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *langsmith.Client, got %T", req.ProviderData))
+		return
+	}
+	r.client = client
 }
 
 // Optional+Computed fields adopt API defaults. Desired-only inputs retain

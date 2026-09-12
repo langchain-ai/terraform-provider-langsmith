@@ -82,9 +82,15 @@ func (r *WorkspaceMembershipResource) Schema(ctx context.Context, req resource.S
 }
 
 func (r *WorkspaceMembershipResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
-		r.client = data.LangSmithClient
+	if req.ProviderData == nil {
+		return
 	}
+	client, ok := req.ProviderData.(*langsmith.Client)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *langsmith.Client, got %T", req.ProviderData))
+		return
+	}
+	r.client = client
 }
 
 func (r *WorkspaceMembershipResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
