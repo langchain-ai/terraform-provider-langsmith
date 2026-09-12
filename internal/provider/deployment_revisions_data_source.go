@@ -61,7 +61,7 @@ func (d *DeploymentRevisionsDataSource) Schema(ctx context.Context, req datasour
 
 func (d *DeploymentRevisionsDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
 	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
-		d.client = data.ControlPlaneClient
+		d.client = data.LangSmithClient
 	}
 }
 

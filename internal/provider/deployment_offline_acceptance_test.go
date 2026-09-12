@@ -153,7 +153,7 @@ func offlineDeploymentFactories() map[string]func() (tfprotov6.ProviderServer, e
 func deploymentAcceptanceConfig(serverURL, displayName, image, secretsVersion, secret string) string {
 	return fmt.Sprintf(`
 provider "langsmith" {
-  control_plane_url = %q
+  api_url = %q
   api_key           = "offline-test-key"
   workspace_id      = "offline-workspace"
 }
@@ -188,7 +188,7 @@ data "langsmith_deployment_revisions" "test" {
   offset        = 0
   status        = "DEPLOYED"
 }
-`, serverURL+"/api-host", displayName, image, secret, secretsVersion)
+`, serverURL+"/api/v1", displayName, image, secret, secretsVersion)
 }
 
 func deploymentStateExcludesSecrets(state *terraform.State) error {
@@ -253,8 +253,8 @@ func (b *deploymentContractBackend) ServeHTTP(w http.ResponseWriter, req *http.R
 		b.reject(w, req, "missing tenant ID")
 		return
 	}
-	if strings.Contains(req.URL.Path, "/v1/") || !strings.HasPrefix(req.URL.Path, "/api-host/v2/") {
-		b.reject(w, req, "non-v2 control-plane path")
+	if !strings.HasPrefix(req.URL.Path, "/v2/") {
+		b.reject(w, req, "non-v2 API path")
 		return
 	}
 	body, err := io.ReadAll(req.Body)
@@ -269,7 +269,7 @@ func (b *deploymentContractBackend) ServeHTTP(w http.ResponseWriter, req *http.R
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	path := strings.TrimPrefix(req.URL.Path, "/api-host/")
+	path := strings.TrimPrefix(req.URL.Path, "/")
 	switch {
 	case path == "v2/deployments" && req.Method == http.MethodPost:
 		b.create(w, req, body)

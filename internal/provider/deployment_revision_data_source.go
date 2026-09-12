@@ -108,7 +108,7 @@ func deploymentRevisionSourceConfigSchema() schema.SingleNestedAttribute {
 
 func (d *DeploymentRevisionDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
 	if data := configureProviderData(req.ProviderData, &resp.Diagnostics); data != nil {
-		d.client = data.ControlPlaneClient
+		d.client = data.LangSmithClient
 	}
 }
 

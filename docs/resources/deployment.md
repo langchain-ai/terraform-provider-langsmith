@@ -5,7 +5,7 @@ subcategory: ""
 description: |-
   Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the langsmith_deployment_revision data source to read one.
   The v2 API has one environment map. Terraform separates it into ordinary environment_variables, which appear in plans and state, and sensitive write-only secrets. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing secrets map, move ordinary entries into environment_variables without changing the combined keys or values; this records the public values in state without creating a revision.
-  Import an existing deployment by UUID using the same workspace and control-plane URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit environment_variables, secrets, and secrets_version to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.
+  Import an existing deployment by UUID using the same workspace and LangSmith API URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit environment_variables, secrets, and secrets_version to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.
 ---
 
 # langsmith_deployment (Resource)
@@ -14,7 +14,7 @@ Manages the desired state of a LangSmith deployment. Deployment revisions are cr
 
 The v2 API has one environment map. Terraform separates it into ordinary `environment_variables`, which appear in plans and state, and sensitive write-only `secrets`. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing `secrets` map, move ordinary entries into `environment_variables` without changing the combined keys or values; this records the public values in state without creating a revision.
 
-Import an existing deployment by UUID using the same workspace and control-plane URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.
+Import an existing deployment by UUID using the same workspace and LangSmith API URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.
 
 ## Example Usage
 
@@ -153,6 +153,6 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-# Configure the provider with the deployment's workspace and control-plane URL.
+# Configure the provider with the deployment's workspace and LangSmith API URL.
 terraform import langsmith_deployment.agent 11111111-1111-1111-1111-111111111111
 ```

@@ -8,8 +8,7 @@ import (
 )
 
 type providerData struct {
-	LangSmithClient    *langsmith.Client
-	ControlPlaneClient *langsmith.Client
+	LangSmithClient *langsmith.Client
 }
 
 func configureProviderData(data any, diagnostics *diag.Diagnostics) *providerData {

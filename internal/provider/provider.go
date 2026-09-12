@@ -2,8 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
-	"net/url"
 	"os"
 	"strings"
 
@@ -30,11 +28,10 @@ type LangSmithProvider struct {
 }
 
 type providerModel struct {
-	APIKey          types.String `tfsdk:"api_key"`
-	APIURL          types.String `tfsdk:"api_url"`
-	ControlPlaneURL types.String `tfsdk:"control_plane_url"`
-	WorkspaceID     types.String `tfsdk:"workspace_id"`
-	Profile         types.String `tfsdk:"profile"`
+	APIKey      types.String `tfsdk:"api_key"`
+	APIURL      types.String `tfsdk:"api_url"`
+	WorkspaceID types.String `tfsdk:"workspace_id"`
+	Profile     types.String `tfsdk:"profile"`
 }
 
 func (p *LangSmithProvider) Metadata(ctx context.Context, req frameworkprovider.MetadataRequest, resp *frameworkprovider.MetadataResponse) {
@@ -54,10 +51,6 @@ func (p *LangSmithProvider) Schema(ctx context.Context, req frameworkprovider.Sc
 			"api_url": schema.StringAttribute{
 				Optional:            true,
 				MarkdownDescription: "LangSmith API URL. Prefer SDK environment/profile configuration.",
-			},
-			"control_plane_url": schema.StringAttribute{
-				Optional:            true,
-				MarkdownDescription: "LangSmith control-plane API URL, used by `langsmith_deployment` and the deployment revision data sources. Defaults to `LANGSMITH_CONTROL_PLANE_URL`, then to the matching regional control plane for a LangSmith SaaS `api_url` (GCP US, EU, APAC, or AWS US), or `<api_url>/api-host` for a self-hosted install. Set it explicitly when selecting an endpoint through `profile`, because the provider cannot read a profile's endpoint.",
 			},
 			"workspace_id": schema.StringAttribute{
 				Optional:            true,
@@ -84,9 +77,6 @@ func (p *LangSmithProvider) Configure(ctx context.Context, req frameworkprovider
 	if config.APIURL.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(path.Root("api_url"), "Unknown API URL", "The provider cannot configure the LangSmith client with an unknown API URL.")
 	}
-	if config.ControlPlaneURL.IsUnknown() {
-		resp.Diagnostics.AddAttributeError(path.Root("control_plane_url"), "Unknown Control Plane URL", "The provider cannot configure the control-plane client with an unknown URL.")
-	}
 	if config.WorkspaceID.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(path.Root("workspace_id"), "Unknown Workspace ID", "The provider cannot configure the LangSmith client with an unknown workspace ID.")
 	}
@@ -101,11 +91,6 @@ func (p *LangSmithProvider) Configure(ctx context.Context, req frameworkprovider
 	apiURL := resolveAPIURL(stringConfig(config.APIURL))
 	workspaceID := stringConfig(config.WorkspaceID)
 	profileName := stringConfig(config.Profile)
-	controlPlaneURL, err := resolveControlPlaneURL(stringConfig(config.ControlPlaneURL), apiURL)
-	if err != nil {
-		resp.Diagnostics.AddAttributeError(path.Root("control_plane_url"), "Invalid Control Plane URL", err.Error())
-		return
-	}
 
 	var opts []option.RequestOption
 	if profileName != "" {
@@ -121,11 +106,8 @@ func (p *LangSmithProvider) Configure(ctx context.Context, req frameworkprovider
 		opts = append(opts, option.WithAPIKey(apiKey))
 	}
 
-	controlPlaneOpts := append([]option.RequestOption{}, opts...)
-	controlPlaneOpts = append(controlPlaneOpts, option.WithBaseURL(controlPlaneURL))
 	data := &providerData{
-		LangSmithClient:    langsmith.NewClient(opts...),
-		ControlPlaneClient: langsmith.NewClient(controlPlaneOpts...),
+		LangSmithClient: langsmith.NewClient(opts...),
 	}
 	resp.DataSourceData = data
 	resp.ResourceData = data
@@ -187,70 +169,6 @@ func resolveAPIURL(configured string) string {
 func normalizeAPIURL(raw string) string {
 	u := strings.TrimRight(strings.TrimSpace(raw), "/")
 	return strings.TrimSuffix(u, "/api/v1")
-}
-
-const (
-	defaultControlPlaneURL     = "https://api.host.langchain.com"
-	selfHostedControlPlanePath = "/api-host"
-)
-
-var saasControlPlanes = map[string]string{
-	"api.smith.langchain.com":      defaultControlPlaneURL,
-	"eu.api.smith.langchain.com":   "https://eu.api.host.langchain.com",
-	"aws.api.smith.langchain.com":  "https://aws.api.host.langchain.com",
-	"apac.api.smith.langchain.com": "https://apac.api.host.langchain.com",
-}
-
-// Explicit control-plane settings override derivation from api_url.
-// Derive self-hosted URLs locally to avoid sending their credentials to SaaS.
-// Profile endpoints are opaque to the provider and need an explicit override.
-func resolveControlPlaneURL(configured, apiURL string) (string, error) {
-	if raw := strings.TrimSpace(configured); raw != "" {
-		return validateControlPlaneURL(raw, "the control_plane_url argument")
-	}
-	if raw := strings.TrimSpace(os.Getenv("LANGSMITH_CONTROL_PLANE_URL")); raw != "" {
-		return validateControlPlaneURL(raw, "LANGSMITH_CONTROL_PLANE_URL")
-	}
-	return controlPlaneURLForAPIURL(apiURL), nil
-}
-
-func controlPlaneURLForAPIURL(apiURL string) string {
-	if apiURL == "" {
-		return defaultControlPlaneURL
-	}
-	u, err := url.Parse(apiURL)
-	if err != nil || u.Host == "" {
-		return defaultControlPlaneURL
-	}
-	if saas, ok := saasControlPlanes[strings.ToLower(u.Hostname())]; ok {
-		return saas
-	}
-	u.Path = strings.TrimRight(u.Path, "/") + selfHostedControlPlanePath
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u.String()
-}
-
-// Self-hosted installs may use HTTP when TLS terminates elsewhere.
-func validateControlPlaneURL(raw, source string) (string, error) {
-	u, err := url.Parse(raw)
-	if err != nil || !u.IsAbs() || u.Host == "" {
-		return "", fmt.Errorf("%q from %s must be an absolute URL, such as https://api.host.langchain.com or https://langsmith.example.com/api-host", raw, source)
-	}
-	if u.User != nil {
-		return "", fmt.Errorf("%q from %s must not include user information", raw, source)
-	}
-	if u.RawQuery != "" || u.ForceQuery {
-		return "", fmt.Errorf("%q from %s must not include a query string", raw, source)
-	}
-	if u.Fragment != "" || strings.Contains(raw, "#") {
-		return "", fmt.Errorf("%q from %s must not include a fragment", raw, source)
-	}
-	if scheme := strings.ToLower(u.Scheme); scheme != "https" && scheme != "http" {
-		return "", fmt.Errorf("%q from %s must use HTTPS, or HTTP for an install that does not terminate TLS", raw, source)
-	}
-	u.Path = strings.TrimRight(u.Path, "/")
-	return u.String(), nil
 }
 
 func stringConfig(value types.String) string {

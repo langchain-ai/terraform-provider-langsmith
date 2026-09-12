@@ -208,7 +208,7 @@ func TestAccDeploymentOfflineSplitEnvironmentIgnoreChanges(t *testing.T) {
 func deploymentEnvironmentAcceptanceConfig(serverURL, environment, secrets string) string {
 	return fmt.Sprintf(`
 provider "langsmith" {
-  control_plane_url = %q
+  api_url = %q
   api_key = "offline-test-key"
   workspace_id = "offline-workspace"
 }
@@ -224,7 +224,7 @@ resource "langsmith_deployment" "test" {
   source_revision_config = { image_uri = "registry.example.com/agent:v1" }
   %s
   %s
-}`, serverURL+"/api-host", environment, secrets)
+}`, serverURL+"/api/v1", environment, secrets)
 }
 
 func deploymentEnvironmentTestVariables(secret string) config.Variables {

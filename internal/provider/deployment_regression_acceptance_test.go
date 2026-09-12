@@ -65,7 +65,7 @@ func testDeploymentGithubImport(t *testing.T, managed bool) {
 	defer server.Close()
 	config := fmt.Sprintf(`
 provider "langsmith" {
-  control_plane_url = %q
+  api_url = %q
   api_key = "offline-test-key"
 }
 resource "langsmith_deployment" "test" {
@@ -101,7 +101,7 @@ func TestAccDeploymentOfflineRejectedRevisionRetry(t *testing.T) {
 	}
 	backend := newDeploymentContractBackend(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method == http.MethodPost && req.URL.Path == "/api-host/v2/deployments/"+offlineDeploymentID+"/revisions" {
+		if req.Method == http.MethodPost && req.URL.Path == "/v2/deployments/"+offlineDeploymentID+"/revisions" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"detail":"revision rejected"}`))

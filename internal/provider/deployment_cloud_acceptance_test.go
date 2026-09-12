@@ -37,7 +37,7 @@ func TestAccDeploymentOfflineCloudSources(t *testing.T) {
 				}
 				return fmt.Sprintf(`
 provider "langsmith" {
-  control_plane_url = %q
+  api_url = %q
   api_key = "offline-test-key"
 }
 resource "langsmith_deployment" "test" {
@@ -122,7 +122,7 @@ func TestAccDeploymentOfflineRejectsCLISources(t *testing.T) {
 				Steps: []resource.TestStep{{
 					Config: fmt.Sprintf(`
 provider "langsmith" {
-  control_plane_url = %q
+  api_url = %q
   api_key = "offline-test-key"
 }
 resource "langsmith_deployment" "test" {
