@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -18,7 +20,7 @@ func TestAccDeploymentOfflineCloudSources(t *testing.T) {
 	if os.Getenv("TF_ACC") != "1" {
 		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
 	}
-	for _, source := range []string{"github", "internal_docker", "internal_source", "internal_template"} {
+	for _, source := range []string{"github", "internal_template"} {
 		t.Run(source, func(t *testing.T) {
 			backend := &cloudDeploymentBackend{}
 			server := httptest.NewServer(backend)
@@ -30,8 +32,6 @@ func TestAccDeploymentOfflineCloudSources(t *testing.T) {
 					sourceConfig = `integration_id = "github-integration"
     repo_url = "https://github.com/example/agent"`
 					revisionConfig = fmt.Sprintf("repo_ref = %q\n    langgraph_config_path = \"langgraph.json\"", ref)
-				case "internal_source":
-					revisionConfig = `langgraph_config_path = "langgraph.json"`
 				case "internal_template":
 					sourceConfig = `template_id = "template"`
 				}
@@ -75,12 +75,6 @@ resource "langsmith_deployment" "test" {
 			initialCheck := resource.ComposeAggregateTestCheckFunc(check("Cloud agent", 0),
 				resource.TestCheckResourceAttr("langsmith_deployment.test", "source_config.build_on_push", "false"),
 			)
-			if source == "internal_docker" || source == "internal_source" {
-				initialCheck = resource.ComposeAggregateTestCheckFunc(initialCheck,
-					resource.TestCheckNoResourceAttr("langsmith_deployment.test", "latest_revision_id"),
-					resource.TestCheckNoResourceAttr("langsmith_deployment.test", "latest_revision_status"),
-				)
-			}
 			steps := []resource.TestStep{
 				{Config: initial, Check: initialCheck},
 				{Config: initial, PlanOnly: true, ExpectNonEmptyPlan: false},
@@ -111,8 +105,45 @@ resource "langsmith_deployment" "test" {
 	}
 }
 
-// Cloud creates require explicit tier/push settings. Docker/source creates have
-// no revision, and GitHub updates validate the ref and push flag together.
+func TestAccDeploymentOfflineRejectsCLISources(t *testing.T) {
+	if os.Getenv("TF_ACC") != "1" {
+		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
+	}
+	for _, source := range []string{"internal_docker", "internal_source"} {
+		t.Run(source, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				requests.Add(1)
+				http.Error(w, "unexpected API request", http.StatusBadRequest)
+			}))
+			defer server.Close()
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: offlineDeploymentFactories(),
+				Steps: []resource.TestStep{{
+					Config: fmt.Sprintf(`
+provider "langsmith" {
+  control_plane_url = %q
+  api_key = "offline-test-key"
+}
+resource "langsmith_deployment" "test" {
+  name = "cli-agent"
+  source = %q
+  source_config = {}
+  source_revision_config = {}
+}`, server.URL, source),
+					PlanOnly:    true,
+					ExpectError: regexp.MustCompile(`(?s)Unsupported Deployment Source.*CLI`),
+				}},
+			})
+			if requests.Load() != 0 {
+				t.Fatalf("unsupported source made %d API requests", requests.Load())
+			}
+		})
+	}
+}
+
+// Cloud creates require explicit tier/push settings, and GitHub updates
+// validate the ref and push flag together.
 type cloudDeploymentBackend struct {
 	mu            sync.Mutex
 	deployment    *deploymentAPI
@@ -148,10 +179,8 @@ func (b *cloudDeploymentBackend) ServeHTTP(w http.ResponseWriter, req *http.Requ
 		if deployment.SourceConfig["build_on_push"] == nil {
 			deployment.SourceConfig["build_on_push"] = false
 		}
-		if deployment.Source == "github" || deployment.Source == "internal_template" {
-			revision := offlineRevisionOne
-			deployment.LatestRevisionID, deployment.ActiveRevisionID = &revision, &revision
-		}
+		revision := offlineRevisionOne
+		deployment.LatestRevisionID, deployment.ActiveRevisionID = &revision, &revision
 		b.deployment = &deployment
 		b.creates++
 		w.WriteHeader(http.StatusCreated)
@@ -220,10 +249,5 @@ func (b *cloudDeploymentBackend) ServeHTTP(w http.ResponseWriter, req *http.Requ
 			return
 		}
 	}
-	response := *b.deployment
-	if response.LatestRevisionID == nil {
-		response.Secrets = []deploymentSecretAPI{}
-		response.SourceRevisionConfig = nil
-	}
-	_ = json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(b.deployment)
 }

@@ -59,7 +59,7 @@ resource "langsmith_deployment" "agent" {
 ### Required
 
 - `name` (String) Deployment name. A LangSmith tracing project of the same name is created alongside it. Changing this replaces the deployment.
-- `source` (String) Where the deployment builds from: `github`, `external_docker`, `internal_docker`, `internal_source`, or `internal_template`. Self-hosted installs support `external_docker`. The `internal_docker` and `internal_source` sources are created without an initial revision; push an image or upload source afterward to deploy the first revision. Changing this replaces the deployment.
+- `source` (String) Where the deployment builds from: `github`, `external_docker`, or `internal_template`. Self-hosted installs support `external_docker`. The `internal_docker` and `internal_source` sources require CLI image pushes or source uploads and cannot be created, updated, or imported with this resource. Use the CLI to manage them; the deployment revision data sources can still read their revisions. Changing this replaces the deployment.
 - `source_config` (Attributes) Configuration that applies to the deployment as a whole. (see [below for nested schema](#nestedatt--source_config))
 - `source_revision_config` (Attributes) Configuration for the code or image a revision builds from. Changing any argument here creates a new revision. (see [below for nested schema](#nestedatt--source_revision_config))
 
@@ -133,9 +133,8 @@ Optional:
 Optional:
 
 - `image_uri` (String) Docker image to deploy, as `<name>:<tag>`. Only applicable to the `external_docker` source.
-- `langgraph_config_path` (String) Path to `langgraph.json` within the repository. Required for the `github` and `internal_source` sources.
+- `langgraph_config_path` (String) Path to `langgraph.json` within the repository. Required for the `github` source.
 - `repo_ref` (String) Git ref to build: a branch name, or a full ref path for a tag. Tags require `source_config.build_on_push` to be `false`. Only applicable to the `github` source.
-- `source_tarball_path` (String) Object path of an uploaded source tarball, obtained from the deployment's upload-url endpoint. Only applicable to the `internal_source` source, and only for a deployment that already exists.
 
 
 <a id="nestedatt--secret_references"></a>

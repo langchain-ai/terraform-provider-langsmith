@@ -90,7 +90,6 @@ type sourceRevisionConfigModel struct {
 	RepoRef             types.String `tfsdk:"repo_ref"`
 	LanggraphConfigPath types.String `tfsdk:"langgraph_config_path"`
 	ImageURI            types.String `tfsdk:"image_uri"`
-	SourceTarballPath   types.String `tfsdk:"source_tarball_path"`
 }
 
 type deploymentSecretReferenceModel struct {
@@ -167,8 +166,8 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 			"source": schema.StringAttribute{
 				Required:            true,
 				PlanModifiers:       replace,
-				Validators:          []frameworkvalidator.String{oneOfStringValidator{values: []string{"github", "external_docker", "internal_docker", "internal_source", "internal_template"}}},
-				MarkdownDescription: "Where the deployment builds from: `github`, `external_docker`, `internal_docker`, `internal_source`, or `internal_template`. Self-hosted installs support `external_docker`. The `internal_docker` and `internal_source` sources are created without an initial revision; push an image or upload source afterward to deploy the first revision. Changing this replaces the deployment.",
+				Validators:          []frameworkvalidator.String{deploymentSourceValidator{}},
+				MarkdownDescription: "Where the deployment builds from: `github`, `external_docker`, or `internal_template`. Self-hosted installs support `external_docker`. The `internal_docker` and `internal_source` sources require CLI image pushes or source uploads and cannot be created, updated, or imported with this resource. Use the CLI to manage them; the deployment revision data sources can still read their revisions. Changing this replaces the deployment.",
 			},
 			"display_name": schema.StringAttribute{
 				Optional:            true,
@@ -350,15 +349,11 @@ func sourceRevisionConfigSchema() map[string]schema.Attribute {
 		},
 		"langgraph_config_path": schema.StringAttribute{
 			Optional:            true,
-			MarkdownDescription: "Path to `langgraph.json` within the repository. Required for the `github` and `internal_source` sources.",
+			MarkdownDescription: "Path to `langgraph.json` within the repository. Required for the `github` source.",
 		},
 		"image_uri": schema.StringAttribute{
 			Optional:            true,
 			MarkdownDescription: "Docker image to deploy, as `<name>:<tag>`. Only applicable to the `external_docker` source.",
-		},
-		"source_tarball_path": schema.StringAttribute{
-			Optional:            true,
-			MarkdownDescription: "Object path of an uploaded source tarball, obtained from the deployment's upload-url endpoint. Only applicable to the `internal_source` source, and only for a deployment that already exists.",
 		},
 	}
 }
@@ -440,6 +435,15 @@ func (r *DeploymentResource) Delete(ctx context.Context, req resource.DeleteRequ
 }
 
 func (r *DeploymentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	var deployment deploymentAPI
+	if err := r.client.Get(ctx, deploymentPath(req.ID), nil, &deployment); err != nil {
+		resp.Diagnostics.AddError("Unable to Import LangSmith Deployment", err.Error())
+		return
+	}
+	if err := validateDeploymentSource(deployment.Source); err != nil {
+		resp.Diagnostics.AddError("Unsupported Deployment Source", err.Error())
+		return
+	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 }
 
@@ -454,6 +458,9 @@ func deploymentRevisionPath(id, revisionID string) string {
 }
 
 func (r *DeploymentResource) create(ctx context.Context, plan deploymentResourceModel) (deploymentResourceModel, error) {
+	if err := validateDeploymentSource(plan.Source.ValueString()); err != nil {
+		return plan, err
+	}
 	var result deploymentAPI
 	if err := r.client.Post(ctx, deploymentsPath, createPayload(plan), &result); err != nil {
 		return plan, err
@@ -462,9 +469,8 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 	if result.ID == "" {
 		return interim, errors.New("LangSmith did not return a deployment ID")
 	}
-	hasRevision := result.LatestRevisionID != nil && *result.LatestRevisionID != ""
-	if !hasRevision && plan.Source.ValueString() != "internal_docker" && plan.Source.ValueString() != "internal_source" {
-		return interim, errors.New("LangSmith did not return deployment and revision IDs")
+	if result.LatestRevisionID == nil || *result.LatestRevisionID == "" {
+		return interim, errors.New("LangSmith did not return a revision ID")
 	}
 	// Display names require a separate PATCH. Preserve the ID if it fails.
 	if !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() {
@@ -473,14 +479,10 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 			return interim, err
 		}
 	}
-	var revision deploymentResourceRevisionAPI
-	if hasRevision {
-		var err error
-		revision, err = r.waitForRevision(ctx, result.ID, *result.LatestRevisionID)
-		if err != nil {
-			interim.LatestRevisionStatus = nullableString(revision.Status)
-			return interim, err
-		}
+	revision, err := r.waitForRevision(ctx, result.ID, *result.LatestRevisionID)
+	if err != nil {
+		interim.LatestRevisionStatus = nullableString(revision.Status)
+		return interim, err
 	}
 	// Keep the created ID if the final read fails; the plan's ID is unknown.
 	model, err := r.read(ctx, result.ID, plan)
@@ -529,6 +531,9 @@ func (r *DeploymentResource) read(ctx context.Context, id string, previous deplo
 }
 
 func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentResourceModel) (deploymentResourceModel, error) {
+	if err := validateDeploymentSource(plan.Source.ValueString()); err != nil {
+		return state, err
+	}
 	id := state.ID.ValueString()
 	needsRevision := revisionChanged(state, plan)
 	mutable := mutablePayload(state, plan)
@@ -719,7 +724,7 @@ func (r *DeploymentResource) waitForRevision(ctx context.Context, id, revisionID
 func createPayload(m deploymentResourceModel) map[string]any {
 	sourceConfig := sourceConfigPayload(m.SourceConfig)
 	switch m.Source.ValueString() {
-	case "github", "internal_docker", "internal_source", "internal_template":
+	case "github", "internal_template":
 		if sourceConfig["deployment_type"] == nil {
 			sourceConfig["deployment_type"] = "prod"
 		}
@@ -838,7 +843,6 @@ func sourceRevisionPayload(s *sourceRevisionConfigModel) map[string]any {
 	putString(p, "repo_ref", s.RepoRef)
 	putString(p, "langgraph_config_path", s.LanggraphConfigPath)
 	putString(p, "image_uri", s.ImageURI)
-	putString(p, "source_tarball_path", s.SourceTarballPath)
 	return p
 }
 
@@ -976,11 +980,8 @@ func sourceRevisionModelFromAPI(api deploymentAPI) *sourceRevisionConfigModel {
 			model.RepoRef = apiString(api.SourceRevisionConfig, "repo_ref")
 		}
 		model.LanggraphConfigPath = apiString(api.SourceRevisionConfig, "langgraph_config_path")
-	case "external_docker", "internal_docker":
+	case "external_docker":
 		model.ImageURI = apiString(api.SourceRevisionConfig, "image_uri")
-	case "internal_source":
-		model.LanggraphConfigPath = apiString(api.SourceRevisionConfig, "langgraph_config_path")
-		model.SourceTarballPath = apiString(api.SourceRevisionConfig, "source_tarball_path")
 	}
 	return model
 }

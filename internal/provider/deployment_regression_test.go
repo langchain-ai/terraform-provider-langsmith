@@ -20,8 +20,6 @@ func TestDeploymentImportFiltersRevisionInputsBySource(t *testing.T) {
 	}{
 		{"github", map[string]any{"repo_ref": "main", "langgraph_config_path": "langgraph.json"}},
 		{"external_docker", map[string]any{"image_uri": "registry.example.com/agent:v1"}},
-		{"internal_docker", map[string]any{"image_uri": "registry.example.com/agent:v1"}},
-		{"internal_source", map[string]any{"langgraph_config_path": "langgraph.json", "source_tarball_path": "uploads/source.tar.gz"}},
 		{"internal_template", map[string]any{}},
 	} {
 		t.Run(tt.source, func(t *testing.T) {

@@ -17,7 +17,7 @@ func TestDeploymentRevisionsDataSourceQueryAndMapping(t *testing.T) {
 			t.Fatalf("request = %s %s", r.Method, r.URL.RequestURI())
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"resources":[{"id":"revision-id","created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:01:00Z","status":"DEPLOYED","source":"image","source_revision_config":{"image_uri":"image:v1","tracked_packages":["agent"]}}],"offset":75}`))
+		_, _ = w.Write([]byte(`{"resources":[{"id":"revision-id","created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:01:00Z","status":"DEPLOYED","source":"internal_docker","source_revision_config":{"image_uri":"image:v1","tracked_packages":["agent"]}}],"offset":75}`))
 	}))
 	defer server.Close()
 
@@ -38,7 +38,7 @@ func TestDeploymentRevisionsDataSourceQueryAndMapping(t *testing.T) {
 	if diagnostics.HasError() {
 		t.Fatalf("mapping diagnostics = %v", diagnostics)
 	}
-	if model.ID != types.StringValue("revision-id") || model.Status != types.StringValue("DEPLOYED") || model.SourceRevisionConfig.ImageURI != types.StringValue("image:v1") || model.SourceRevisionConfig.TrackedPackages.Elements()[0] != types.StringValue("agent") {
+	if model.ID != types.StringValue("revision-id") || model.Status != types.StringValue("DEPLOYED") || model.Source != types.StringValue("internal_docker") || model.SourceRevisionConfig.ImageURI != types.StringValue("image:v1") || model.SourceRevisionConfig.TrackedPackages.Elements()[0] != types.StringValue("agent") {
 		t.Fatalf("revision model = %#v", model)
 	}
 }

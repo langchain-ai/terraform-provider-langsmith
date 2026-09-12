@@ -18,7 +18,7 @@ func TestDeploymentRevisionDataSourcePathAndMapping(t *testing.T) {
 			t.Fatalf("request = %s %s", r.Method, r.URL.RequestURI())
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"revision-id","created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:01:00Z","status":"DEPLOYED","source":"github","source_revision_config":{"repo_ref":"main","langgraph_config_path":"langgraph.json","image_uri":"image:v1","source_tarball_path":"source.tgz","repo_commit_sha":"abc123","deepagents_version":"1.2.3","tracked_packages":["agent","shared"]}}`))
+		_, _ = w.Write([]byte(`{"id":"revision-id","created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:01:00Z","status":"DEPLOYED","source":"internal_source","source_revision_config":{"repo_ref":"main","langgraph_config_path":"langgraph.json","image_uri":"image:v1","source_tarball_path":"source.tgz","repo_commit_sha":"abc123","deepagents_version":"1.2.3","tracked_packages":["agent","shared"]}}`))
 	}))
 	defer server.Close()
 
@@ -31,7 +31,7 @@ func TestDeploymentRevisionDataSourcePathAndMapping(t *testing.T) {
 	if diagnostics.HasError() {
 		t.Fatalf("mapping diagnostics = %v", diagnostics)
 	}
-	if model.ID != types.StringValue("revision-id") || model.CreatedAt != types.StringValue("2025-01-01T00:00:00Z") || model.UpdatedAt != types.StringValue("2025-01-01T00:01:00Z") || model.Status != types.StringValue("DEPLOYED") || model.Source != types.StringValue("github") {
+	if model.ID != types.StringValue("revision-id") || model.CreatedAt != types.StringValue("2025-01-01T00:00:00Z") || model.UpdatedAt != types.StringValue("2025-01-01T00:01:00Z") || model.Status != types.StringValue("DEPLOYED") || model.Source != types.StringValue("internal_source") {
 		t.Fatalf("revision model = %#v", model)
 	}
 	config := model.SourceRevisionConfig
