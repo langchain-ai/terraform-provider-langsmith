@@ -29,17 +29,4 @@ Create an API key in your LangSmith workspace settings. Prefer environment or pr
 configuration over hardcoding `api_key`; if you set it inline, mark it sensitive and
 source it from a secret store.
 
-## Deployment endpoints
-
-Deployment resources and revision data sources use `/v2/deployments` on the same
-LangSmith API endpoint as other resources. Select the endpoint with `api_url`,
-`LANGSMITH_ENDPOINT`, or a LangSmith CLI profile.
-
-| Region | API URL |
-| --- | --- |
-| GCP US | `https://api.smith.langchain.com` |
-| GCP EU | `https://eu.api.smith.langchain.com` |
-| GCP APAC | `https://apac.api.smith.langchain.com` |
-| AWS US | `https://aws.api.smith.langchain.com` |
-
 {{ .SchemaMarkdown | trimspace }}
