@@ -60,6 +60,12 @@ git tag --list 'v*' --sort=-v:refname | head
 
 ## Tag and publish
 
+For a development candidate, use a SemVer prerelease tag such as
+`v0.0.14-rc.1` on the tested feature-branch commit. Confirm the five CI jobs
+listed above passed for that commit before tagging. GoReleaser marks these
+releases as prereleases; stable releases continue to come from `main`.
+Consumers must pin the exact prerelease version in `required_providers`.
+
 Set `version` to the next SemVer tag, then create and push an annotated tag:
 
 ```bash
@@ -107,6 +113,23 @@ curl --silent --show-error \
 
 The release is also visible at
 <https://registry.terraform.io/providers/langchain-ai/langsmith/latest>.
+
+If a prerelease is missing from the Registry, its webhook may have ignored the
+GitHub prerelease event. Temporarily clear the GitHub flag while keeping the
+release out of the latest slot:
+
+```bash
+gh release edit "$version" --prerelease=false --latest=false
+```
+
+Wait until the Registry versions API lists the exact RC, then restore the flag:
+
+```bash
+gh release edit "$version" --prerelease --latest=false
+```
+
+Keep the SemVer prerelease tag unchanged throughout. Verify both Registry
+availability and the stable latest GitHub release afterward.
 
 ## Release artifacts
 
