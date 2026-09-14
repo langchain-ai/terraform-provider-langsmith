@@ -70,6 +70,10 @@ resource "langsmith_gateway_policy" "model_access" {
         anthropic = {
           access = "all"
         }
+        custom = {
+          access         = "selected"
+          allowed_models = ["my-custom-model-configuration"]
+        }
       }
     }
   }
