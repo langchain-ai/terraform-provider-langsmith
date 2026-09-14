@@ -1025,7 +1025,7 @@ var (
 		Optional:    true,
 		Attributes: map[string]schema.Attribute{
 			"providers": schema.MapNestedAttribute{
-				Description: "The direct gateway providers and models that are allowed, keyed by provider name. Providers not listed are denied. The special custom provider controls saved model configurations: access all allows every configuration, while access selected uses model configuration names in allowed_models.",
+				Description: "The direct gateway providers and models that are allowed, keyed by provider name. Providers not listed are denied. The special custom provider controls saved model configurations: access all allows every configuration, while access selected uses model configuration names in allowed_models. The Gateway API key must belong to the same workspace as the model configuration for the configuration to be usable.",
 				Required:    true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
