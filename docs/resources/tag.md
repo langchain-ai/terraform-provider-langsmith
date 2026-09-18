@@ -3,17 +3,18 @@
 page_title: "langsmith_tag Resource - langsmith"
 subcategory: ""
 description: |-
-  Convenience resource that manages one workspace-scoped LangSmith tag key and one value. Tagging resources remain separate. This resource owns the key; deleting it can also delete other values attached to that key outside Terraform. Import with <tag_key_id>/<tag_value_id>.
+  Convenience resource that manages one workspace-scoped LangSmith tag key and one value. Tagging resources remain separate. This resource owns the key; deleting it can also delete other values attached to that key outside Terraform. Import with <tag_key_id>/<tag_value_id> or <workspace_id>/<tag_key_id>/<tag_value_id>.
 ---
 
 # langsmith_tag (Resource)
 
-Convenience resource that manages one workspace-scoped LangSmith tag key and one value. Tagging resources remain separate. This resource owns the key; deleting it can also delete other values attached to that key outside Terraform. Import with `<tag_key_id>/<tag_value_id>`.
+Convenience resource that manages one workspace-scoped LangSmith tag key and one value. Tagging resources remain separate. This resource owns the key; deleting it can also delete other values attached to that key outside Terraform. Import with `<tag_key_id>/<tag_value_id>` or `<workspace_id>/<tag_key_id>/<tag_value_id>`.
 
 ## Example Usage
 
 ```terraform
 resource "langsmith_tag" "production" {
+  workspace_id      = "00000000-0000-0000-0000-000000000000"
   key               = "Environment"
   value             = "production"
   key_description   = "Deployment environment"
@@ -33,6 +34,7 @@ resource "langsmith_tag" "production" {
 
 - `key_description` (String) Optional tag key description.
 - `value_description` (String) Optional tag value description.
+- `workspace_id` (String) LangSmith workspace (tenant) ID that owns this tag. When unset, the resource uses the workspace configured on the provider block.
 
 ### Read-Only
 

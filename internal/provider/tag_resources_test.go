@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/langchain-ai/langsmith-go"
 	"github.com/langchain-ai/langsmith-go/option"
 )
@@ -141,6 +146,9 @@ func TestTaggingResourceLifecycleRequests(t *testing.T) {
 
 func TestTagResourceConvenienceLifecycle(t *testing.T) {
 	resource := newTagResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if got := req.Header.Get("X-Tenant-Id"); got != "resource-workspace" {
+			t.Fatalf("X-Tenant-Id = %q", got)
+		}
 		switch {
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/workspaces/current/tag-keys":
 			var payload tagKeyPayload
@@ -165,18 +173,18 @@ func TestTagResourceConvenienceLifecycle(t *testing.T) {
 		}
 	}))
 
-	created, err := resource.createTag(context.Background(), tagResourceModel{Key: types.StringValue("Environment"), Value: types.StringValue("production")})
-	if err != nil || created.TagKeyID.ValueString() != "key-id" || created.TagValueID.ValueString() != "value-id" {
+	created, err := resource.createTag(context.Background(), tagResourceModel{WorkspaceID: types.StringValue("resource-workspace"), Key: types.StringValue("Environment"), Value: types.StringValue("production")})
+	if err != nil || created.WorkspaceID.ValueString() != "resource-workspace" || created.TagKeyID.ValueString() != "key-id" || created.TagValueID.ValueString() != "value-id" {
 		t.Fatalf("createTag() = %#v, %v", created, err)
 	}
-	if _, err := resource.readTag(context.Background(), "key-id", "value-id"); err != nil {
+	if _, err := resource.readTag(context.Background(), "key-id", "value-id", types.StringValue("resource-workspace")); err != nil {
 		t.Fatalf("readTag() error = %v", err)
 	}
-	updated, err := resource.updateTag(context.Background(), "key-id", "value-id", tagResourceModel{Key: types.StringValue("Stage"), Value: types.StringValue("staging")})
-	if err != nil || updated.Key.ValueString() != "Stage" || updated.Value.ValueString() != "staging" {
+	updated, err := resource.updateTag(context.Background(), "key-id", "value-id", tagResourceModel{WorkspaceID: types.StringValue("resource-workspace"), Key: types.StringValue("Stage"), Value: types.StringValue("staging")})
+	if err != nil || updated.WorkspaceID.ValueString() != "resource-workspace" || updated.Key.ValueString() != "Stage" || updated.Value.ValueString() != "staging" {
 		t.Fatalf("updateTag() = %#v, %v", updated, err)
 	}
-	if err := (&TagKeyResource{client: resource.client}).deleteTagKey(context.Background(), "key-id"); err != nil {
+	if err := (&TagKeyResource{client: resource.client}).deleteTagKey(context.Background(), "key-id", types.StringValue("resource-workspace")); err != nil {
 		t.Fatalf("deleteTag() error = %v", err)
 	}
 }
@@ -185,6 +193,9 @@ func TestTagResourceRefreshRemovesSurvivingKeyWhenValueIsMissing(t *testing.T) {
 	requests := []string{}
 	resource := newTagResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		requests = append(requests, req.Method+" "+req.URL.Path)
+		if got := req.Header.Get("X-Tenant-Id"); got != "resource-workspace" {
+			t.Fatalf("X-Tenant-Id = %q", got)
+		}
 		switch {
 		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/workspaces/current/tag-keys/key-id":
 			writeJSON(t, w, tagKeyAPI{ID: "key-id", Key: "Environment"})
@@ -197,7 +208,7 @@ func TestTagResourceRefreshRemovesSurvivingKeyWhenValueIsMissing(t *testing.T) {
 		}
 	}))
 
-	_, remove, err := resource.readTagForRefresh(context.Background(), "key-id", "value-id")
+	_, remove, err := resource.readTagForRefresh(context.Background(), "key-id", "value-id", types.StringValue("resource-workspace"))
 	if err != nil || !remove {
 		t.Fatalf("readTagForRefresh() remove = %t, err = %v", remove, err)
 	}
@@ -213,6 +224,111 @@ func TestTagResourceRefreshRemovesSurvivingKeyWhenValueIsMissing(t *testing.T) {
 		if requests[i] != want[i] {
 			t.Fatalf("requests = %#v, want %#v", requests, want)
 		}
+	}
+}
+
+func TestTagResourceWorkspaceLifecycle(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, workspace, want string
+	}{
+		{name: "provider default", want: "provider-workspace"},
+		{name: "resource override", workspace: "resource-workspace", want: "resource-workspace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			client := newTagTestClientWithOptions(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				requests++
+				if got := req.Header.Get("X-Tenant-Id"); got != tc.want {
+					t.Fatalf("X-Tenant-Id = %q, want %q", got, tc.want)
+				}
+				switch req.Method {
+				case http.MethodGet:
+					if strings.HasSuffix(req.URL.Path, "/tag-keys/key-id") {
+						writeJSON(t, w, tagKeyAPI{ID: "key-id", Key: "Environment"})
+					} else {
+						writeJSON(t, w, tagValueAPI{ID: "value-id", TagKeyID: "key-id", Value: "production"})
+					}
+				case http.MethodDelete:
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+				}
+			}), option.WithTenantID("provider-workspace"))
+			r := &TagResource{client: client}
+			state := tagResourceModel{ID: types.StringValue("value-id"), WorkspaceID: types.StringNull(), TagKeyID: types.StringValue("key-id"), TagValueID: types.StringValue("value-id"), Key: types.StringValue("stale"), Value: types.StringValue("stale")}
+			if tc.workspace != "" {
+				state.WorkspaceID = types.StringValue(tc.workspace)
+			}
+			schema := tagResourceSchema(t, r)
+			readState := stateForTag(t, schema, state)
+			readResp := resource.ReadResponse{State: readState}
+			r.Read(ctx, resource.ReadRequest{State: readState}, &readResp)
+			var refreshed tagResourceModel
+			readResp.Diagnostics.Append(readResp.State.Get(ctx, &refreshed)...)
+			if readResp.Diagnostics.HasError() || !refreshed.WorkspaceID.Equal(state.WorkspaceID) || refreshed.Key.ValueString() != "Environment" {
+				t.Fatalf("Read() state = %#v, diagnostics = %v", refreshed, readResp.Diagnostics)
+			}
+			deleteResp := resource.DeleteResponse{State: readResp.State}
+			r.Delete(ctx, resource.DeleteRequest{State: readResp.State}, &deleteResp)
+			if deleteResp.Diagnostics.HasError() || requests != 3 {
+				t.Fatalf("Delete() requests = %d, diagnostics = %v", requests, deleteResp.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestTagResourceCreateRollbackUsesWorkspace(t *testing.T) {
+	requests := []string{}
+	resource := newTagResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests = append(requests, req.Method+" "+req.URL.Path)
+		if got := req.Header.Get("X-Tenant-Id"); got != "resource-workspace" {
+			t.Fatalf("X-Tenant-Id = %q", got)
+		}
+		switch {
+		case req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/tag-keys"):
+			writeJSON(t, w, tagKeyAPI{ID: "key-id", Key: "Environment"})
+		case req.Method == http.MethodPost:
+			http.Error(w, "failed", http.StatusBadRequest)
+		case req.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	_, err := resource.createTag(context.Background(), tagResourceModel{WorkspaceID: types.StringValue("resource-workspace"), Key: types.StringValue("Environment"), Value: types.StringValue("production")})
+	if err == nil || len(requests) != 3 || !strings.HasSuffix(requests[2], "/tag-keys/key-id") {
+		t.Fatalf("createTag() requests = %#v, err = %v", requests, err)
+	}
+}
+
+func TestTagResourceImports(t *testing.T) {
+	ctx := context.Background()
+	r := &TagResource{}
+	schema := tagResourceSchema(t, r)
+	for _, tc := range []struct {
+		id, workspace, key, value string
+		valid                     bool
+	}{
+		{id: "key-id/value-id", key: "key-id", value: "value-id", valid: true},
+		{id: "workspace-id/key-id/value-id", workspace: "workspace-id", key: "key-id", value: "value-id", valid: true},
+		{id: "key-id"}, {id: "/value-id"}, {id: "key-id/"}, {id: "workspace-id//value-id"}, {id: "workspace-id/key-id/"}, {id: "too/many/id/parts"},
+	} {
+		t.Run(strings.ReplaceAll(tc.id, "/", "_"), func(t *testing.T) {
+			resp := resource.ImportStateResponse{State: tfsdk.State{Schema: schema.Schema, Raw: tftypes.NewValue(schema.Schema.Type().TerraformType(ctx), nil)}}
+			r.ImportState(ctx, resource.ImportStateRequest{ID: tc.id}, &resp)
+			if !tc.valid {
+				if !resp.Diagnostics.HasError() {
+					t.Fatalf("ImportState(%q) diagnostics = %v", tc.id, resp.Diagnostics)
+				}
+				return
+			}
+			var workspace, key, value types.String
+			resp.Diagnostics.Append(resp.State.GetAttribute(ctx, path.Root("workspace_id"), &workspace)...)
+			resp.Diagnostics.Append(resp.State.GetAttribute(ctx, path.Root("tag_key_id"), &key)...)
+			resp.Diagnostics.Append(resp.State.GetAttribute(ctx, path.Root("tag_value_id"), &value)...)
+			if resp.Diagnostics.HasError() || workspace.ValueString() != tc.workspace || key.ValueString() != tc.key || value.ValueString() != tc.value {
+				t.Fatalf("ImportState(%q) = workspace %q, key %q, value %q, diagnostics %v", tc.id, workspace.ValueString(), key.ValueString(), value.ValueString(), resp.Diagnostics)
+			}
+		})
 	}
 }
 
@@ -261,10 +377,33 @@ func newTagResourceWithServer(t *testing.T, handler http.Handler) *TagResource {
 }
 
 func newTagTestClient(t *testing.T, handler http.Handler) *langsmith.Client {
+	return newTagTestClientWithOptions(t, handler)
+}
+
+func newTagTestClientWithOptions(t *testing.T, handler http.Handler, opts ...option.RequestOption) *langsmith.Client {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	return langsmith.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("test-key"))
+	return langsmith.NewClient(append([]option.RequestOption{option.WithBaseURL(server.URL), option.WithAPIKey("test-key")}, opts...)...)
+}
+
+func tagResourceSchema(t *testing.T, r *TagResource) resource.SchemaResponse {
+	t.Helper()
+	var resp resource.SchemaResponse
+	r.Schema(context.Background(), resource.SchemaRequest{}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Schema() diagnostics = %v", resp.Diagnostics)
+	}
+	return resp
+}
+
+func stateForTag(t *testing.T, schema resource.SchemaResponse, model tagResourceModel) tfsdk.State {
+	t.Helper()
+	state := tfsdk.State{Schema: schema.Schema}
+	if diagnostics := state.Set(context.Background(), &model); diagnostics.HasError() {
+		t.Fatalf("State.Set() diagnostics = %v", diagnostics)
+	}
+	return state
 }
 
 func decodeJSON(t *testing.T, req *http.Request, value any) {

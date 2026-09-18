@@ -139,9 +139,9 @@ func (r *TagKeyResource) ImportState(ctx context.Context, req resource.ImportSta
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 }
 
-func (r *TagKeyResource) createTagKey(ctx context.Context, plan tagKeyResourceModel) (tagKeyResourceModel, error) {
+func (r *TagKeyResource) createTagKey(ctx context.Context, plan tagKeyResourceModel, workspaceID ...types.String) (tagKeyResourceModel, error) {
 	var result tagKeyAPI
-	if err := r.client.Post(ctx, tagKeysPath, tagKeyPayloadFromModel(plan), &result, option.WithMaxRetries(0)); err != nil {
+	if err := r.client.Post(ctx, tagKeysPath, tagKeyPayloadFromModel(plan), &result, append(workspaceOpts(tagWorkspaceID(workspaceID)), option.WithMaxRetries(0))...); err != nil {
 		return tagKeyResourceModel{}, err
 	}
 	if result.ID == "" {
@@ -150,24 +150,24 @@ func (r *TagKeyResource) createTagKey(ctx context.Context, plan tagKeyResourceMo
 	return tagKeyModelFromAPI(result), nil
 }
 
-func (r *TagKeyResource) readTagKey(ctx context.Context, id string) (tagKeyResourceModel, error) {
+func (r *TagKeyResource) readTagKey(ctx context.Context, id string, workspaceID ...types.String) (tagKeyResourceModel, error) {
 	var result tagKeyAPI
-	if err := r.client.Get(ctx, tagKeyPath(id), nil, &result); err != nil {
+	if err := r.client.Get(ctx, tagKeyPath(id), nil, &result, workspaceOpts(tagWorkspaceID(workspaceID))...); err != nil {
 		return tagKeyResourceModel{}, err
 	}
 	return tagKeyModelFromAPI(result), nil
 }
 
-func (r *TagKeyResource) updateTagKey(ctx context.Context, id string, plan tagKeyResourceModel) (tagKeyResourceModel, error) {
+func (r *TagKeyResource) updateTagKey(ctx context.Context, id string, plan tagKeyResourceModel, workspaceID ...types.String) (tagKeyResourceModel, error) {
 	var result tagKeyAPI
-	if err := r.client.Patch(ctx, tagKeyPath(id), tagKeyPayloadFromModel(plan), &result); err != nil {
+	if err := r.client.Patch(ctx, tagKeyPath(id), tagKeyPayloadFromModel(plan), &result, workspaceOpts(tagWorkspaceID(workspaceID))...); err != nil {
 		return tagKeyResourceModel{}, err
 	}
 	return tagKeyModelFromAPI(result), nil
 }
 
-func (r *TagKeyResource) deleteTagKey(ctx context.Context, id string) error {
-	if err := r.client.Delete(ctx, tagKeyPath(id), nil, nil); err != nil && !isLangSmithNotFound(err) {
+func (r *TagKeyResource) deleteTagKey(ctx context.Context, id string, workspaceID ...types.String) error {
+	if err := r.client.Delete(ctx, tagKeyPath(id), nil, nil, workspaceOpts(tagWorkspaceID(workspaceID))...); err != nil && !isLangSmithNotFound(err) {
 		return err
 	}
 	return nil

@@ -144,9 +144,9 @@ func (r *TagValueResource) ImportState(ctx context.Context, req resource.ImportS
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), parts[1])...)
 }
 
-func (r *TagValueResource) createTagValue(ctx context.Context, plan tagValueResourceModel) (tagValueResourceModel, error) {
+func (r *TagValueResource) createTagValue(ctx context.Context, plan tagValueResourceModel, workspaceID ...types.String) (tagValueResourceModel, error) {
 	var result tagValueAPI
-	if err := r.client.Post(ctx, tagValuesPath(plan.TagKeyID.ValueString()), tagValuePayloadFromModel(plan), &result, option.WithMaxRetries(0)); err != nil {
+	if err := r.client.Post(ctx, tagValuesPath(plan.TagKeyID.ValueString()), tagValuePayloadFromModel(plan), &result, append(workspaceOpts(tagWorkspaceID(workspaceID)), option.WithMaxRetries(0))...); err != nil {
 		return tagValueResourceModel{}, err
 	}
 	if result.ID == "" {
@@ -155,24 +155,24 @@ func (r *TagValueResource) createTagValue(ctx context.Context, plan tagValueReso
 	return tagValueModelFromAPI(result), nil
 }
 
-func (r *TagValueResource) readTagValue(ctx context.Context, keyID, valueID string) (tagValueResourceModel, error) {
+func (r *TagValueResource) readTagValue(ctx context.Context, keyID, valueID string, workspaceID ...types.String) (tagValueResourceModel, error) {
 	var result tagValueAPI
-	if err := r.client.Get(ctx, tagValuePath(keyID, valueID), nil, &result); err != nil {
+	if err := r.client.Get(ctx, tagValuePath(keyID, valueID), nil, &result, workspaceOpts(tagWorkspaceID(workspaceID))...); err != nil {
 		return tagValueResourceModel{}, err
 	}
 	return tagValueModelFromAPI(result), nil
 }
 
-func (r *TagValueResource) updateTagValue(ctx context.Context, keyID, valueID string, plan tagValueResourceModel) (tagValueResourceModel, error) {
+func (r *TagValueResource) updateTagValue(ctx context.Context, keyID, valueID string, plan tagValueResourceModel, workspaceID ...types.String) (tagValueResourceModel, error) {
 	var result tagValueAPI
-	if err := r.client.Patch(ctx, tagValuePath(keyID, valueID), tagValuePayloadFromModel(plan), &result); err != nil {
+	if err := r.client.Patch(ctx, tagValuePath(keyID, valueID), tagValuePayloadFromModel(plan), &result, workspaceOpts(tagWorkspaceID(workspaceID))...); err != nil {
 		return tagValueResourceModel{}, err
 	}
 	return tagValueModelFromAPI(result), nil
 }
 
-func (r *TagValueResource) deleteTagValue(ctx context.Context, keyID, valueID string) error {
-	if err := r.client.Delete(ctx, tagValuePath(keyID, valueID), nil, nil); err != nil && !isLangSmithNotFound(err) {
+func (r *TagValueResource) deleteTagValue(ctx context.Context, keyID, valueID string, workspaceID ...types.String) error {
+	if err := r.client.Delete(ctx, tagValuePath(keyID, valueID), nil, nil, workspaceOpts(tagWorkspaceID(workspaceID))...); err != nil && !isLangSmithNotFound(err) {
 		return err
 	}
 	return nil
