@@ -28,6 +28,7 @@ type TagResource struct{ client *langsmith.Client }
 
 type tagResourceModel struct {
 	ID               types.String `tfsdk:"id"`
+	WorkspaceID      types.String `tfsdk:"workspace_id"`
 	TagKeyID         types.String `tfsdk:"tag_key_id"`
 	TagValueID       types.String `tfsdk:"tag_value_id"`
 	Key              types.String `tfsdk:"key"`
@@ -42,8 +43,9 @@ func (r *TagResource) Metadata(ctx context.Context, req resource.MetadataRequest
 
 func (r *TagResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Convenience resource that manages one workspace-scoped LangSmith tag key and one value. Tagging resources remain separate. This resource owns the key; deleting it can also delete other values attached to that key outside Terraform. Import with `<tag_key_id>/<tag_value_id>`.",
+		MarkdownDescription: "Convenience resource that manages one workspace-scoped LangSmith tag key and one value. Tagging resources remain separate. This resource owns the key; deleting it can also delete other values attached to that key outside Terraform. Import with `<tag_key_id>/<tag_value_id>` or `<workspace_id>/<tag_key_id>/<tag_value_id>`.",
 		Attributes: map[string]schema.Attribute{
+			"workspace_id":      schema.StringAttribute{Optional: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, MarkdownDescription: "LangSmith workspace (tenant) ID that owns this tag. When unset, the resource uses the workspace configured on the provider block."},
 			"id":                schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, MarkdownDescription: "Terraform resource ID; equal to `tag_value_id`."},
 			"tag_key_id":        schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, MarkdownDescription: "Created tag key ID."},
 			"tag_value_id":      schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, MarkdownDescription: "Created tag value ID."},
@@ -87,7 +89,7 @@ func (r *TagResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	model, remove, err := r.readTagForRefresh(ctx, state.TagKeyID.ValueString(), state.TagValueID.ValueString())
+	model, remove, err := r.readTagForRefresh(ctx, state.TagKeyID.ValueString(), state.TagValueID.ValueString(), state.WorkspaceID)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to Read LangSmith Tag", err.Error())
 		return
@@ -120,16 +122,20 @@ func (r *TagResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := (&TagKeyResource{client: r.client}).deleteTagKey(ctx, state.TagKeyID.ValueString()); err != nil {
+	if err := (&TagKeyResource{client: r.client}).deleteTagKey(ctx, state.TagKeyID.ValueString(), state.WorkspaceID); err != nil {
 		resp.Diagnostics.AddError("Unable to Delete LangSmith Tag", err.Error())
 	}
 }
 
 func (r *TagResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	parts := strings.Split(req.ID, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		resp.Diagnostics.AddError("Invalid Tag Import ID", "Use <tag_key_id>/<tag_value_id>.")
+	if (len(parts) != 2 && len(parts) != 3) || parts[0] == "" || parts[1] == "" || (len(parts) == 3 && parts[2] == "") {
+		resp.Diagnostics.AddError("Invalid Tag Import ID", "Use <tag_key_id>/<tag_value_id> or <workspace_id>/<tag_key_id>/<tag_value_id>.")
 		return
+	}
+	if len(parts) == 3 {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("workspace_id"), parts[0])...)
+		parts = parts[1:]
 	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), parts[1])...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("tag_key_id"), parts[0])...)
@@ -138,68 +144,75 @@ func (r *TagResource) ImportState(ctx context.Context, req resource.ImportStateR
 
 func (r *TagResource) createTag(ctx context.Context, plan tagResourceModel) (tagResourceModel, error) {
 	keyResource := &TagKeyResource{client: r.client}
-	key, err := keyResource.createTagKey(ctx, tagKeyResourceModel{Key: plan.Key, Description: plan.KeyDescription})
+	key, err := keyResource.createTagKey(ctx, tagKeyResourceModel{Key: plan.Key, Description: plan.KeyDescription}, plan.WorkspaceID)
 	if err != nil {
 		return tagResourceModel{}, err
 	}
-	value, err := (&TagValueResource{client: r.client}).createTagValue(ctx, tagValueResourceModel{TagKeyID: key.ID, Value: plan.Value, Description: plan.ValueDescription})
+	value, err := (&TagValueResource{client: r.client}).createTagValue(ctx, tagValueResourceModel{TagKeyID: key.ID, Value: plan.Value, Description: plan.ValueDescription}, plan.WorkspaceID)
 	if err != nil {
-		if cleanupErr := keyResource.deleteTagKey(ctx, key.ID.ValueString()); cleanupErr != nil {
+		if cleanupErr := keyResource.deleteTagKey(ctx, key.ID.ValueString(), plan.WorkspaceID); cleanupErr != nil {
 			return tagResourceModel{}, fmt.Errorf("create tag value: %w (cleanup tag key: %v)", err, cleanupErr)
 		}
 		return tagResourceModel{}, err
 	}
-	return tagModelFromParts(key, value), nil
+	return tagModelFromParts(key, value, plan.WorkspaceID), nil
 }
 
-func (r *TagResource) readTag(ctx context.Context, keyID, valueID string) (tagResourceModel, error) {
-	key, err := (&TagKeyResource{client: r.client}).readTagKey(ctx, keyID)
+func (r *TagResource) readTag(ctx context.Context, keyID, valueID string, workspaceID ...types.String) (tagResourceModel, error) {
+	key, err := (&TagKeyResource{client: r.client}).readTagKey(ctx, keyID, workspaceID...)
 	if err != nil {
 		return tagResourceModel{}, err
 	}
-	value, err := (&TagValueResource{client: r.client}).readTagValue(ctx, keyID, valueID)
+	value, err := (&TagValueResource{client: r.client}).readTagValue(ctx, keyID, valueID, workspaceID...)
 	if err != nil {
 		return tagResourceModel{}, err
 	}
-	return tagModelFromParts(key, value), nil
+	return tagModelFromParts(key, value, tagWorkspaceID(workspaceID)), nil
 }
 
-func (r *TagResource) readTagForRefresh(ctx context.Context, keyID, valueID string) (tagResourceModel, bool, error) {
-	key, err := (&TagKeyResource{client: r.client}).readTagKey(ctx, keyID)
+func (r *TagResource) readTagForRefresh(ctx context.Context, keyID, valueID string, workspaceID ...types.String) (tagResourceModel, bool, error) {
+	key, err := (&TagKeyResource{client: r.client}).readTagKey(ctx, keyID, workspaceID...)
 	if err != nil {
 		if isLangSmithNotFound(err) {
 			return tagResourceModel{}, true, nil
 		}
 		return tagResourceModel{}, false, err
 	}
-	value, err := (&TagValueResource{client: r.client}).readTagValue(ctx, keyID, valueID)
+	value, err := (&TagValueResource{client: r.client}).readTagValue(ctx, keyID, valueID, workspaceID...)
 	if err != nil {
 		if !isLangSmithNotFound(err) {
 			return tagResourceModel{}, false, err
 		}
-		if cleanupErr := (&TagKeyResource{client: r.client}).deleteTagKey(ctx, keyID); cleanupErr != nil {
+		if cleanupErr := (&TagKeyResource{client: r.client}).deleteTagKey(ctx, keyID, workspaceID...); cleanupErr != nil {
 			return tagResourceModel{}, false, fmt.Errorf("tag value no longer exists; delete surviving tag key before recreation: %w", cleanupErr)
 		}
 		return tagResourceModel{}, true, nil
 	}
-	return tagModelFromParts(key, value), false, nil
+	return tagModelFromParts(key, value, tagWorkspaceID(workspaceID)), false, nil
 }
 
 func (r *TagResource) updateTag(ctx context.Context, keyID, valueID string, plan tagResourceModel) (tagResourceModel, error) {
-	key, err := (&TagKeyResource{client: r.client}).updateTagKey(ctx, keyID, tagKeyResourceModel{Key: plan.Key, Description: plan.KeyDescription})
+	key, err := (&TagKeyResource{client: r.client}).updateTagKey(ctx, keyID, tagKeyResourceModel{Key: plan.Key, Description: plan.KeyDescription}, plan.WorkspaceID)
 	if err != nil {
 		return tagResourceModel{}, err
 	}
-	value, err := (&TagValueResource{client: r.client}).updateTagValue(ctx, keyID, valueID, tagValueResourceModel{Value: plan.Value, Description: plan.ValueDescription})
+	value, err := (&TagValueResource{client: r.client}).updateTagValue(ctx, keyID, valueID, tagValueResourceModel{Value: plan.Value, Description: plan.ValueDescription}, plan.WorkspaceID)
 	if err != nil {
 		return tagResourceModel{}, err
 	}
-	return tagModelFromParts(key, value), nil
+	return tagModelFromParts(key, value, plan.WorkspaceID), nil
 }
 
-func tagModelFromParts(key tagKeyResourceModel, value tagValueResourceModel) tagResourceModel {
+func tagModelFromParts(key tagKeyResourceModel, value tagValueResourceModel, workspaceID types.String) tagResourceModel {
 	return tagResourceModel{
-		ID: value.ID, TagKeyID: key.ID, TagValueID: value.ID, Key: key.Key, Value: value.Value,
+		ID: value.ID, WorkspaceID: workspaceID, TagKeyID: key.ID, TagValueID: value.ID, Key: key.Key, Value: value.Value,
 		KeyDescription: key.Description, ValueDescription: value.Description,
 	}
+}
+
+func tagWorkspaceID(workspaceID []types.String) types.String {
+	if len(workspaceID) == 0 {
+		return types.StringNull()
+	}
+	return workspaceID[0]
 }

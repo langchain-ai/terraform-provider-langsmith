@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -29,6 +30,7 @@ type TagKeyResource struct{ client *langsmith.Client }
 
 type tagKeyResourceModel struct {
 	ID          types.String `tfsdk:"id"`
+	WorkspaceID types.String `tfsdk:"workspace_id"`
 	Key         types.String `tfsdk:"key"`
 	Description types.String `tfsdk:"description"`
 	CreatedAt   types.String `tfsdk:"created_at"`
@@ -54,13 +56,14 @@ func (r *TagKeyResource) Metadata(ctx context.Context, req resource.MetadataRequ
 
 func (r *TagKeyResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages a workspace-scoped LangSmith resource-tag key.",
+		MarkdownDescription: "Manages a workspace-scoped LangSmith resource-tag key. Import with `<tag_key_id>` or `<workspace_id>/<tag_key_id>`.",
 		Attributes: map[string]schema.Attribute{
-			"id":          schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, MarkdownDescription: "Tag key ID."},
-			"key":         schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}, MarkdownDescription: "Tag key name, unique within the workspace."},
-			"description": schema.StringAttribute{Optional: true, MarkdownDescription: "Optional tag key description."},
-			"created_at":  schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, MarkdownDescription: "Creation timestamp."},
-			"updated_at":  schema.StringAttribute{Computed: true, MarkdownDescription: "Last update timestamp."},
+			"id":           schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, MarkdownDescription: "Tag key ID."},
+			"workspace_id": schema.StringAttribute{Optional: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, MarkdownDescription: "LangSmith workspace (tenant) ID that owns this tag key. When unset, the resource uses the workspace configured on the provider block."},
+			"key":          schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}, MarkdownDescription: "Tag key name, unique within the workspace."},
+			"description":  schema.StringAttribute{Optional: true, MarkdownDescription: "Optional tag key description."},
+			"created_at":   schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, MarkdownDescription: "Creation timestamp."},
+			"updated_at":   schema.StringAttribute{Computed: true, MarkdownDescription: "Last update timestamp."},
 		},
 	}
 }
@@ -83,7 +86,7 @@ func (r *TagKeyResource) Create(ctx context.Context, req resource.CreateRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	model, err := r.createTagKey(ctx, plan)
+	model, err := r.createTagKey(ctx, plan, plan.WorkspaceID)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to Create LangSmith Tag Key", err.Error())
 		return
@@ -97,7 +100,7 @@ func (r *TagKeyResource) Read(ctx context.Context, req resource.ReadRequest, res
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	model, err := r.readTagKey(ctx, state.ID.ValueString())
+	model, err := r.readTagKey(ctx, state.ID.ValueString(), state.WorkspaceID)
 	if err != nil {
 		if isLangSmithNotFound(err) {
 			resp.State.RemoveResource(ctx)
@@ -116,7 +119,7 @@ func (r *TagKeyResource) Update(ctx context.Context, req resource.UpdateRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	model, err := r.updateTagKey(ctx, state.ID.ValueString(), plan)
+	model, err := r.updateTagKey(ctx, state.ID.ValueString(), plan, plan.WorkspaceID)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to Update LangSmith Tag Key", err.Error())
 		return
@@ -130,44 +133,53 @@ func (r *TagKeyResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.deleteTagKey(ctx, state.ID.ValueString()); err != nil {
+	if err := r.deleteTagKey(ctx, state.ID.ValueString(), state.WorkspaceID); err != nil {
 		resp.Diagnostics.AddError("Unable to Delete LangSmith Tag Key", err.Error())
 	}
 }
 
 func (r *TagKeyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	parts := strings.Split(req.ID, "/")
+	if (len(parts) != 1 && len(parts) != 2) || parts[0] == "" || (len(parts) == 2 && parts[1] == "") {
+		resp.Diagnostics.AddError("Invalid Tag Key Import ID", "Use <tag_key_id> or <workspace_id>/<tag_key_id>.")
+		return
+	}
+	if len(parts) == 2 {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("workspace_id"), parts[0])...)
+		parts = parts[1:]
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), parts[0])...)
 }
 
-func (r *TagKeyResource) createTagKey(ctx context.Context, plan tagKeyResourceModel) (tagKeyResourceModel, error) {
+func (r *TagKeyResource) createTagKey(ctx context.Context, plan tagKeyResourceModel, workspaceID ...types.String) (tagKeyResourceModel, error) {
 	var result tagKeyAPI
-	if err := r.client.Post(ctx, tagKeysPath, tagKeyPayloadFromModel(plan), &result, option.WithMaxRetries(0)); err != nil {
+	if err := r.client.Post(ctx, tagKeysPath, tagKeyPayloadFromModel(plan), &result, append(workspaceOpts(tagWorkspaceID(workspaceID)), option.WithMaxRetries(0))...); err != nil {
 		return tagKeyResourceModel{}, err
 	}
 	if result.ID == "" {
 		return tagKeyResourceModel{}, errors.New("LangSmith did not return a tag key ID")
 	}
-	return tagKeyModelFromAPI(result), nil
+	return tagKeyModelFromAPI(result, tagWorkspaceID(workspaceID)), nil
 }
 
-func (r *TagKeyResource) readTagKey(ctx context.Context, id string) (tagKeyResourceModel, error) {
+func (r *TagKeyResource) readTagKey(ctx context.Context, id string, workspaceID ...types.String) (tagKeyResourceModel, error) {
 	var result tagKeyAPI
-	if err := r.client.Get(ctx, tagKeyPath(id), nil, &result); err != nil {
+	if err := r.client.Get(ctx, tagKeyPath(id), nil, &result, workspaceOpts(tagWorkspaceID(workspaceID))...); err != nil {
 		return tagKeyResourceModel{}, err
 	}
-	return tagKeyModelFromAPI(result), nil
+	return tagKeyModelFromAPI(result, tagWorkspaceID(workspaceID)), nil
 }
 
-func (r *TagKeyResource) updateTagKey(ctx context.Context, id string, plan tagKeyResourceModel) (tagKeyResourceModel, error) {
+func (r *TagKeyResource) updateTagKey(ctx context.Context, id string, plan tagKeyResourceModel, workspaceID ...types.String) (tagKeyResourceModel, error) {
 	var result tagKeyAPI
-	if err := r.client.Patch(ctx, tagKeyPath(id), tagKeyPayloadFromModel(plan), &result); err != nil {
+	if err := r.client.Patch(ctx, tagKeyPath(id), tagKeyPayloadFromModel(plan), &result, workspaceOpts(tagWorkspaceID(workspaceID))...); err != nil {
 		return tagKeyResourceModel{}, err
 	}
-	return tagKeyModelFromAPI(result), nil
+	return tagKeyModelFromAPI(result, tagWorkspaceID(workspaceID)), nil
 }
 
-func (r *TagKeyResource) deleteTagKey(ctx context.Context, id string) error {
-	if err := r.client.Delete(ctx, tagKeyPath(id), nil, nil); err != nil && !isLangSmithNotFound(err) {
+func (r *TagKeyResource) deleteTagKey(ctx context.Context, id string, workspaceID ...types.String) error {
+	if err := r.client.Delete(ctx, tagKeyPath(id), nil, nil, workspaceOpts(tagWorkspaceID(workspaceID))...); err != nil && !isLangSmithNotFound(err) {
 		return err
 	}
 	return nil
@@ -179,9 +191,9 @@ func tagKeyPayloadFromModel(m tagKeyResourceModel) tagKeyPayload {
 	return tagKeyPayload{Key: m.Key.ValueString(), Description: optionalStringPointer(m.Description)}
 }
 
-func tagKeyModelFromAPI(api tagKeyAPI) tagKeyResourceModel {
+func tagKeyModelFromAPI(api tagKeyAPI, workspaceID ...types.String) tagKeyResourceModel {
 	return tagKeyResourceModel{
-		ID: types.StringValue(api.ID), Key: types.StringValue(api.Key), Description: nullableStringPointer(api.Description),
+		ID: types.StringValue(api.ID), WorkspaceID: tagWorkspaceID(workspaceID), Key: types.StringValue(api.Key), Description: nullableStringPointer(api.Description),
 		CreatedAt: nullableString(api.CreatedAt), UpdatedAt: nullableString(api.UpdatedAt),
 	}
 }

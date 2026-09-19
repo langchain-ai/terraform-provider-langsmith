@@ -3,13 +3,13 @@
 page_title: "langsmith_sandbox_registry Resource - langsmith"
 subcategory: ""
 description: |-
-  Manages a LangSmith sandbox container-image registry (workspace-scoped).
+  Manages a LangSmith sandbox container-image registry (workspace-scoped). Import with <name> or <workspace_id>/<name>.
   The registry credentials (username/password) are write-only: the API never returns them, so they are stored in (sensitive) Terraform state and cannot be recovered on import. Use encrypted remote state.
 ---
 
 # langsmith_sandbox_registry (Resource)
 
-Manages a LangSmith sandbox container-image registry (workspace-scoped).
+Manages a LangSmith sandbox container-image registry (workspace-scoped). Import with `<name>` or `<workspace_id>/<name>`.
 
 The registry credentials (`username`/`password`) are write-only: the API never returns them, so they are stored in (sensitive) Terraform state and cannot be recovered on import. Use encrypted remote state.
 
@@ -20,10 +20,11 @@ The registry credentials (`username`/`password`) are write-only: the API never r
 # Credentials are write-only: the API never returns them, so they live in
 # (sensitive) Terraform state — use encrypted remote state.
 resource "langsmith_sandbox_registry" "docker_hub" {
-  name     = "docker-hub"
-  url      = "https://index.docker.io/v1/"
-  username = var.registry_username
-  password = var.registry_password
+  workspace_id = var.workspace_id
+  name         = "docker-hub"
+  url          = "https://index.docker.io/v1/"
+  username     = var.registry_username
+  password     = var.registry_password
 }
 ```
 
@@ -36,6 +37,10 @@ resource "langsmith_sandbox_registry" "docker_hub" {
 - `password` (String, Sensitive) Registry password or token. Write-only; never returned by the API.
 - `url` (String) Registry URL, e.g. `https://index.docker.io/v1/`.
 - `username` (String, Sensitive) Registry username. Write-only; never returned by the API.
+
+### Optional
+
+- `workspace_id` (String) LangSmith workspace (tenant) ID that owns this registry. When unset, the resource uses the workspace configured on the provider block.
 
 ### Read-Only
 
