@@ -3,22 +3,24 @@
 page_title: "langsmith_tagging Resource - langsmith"
 subcategory: ""
 description: |-
-  Tags a LangSmith resource with a workspace-scoped tag value. Changes replace the tagging. Import with <tagging_id>/<tag_value_id>/<resource_type>/<resource_id>.
+  Tags a LangSmith resource with a workspace-scoped tag value. Changes replace the tagging. Import with <tagging_id>/<tag_value_id>/<resource_type>/<resource_id> or <workspace_id>/<tagging_id>/<tag_value_id>/<resource_type>/<resource_id>.
 ---
 
 # langsmith_tagging (Resource)
 
-Tags a LangSmith resource with a workspace-scoped tag value. Changes replace the tagging. Import with `<tagging_id>/<tag_value_id>/<resource_type>/<resource_id>`.
+Tags a LangSmith resource with a workspace-scoped tag value. Changes replace the tagging. Import with `<tagging_id>/<tag_value_id>/<resource_type>/<resource_id>` or `<workspace_id>/<tagging_id>/<tag_value_id>/<resource_type>/<resource_id>`.
 
 ## Example Usage
 
 ```terraform
 resource "langsmith_tag" "production" {
-  key   = "Environment"
-  value = "production"
+  workspace_id = "00000000-0000-0000-0000-000000000000"
+  key          = "Environment"
+  value        = "production"
 }
 
 resource "langsmith_tagging" "production_project" {
+  workspace_id  = langsmith_tag.production.workspace_id
   tag_value_id  = langsmith_tag.production.tag_value_id
   resource_type = "project"
   resource_id   = "00000000-0000-0000-0000-000000000000"
@@ -33,6 +35,10 @@ resource "langsmith_tagging" "production_project" {
 - `resource_id` (String) ID of the resource being tagged.
 - `resource_type` (String) Type of resource being tagged.
 - `tag_value_id` (String) Tag value ID to apply.
+
+### Optional
+
+- `workspace_id` (String) LangSmith workspace (tenant) ID that owns this tagging. When unset, the resource uses the workspace configured on the provider block.
 
 ### Read-Only
 

@@ -5,6 +5,7 @@ variable "deployment_secrets" {
 }
 
 resource "langsmith_deployment" "agent" {
+  workspace_id = "00000000-0000-0000-0000-000000000000"
   name         = "support-agent"
   display_name = "Support Agent"
   source       = "github"

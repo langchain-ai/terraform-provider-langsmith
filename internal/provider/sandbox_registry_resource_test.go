@@ -8,11 +8,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/langchain-ai/langsmith-go"
 	"github.com/langchain-ai/langsmith-go/option"
 )
@@ -70,12 +75,12 @@ func TestSandboxRegistryModelFromAPINullsAbsentFields(t *testing.T) {
 	}
 }
 
-func newSandboxRegistryResourceWithServer(t *testing.T, handler http.Handler) *SandboxRegistryResource {
+func newSandboxRegistryResourceWithServer(t *testing.T, handler http.Handler, opts ...option.RequestOption) *SandboxRegistryResource {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	return &SandboxRegistryResource{
-		client: langsmith.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("test-key")),
+		client: langsmith.NewClient(append([]option.RequestOption{option.WithBaseURL(server.URL), option.WithAPIKey("test-key")}, opts...)...),
 	}
 }
 
@@ -98,6 +103,19 @@ func TestSandboxRegistryResourceSchemaMarksCredentialsSensitive(t *testing.T) {
 		if !attr.IsSensitive() {
 			t.Fatalf("%q must be Sensitive", name)
 		}
+	}
+}
+
+func TestSandboxRegistryResourceSchemaWorkspaceRequiresReplace(t *testing.T) {
+	var resp resource.SchemaResponse
+	NewSandboxRegistryResource().Schema(context.Background(), resource.SchemaRequest{}, &resp)
+	attr, ok := resp.Schema.Attributes["workspace_id"]
+	if !ok || !attr.IsOptional() {
+		t.Fatalf("workspace_id = %#v", attr)
+	}
+	stringAttr, ok := attr.(schema.StringAttribute)
+	if !ok || len(stringAttr.PlanModifiers) != 1 {
+		t.Fatalf("workspace_id attribute = %#v", attr)
 	}
 }
 
@@ -227,6 +245,89 @@ func TestSandboxRegistryResourceDeleteTreatsNotFoundAsSuccess(t *testing.T) {
 	}))
 	if err := res.deleteSandboxRegistry(context.Background(), "docker-hub"); err != nil {
 		t.Fatalf("deleteSandboxRegistry = %v, want nil for 404", err)
+	}
+}
+
+func TestSandboxRegistryResourceWorkspaceLifecycle(t *testing.T) {
+	for _, tc := range []struct {
+		name, workspace, want string
+	}{
+		{name: "provider default", want: "provider-workspace"},
+		{name: "resource override", workspace: "resource-workspace", want: "resource-workspace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			res := newSandboxRegistryResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				requests++
+				if got := req.Header.Get("X-Tenant-Id"); got != tc.want {
+					t.Fatalf("X-Tenant-Id = %q, want %q", got, tc.want)
+				}
+				switch req.Method {
+				case http.MethodPost, http.MethodPatch:
+					var payload sandboxRegistryPayload
+					decodeJSON(t, req, &payload)
+					writeJSON(t, w, sandboxRegistryAPI{ID: "reg-id", Name: payload.Name, URL: payload.URL})
+				case http.MethodGet:
+					writeJSON(t, w, sandboxRegistryAPI{ID: "reg-id", Name: "docker-hub", URL: "https://registry.example.com"})
+				case http.MethodDelete:
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+				}
+			}), option.WithTenantID("provider-workspace"))
+			workspace := types.StringNull()
+			if tc.workspace != "" {
+				workspace = types.StringValue(tc.workspace)
+			}
+			plan := sandboxRegistryResourceModel{WorkspaceID: workspace, Name: types.StringValue("docker-hub"), URL: types.StringValue("https://registry.example.com"), Username: types.StringValue("robot"), Password: types.StringValue("secret")}
+			created, err := res.createSandboxRegistry(context.Background(), plan)
+			if err != nil || !created.WorkspaceID.Equal(workspace) {
+				t.Fatalf("createSandboxRegistry() = %#v, %v", created, err)
+			}
+			read, err := res.readSandboxRegistry(context.Background(), "docker-hub", created, workspace)
+			if err != nil || !read.WorkspaceID.Equal(workspace) {
+				t.Fatalf("readSandboxRegistry() = %#v, %v", read, err)
+			}
+			updated, err := res.updateSandboxRegistry(context.Background(), "docker-hub", plan, workspace)
+			if err != nil || !updated.WorkspaceID.Equal(workspace) {
+				t.Fatalf("updateSandboxRegistry() = %#v, %v", updated, err)
+			}
+			if err := res.deleteSandboxRegistry(context.Background(), "docker-hub", workspace); err != nil || requests != 4 {
+				t.Fatalf("deleteSandboxRegistry() requests = %d, err = %v", requests, err)
+			}
+		})
+	}
+}
+
+func TestSandboxRegistryResourceImports(t *testing.T) {
+	ctx := context.Background()
+	r := &SandboxRegistryResource{}
+	var schemaResp resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+	for _, tc := range []struct {
+		id, workspace, name string
+		valid               bool
+	}{
+		{id: "docker-hub", name: "docker-hub", valid: true},
+		{id: "workspace-id/docker-hub", workspace: "workspace-id", name: "docker-hub", valid: true},
+		{id: ""}, {id: "/docker-hub"}, {id: "workspace-id/"},
+	} {
+		t.Run(strings.ReplaceAll(tc.id, "/", "_"), func(t *testing.T) {
+			resp := resource.ImportStateResponse{State: tfsdk.State{Schema: schemaResp.Schema, Raw: tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil)}}
+			r.ImportState(ctx, resource.ImportStateRequest{ID: tc.id}, &resp)
+			if !tc.valid {
+				if !resp.Diagnostics.HasError() {
+					t.Fatalf("ImportState(%q) diagnostics = %v", tc.id, resp.Diagnostics)
+				}
+				return
+			}
+			var workspace, name types.String
+			resp.Diagnostics.Append(resp.State.GetAttribute(ctx, path.Root("workspace_id"), &workspace)...)
+			resp.Diagnostics.Append(resp.State.GetAttribute(ctx, path.Root("name"), &name)...)
+			if resp.Diagnostics.HasError() || workspace.ValueString() != tc.workspace || name.ValueString() != tc.name {
+				t.Fatalf("ImportState(%q) = workspace %q, name %q, diagnostics %v", tc.id, workspace.ValueString(), name.ValueString(), resp.Diagnostics)
+			}
+		})
 	}
 }
 

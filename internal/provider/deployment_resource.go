@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -24,9 +25,10 @@ import (
 const deploymentsPath = "v2/deployments"
 
 var (
-	_ resource.Resource                = &DeploymentResource{}
-	_ resource.ResourceWithImportState = &DeploymentResource{}
-	_ resource.ResourceWithModifyPlan  = &DeploymentResource{}
+	_ resource.Resource                 = &DeploymentResource{}
+	_ resource.ResourceWithImportState  = &DeploymentResource{}
+	_ resource.ResourceWithModifyPlan   = &DeploymentResource{}
+	_ resource.ResourceWithUpgradeState = &DeploymentResource{}
 )
 
 type DeploymentResource struct {
@@ -47,7 +49,7 @@ type deploymentResourceModel struct {
 	SecretsVersion       types.String                     `tfsdk:"secrets_version"`
 	SecretsHash          types.String                     `tfsdk:"secrets_hash"`
 	SecretReferences     []deploymentSecretReferenceModel `tfsdk:"secret_references"`
-	TenantID             types.String                     `tfsdk:"tenant_id"`
+	WorkspaceID          types.String                     `tfsdk:"workspace_id"`
 	CreatedAt            types.String                     `tfsdk:"created_at"`
 	UpdatedAt            types.String                     `tfsdk:"updated_at"`
 	Status               types.String                     `tfsdk:"status"`
@@ -156,7 +158,8 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 		return schema.StringAttribute{Computed: true, MarkdownDescription: description}
 	}
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.\n\nThe v2 API has one environment map. Terraform separates it into ordinary `environment_variables`, which appear in plans and state, and sensitive write-only `secrets`. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing `secrets` map, move ordinary entries into `environment_variables` without changing the combined keys or values; this records the public values in state without creating a revision.\n\nImport an existing deployment by UUID using the same workspace and LangSmith API URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.",
+		Version:             1,
+		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.\n\nThe v2 API has one environment map. Terraform separates it into ordinary `environment_variables`, which appear in plans and state, and sensitive write-only `secrets`. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing `secrets` map, move ordinary entries into `environment_variables` without changing the combined keys or values; this records the public values in state without creating a revision.\n\nUse `workspace_id` to select a workspace, or omit it to use the provider workspace. The former computed `tenant_id` attribute is now `workspace_id`; existing state is migrated automatically, but configuration references to `.tenant_id` must be updated to `.workspace_id`. Import an existing deployment with `<deployment_id>` using the provider workspace, or `<workspace_id>/<deployment_id>` for another workspace, using the same LangSmith API URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -234,10 +237,12 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 					},
 				}},
 			},
-			"tenant_id": schema.StringAttribute{
+			"workspace_id": schema.StringAttribute{
+				Optional:            true,
 				Computed:            true,
-				PlanModifiers:       immutable,
-				MarkdownDescription: "Owning workspace (tenant) UUID.",
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()},
+				Validators:          []frameworkvalidator.String{nonEmptyStringValidator{}},
+				MarkdownDescription: "Workspace UUID. When omitted, the provider workspace is used. Changing this replaces the deployment.",
 			},
 			"created_at": schema.StringAttribute{
 				Computed:            true,
@@ -251,6 +256,55 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 			"latest_revision_status": computedString("Status of the most recently created revision."),
 		},
 	}
+}
+
+func (r *DeploymentResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
+	var response resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &response)
+	prior := response.Schema
+	prior.Version = 0
+	delete(prior.Attributes, "workspace_id")
+	prior.Attributes["tenant_id"] = schema.StringAttribute{Computed: true}
+	return map[int64]resource.StateUpgrader{0: {
+		PriorSchema: &prior,
+		StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+			var old deploymentResourceModelV0
+			resp.Diagnostics.Append(req.State.Get(ctx, &old)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			upgraded := deploymentResourceModel{
+				ID: old.ID, Name: old.Name, Source: old.Source, DisplayName: old.DisplayName,
+				SourceConfig: old.SourceConfig, SourceRevisionConfig: old.SourceRevisionConfig,
+				EnvironmentVariables: old.EnvironmentVariables, Secrets: old.Secrets, SecretsVersion: old.SecretsVersion,
+				SecretsHash: old.SecretsHash, SecretReferences: old.SecretReferences, WorkspaceID: old.TenantID,
+				CreatedAt: old.CreatedAt, UpdatedAt: old.UpdatedAt, Status: old.Status,
+				LatestRevisionID: old.LatestRevisionID, ActiveRevisionID: old.ActiveRevisionID, LatestRevisionStatus: old.LatestRevisionStatus,
+			}
+			resp.Diagnostics.Append(resp.State.Set(ctx, &upgraded)...)
+		},
+	}}
+}
+
+type deploymentResourceModelV0 struct {
+	ID                   types.String                     `tfsdk:"id"`
+	Name                 types.String                     `tfsdk:"name"`
+	Source               types.String                     `tfsdk:"source"`
+	DisplayName          types.String                     `tfsdk:"display_name"`
+	SourceConfig         *deploymentSourceConfigModel     `tfsdk:"source_config"`
+	SourceRevisionConfig *sourceRevisionConfigModel       `tfsdk:"source_revision_config"`
+	EnvironmentVariables types.Map                        `tfsdk:"environment_variables"`
+	Secrets              types.Map                        `tfsdk:"secrets"`
+	SecretsVersion       types.String                     `tfsdk:"secrets_version"`
+	SecretsHash          types.String                     `tfsdk:"secrets_hash"`
+	SecretReferences     []deploymentSecretReferenceModel `tfsdk:"secret_references"`
+	TenantID             types.String                     `tfsdk:"tenant_id"`
+	CreatedAt            types.String                     `tfsdk:"created_at"`
+	UpdatedAt            types.String                     `tfsdk:"updated_at"`
+	Status               types.String                     `tfsdk:"status"`
+	LatestRevisionID     types.String                     `tfsdk:"latest_revision_id"`
+	ActiveRevisionID     types.String                     `tfsdk:"active_revision_id"`
+	LatestRevisionStatus types.String                     `tfsdk:"latest_revision_status"`
 }
 
 func sourceConfigSchema() map[string]schema.Attribute {
@@ -435,14 +489,24 @@ func (r *DeploymentResource) Delete(ctx context.Context, req resource.DeleteRequ
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.delete(ctx, state.ID.ValueString()); err != nil {
+	if err := r.delete(ctx, state.ID.ValueString(), state.WorkspaceID); err != nil {
 		resp.Diagnostics.AddError("Unable to Delete LangSmith Deployment", err.Error())
 	}
 }
 
 func (r *DeploymentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	parts := strings.Split(req.ID, "/")
+	if (len(parts) != 1 && len(parts) != 2) || parts[0] == "" || (len(parts) == 2 && parts[1] == "") {
+		resp.Diagnostics.AddError("Invalid Deployment Import ID", "Use <deployment_id> or <workspace_id>/<deployment_id>.")
+		return
+	}
+	id := parts[len(parts)-1]
+	workspaceID := types.StringNull()
+	if len(parts) == 2 {
+		workspaceID = types.StringValue(parts[0])
+	}
 	var deployment deploymentAPI
-	if err := r.client.Get(ctx, deploymentPath(req.ID), nil, &deployment); err != nil {
+	if err := r.client.Get(ctx, deploymentPath(id), nil, &deployment, workspaceOpts(workspaceID)...); err != nil {
 		resp.Diagnostics.AddError("Unable to Import LangSmith Deployment", err.Error())
 		return
 	}
@@ -450,7 +514,12 @@ func (r *DeploymentResource) ImportState(ctx context.Context, req resource.Impor
 		resp.Diagnostics.AddError("Unsupported Deployment Source", err.Error())
 		return
 	}
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
+	if len(parts) == 2 {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("workspace_id"), workspaceID)...)
+	} else {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("workspace_id"), nullableString(deployment.TenantID))...)
+	}
 }
 
 func deploymentPath(id string) string {
@@ -468,7 +537,7 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 		return plan, err
 	}
 	var result deploymentAPI
-	if err := r.client.Post(ctx, deploymentsPath, createPayload(plan), &result); err != nil {
+	if err := r.client.Post(ctx, deploymentsPath, createPayload(plan), &result, workspaceOpts(plan.WorkspaceID)...); err != nil {
 		return plan, err
 	}
 	interim := deploymentModelFromAPI(result, deploymentResourceRevisionAPI{}, plan)
@@ -481,11 +550,11 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 	// Display names require a separate PATCH. Preserve the ID if it fails.
 	if !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() {
 		var ignored deploymentAPI
-		if err := r.client.Patch(ctx, deploymentPath(result.ID), map[string]any{"display_name": plan.DisplayName.ValueString()}, &ignored); err != nil {
+		if err := r.client.Patch(ctx, deploymentPath(result.ID), map[string]any{"display_name": plan.DisplayName.ValueString()}, &ignored, workspaceOpts(plan.WorkspaceID)...); err != nil {
 			return interim, err
 		}
 	}
-	revision, err := r.waitForRevision(ctx, result.ID, *result.LatestRevisionID)
+	revision, err := r.waitForRevision(ctx, result.ID, *result.LatestRevisionID, plan.WorkspaceID)
 	if err != nil {
 		interim.LatestRevisionStatus = nullableString(revision.Status)
 		return interim, err
@@ -501,13 +570,13 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 
 func (r *DeploymentResource) read(ctx context.Context, id string, previous deploymentResourceModel) (deploymentResourceModel, error) {
 	var result deploymentAPI
-	if err := r.client.Get(ctx, deploymentPath(id), nil, &result); err != nil {
+	if err := r.client.Get(ctx, deploymentPath(id), nil, &result, workspaceOpts(previous.WorkspaceID)...); err != nil {
 		return previous, err
 	}
 	var revision deploymentResourceRevisionAPI
 	if result.LatestRevisionID != nil {
 		// Only a deployment 404 may remove the resource from state.
-		if err := r.client.Get(ctx, deploymentRevisionPath(id, *result.LatestRevisionID), nil, &revision); err != nil && !isLangSmithNotFound(err) {
+		if err := r.client.Get(ctx, deploymentRevisionPath(id, *result.LatestRevisionID), nil, &revision, workspaceOpts(previous.WorkspaceID)...); err != nil && !isLangSmithNotFound(err) {
 			return previous, err
 		}
 	}
@@ -575,18 +644,18 @@ func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentR
 	}
 	if len(mutable) > 0 {
 		var ignored deploymentAPI
-		if err := r.client.Patch(ctx, deploymentPath(id), mutable, &ignored); err != nil {
+		if err := r.client.Patch(ctx, deploymentPath(id), mutable, &ignored, workspaceOpts(plan.WorkspaceID)...); err != nil {
 			return state, err
 		}
 	}
 	if needsRevision {
-		if err := r.client.Post(ctx, deploymentRevisionsPath(id), payload, &revision); err != nil {
+		if err := r.client.Post(ctx, deploymentRevisionsPath(id), payload, &revision, workspaceOpts(plan.WorkspaceID)...); err != nil {
 			return state, err
 		}
 		if revision.ID == "" {
 			return r.applied(ctx, id, state, plan, revision), errors.New("LangSmith did not return a revision ID")
 		}
-		waited, err := r.waitForRevision(ctx, id, revision.ID)
+		waited, err := r.waitForRevision(ctx, id, revision.ID, plan.WorkspaceID)
 		if waited.ID != "" {
 			revision.ID = waited.ID
 		}
@@ -610,7 +679,7 @@ func (r *DeploymentResource) revisionUpdatePayload(ctx context.Context, id strin
 		return payload, nil
 	}
 	var current deploymentAPI
-	if err := r.client.Get(ctx, deploymentPath(id), nil, &current); err != nil {
+	if err := r.client.Get(ctx, deploymentPath(id), nil, &current, workspaceOpts(plan.WorkspaceID)...); err != nil {
 		return nil, fmt.Errorf("reading current resource specification before revision: %w", err)
 	}
 	// The API replaces the entire object, including fields Terraform does not
@@ -662,8 +731,8 @@ func (r *DeploymentResource) applied(ctx context.Context, id string, state, plan
 	return model
 }
 
-func (r *DeploymentResource) delete(ctx context.Context, id string) error {
-	if err := r.client.Delete(ctx, deploymentPath(id), nil, nil); err != nil {
+func (r *DeploymentResource) delete(ctx context.Context, id string, workspaceID types.String) error {
+	if err := r.client.Delete(ctx, deploymentPath(id), nil, nil, workspaceOpts(workspaceID)...); err != nil {
 		if isLangSmithNotFound(err) {
 			return nil
 		}
@@ -674,7 +743,7 @@ func (r *DeploymentResource) delete(ctx context.Context, id string) error {
 	defer cancel()
 	for {
 		var result deploymentAPI
-		if err := r.client.Get(ctx, deploymentPath(id), nil, &result); err != nil {
+		if err := r.client.Get(ctx, deploymentPath(id), nil, &result, workspaceOpts(workspaceID)...); err != nil {
 			if isLangSmithNotFound(err) {
 				return nil
 			}
@@ -704,13 +773,13 @@ func (r *DeploymentResource) pollSettings() (time.Duration, time.Duration) {
 }
 
 // SKIPPED revisions were superseded; INTERRUPTED and UNKNOWN can still progress.
-func (r *DeploymentResource) waitForRevision(ctx context.Context, id, revisionID string) (deploymentResourceRevisionAPI, error) {
+func (r *DeploymentResource) waitForRevision(ctx context.Context, id, revisionID string, workspaceID types.String) (deploymentResourceRevisionAPI, error) {
 	interval, timeout := r.pollSettings()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for {
 		var revision deploymentResourceRevisionAPI
-		if err := r.client.Get(ctx, deploymentRevisionPath(id, revisionID), nil, &revision); err != nil {
+		if err := r.client.Get(ctx, deploymentRevisionPath(id, revisionID), nil, &revision, workspaceOpts(workspaceID)...); err != nil {
 			return revision, err
 		}
 		switch revision.Status {
@@ -932,7 +1001,9 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 		next.SecretReferences = secretReferenceModelsFromAPI(api.SecretReferences)
 	}
 
-	next.TenantID = nullableString(api.TenantID)
+	if previous.WorkspaceID.IsNull() || previous.WorkspaceID.IsUnknown() {
+		next.WorkspaceID = nullableString(api.TenantID)
+	}
 	next.CreatedAt = nullableString(api.CreatedAt)
 	next.UpdatedAt = nullableString(api.UpdatedAt)
 	next.Status = nullableString(api.Status)

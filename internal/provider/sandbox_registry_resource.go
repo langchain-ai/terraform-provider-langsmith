@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -35,15 +36,16 @@ type SandboxRegistryResource struct {
 }
 
 type sandboxRegistryResourceModel struct {
-	ID        types.String `tfsdk:"id"`
-	Name      types.String `tfsdk:"name"`
-	URL       types.String `tfsdk:"url"`
-	Username  types.String `tfsdk:"username"`
-	Password  types.String `tfsdk:"password"`
-	CreatedAt types.String `tfsdk:"created_at"`
-	UpdatedAt types.String `tfsdk:"updated_at"`
-	CreatedBy types.String `tfsdk:"created_by"`
-	UpdatedBy types.String `tfsdk:"updated_by"`
+	ID          types.String `tfsdk:"id"`
+	WorkspaceID types.String `tfsdk:"workspace_id"`
+	Name        types.String `tfsdk:"name"`
+	URL         types.String `tfsdk:"url"`
+	Username    types.String `tfsdk:"username"`
+	Password    types.String `tfsdk:"password"`
+	CreatedAt   types.String `tfsdk:"created_at"`
+	UpdatedAt   types.String `tfsdk:"updated_at"`
+	CreatedBy   types.String `tfsdk:"created_by"`
+	UpdatedBy   types.String `tfsdk:"updated_by"`
 }
 
 // sandboxRegistryPayload is the create/update request body. The same shape is
@@ -74,11 +76,16 @@ func (r *SandboxRegistryResource) Metadata(ctx context.Context, req resource.Met
 
 func (r *SandboxRegistryResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages a LangSmith sandbox container-image registry (workspace-scoped).\n\n" +
+		MarkdownDescription: "Manages a LangSmith sandbox container-image registry (workspace-scoped). Import with `<name>` or `<workspace_id>/<name>`.\n\n" +
 			"The registry credentials (`username`/`password`) are write-only: the API never " +
 			"returns them, so they are stored in (sensitive) Terraform state and cannot be " +
 			"recovered on import. Use encrypted remote state.",
 		Attributes: map[string]schema.Attribute{
+			"workspace_id": schema.StringAttribute{
+				Optional:            true,
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				MarkdownDescription: "LangSmith workspace (tenant) ID that owns this registry. When unset, the resource uses the workspace configured on the provider block.",
+			},
 			"id": schema.StringAttribute{
 				Computed:            true,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
@@ -162,7 +169,7 @@ func (r *SandboxRegistryResource) Read(ctx context.Context, req resource.ReadReq
 		return
 	}
 
-	model, err := r.readSandboxRegistry(ctx, state.Name.ValueString(), state)
+	model, err := r.readSandboxRegistry(ctx, state.Name.ValueString(), state, state.WorkspaceID)
 	if err != nil {
 		if isLangSmithNotFound(err) {
 			resp.State.RemoveResource(ctx)
@@ -189,7 +196,7 @@ func (r *SandboxRegistryResource) Update(ctx context.Context, req resource.Updat
 		return
 	}
 
-	model, err := r.updateSandboxRegistry(ctx, currentName, plan)
+	model, err := r.updateSandboxRegistry(ctx, currentName, plan, plan.WorkspaceID)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to Update LangSmith Sandbox Registry", err.Error())
 		return
@@ -204,21 +211,33 @@ func (r *SandboxRegistryResource) Delete(ctx context.Context, req resource.Delet
 		return
 	}
 
-	if err := r.deleteSandboxRegistry(ctx, state.Name.ValueString()); err != nil {
+	if err := r.deleteSandboxRegistry(ctx, state.Name.ValueString(), state.WorkspaceID); err != nil {
 		resp.Diagnostics.AddError("Unable to Delete LangSmith Sandbox Registry", err.Error())
 		return
 	}
 }
 
-// ImportState imports by registry name. The credentials are never returned by the
-// API, so they stay null until the configured values are applied.
 func (r *SandboxRegistryResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), req.ID)...)
+	parts := strings.SplitN(req.ID, "/", 2)
+	if len(parts) == 2 {
+		if parts[0] == "" || parts[1] == "" {
+			resp.Diagnostics.AddError("Invalid Sandbox Registry Import ID", "Use <name> or <workspace_id>/<name>.")
+			return
+		}
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("workspace_id"), parts[0])...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), parts[1])...)
+		return
+	}
+	if parts[0] == "" {
+		resp.Diagnostics.AddError("Invalid Sandbox Registry Import ID", "Use <name> or <workspace_id>/<name>.")
+		return
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), parts[0])...)
 }
 
 func (r *SandboxRegistryResource) createSandboxRegistry(ctx context.Context, plan sandboxRegistryResourceModel) (sandboxRegistryResourceModel, error) {
 	var result sandboxRegistryAPI
-	if err := r.client.Post(ctx, sandboxRegistriesPath, sandboxRegistryPayloadFromModel(plan), &result); err != nil {
+	if err := r.client.Post(ctx, sandboxRegistriesPath, sandboxRegistryPayloadFromModel(plan), &result, workspaceOpts(plan.WorkspaceID)...); err != nil {
 		return sandboxRegistryResourceModel{}, err
 	}
 	if result.ID == "" {
@@ -227,32 +246,37 @@ func (r *SandboxRegistryResource) createSandboxRegistry(ctx context.Context, pla
 	return sandboxRegistryModelFromAPI(result, plan), nil
 }
 
-func (r *SandboxRegistryResource) readSandboxRegistry(ctx context.Context, name string, previous sandboxRegistryResourceModel) (sandboxRegistryResourceModel, error) {
+func (r *SandboxRegistryResource) readSandboxRegistry(ctx context.Context, name string, previous sandboxRegistryResourceModel, workspaceID ...types.String) (sandboxRegistryResourceModel, error) {
 	var result sandboxRegistryAPI
-	if err := r.client.Get(ctx, sandboxRegistryResourcePath(name), nil, &result); err != nil {
+	if err := r.client.Get(ctx, sandboxRegistryResourcePath(name), nil, &result, workspaceOpts(sandboxRegistryWorkspaceID(workspaceID))...); err != nil {
 		return sandboxRegistryResourceModel{}, err
 	}
 	return sandboxRegistryModelFromAPI(result, previous), nil
 }
 
-func (r *SandboxRegistryResource) updateSandboxRegistry(ctx context.Context, currentName string, plan sandboxRegistryResourceModel) (sandboxRegistryResourceModel, error) {
+func (r *SandboxRegistryResource) updateSandboxRegistry(ctx context.Context, currentName string, plan sandboxRegistryResourceModel, workspaceID ...types.String) (sandboxRegistryResourceModel, error) {
 	var result sandboxRegistryAPI
-	// PATCH the registry by its current name; the body carries the (possibly new)
-	// name plus the full credential set, which the all-or-nothing rule requires.
-	if err := r.client.Patch(ctx, sandboxRegistryResourcePath(currentName), sandboxRegistryPayloadFromModel(plan), &result); err != nil {
+	if err := r.client.Patch(ctx, sandboxRegistryResourcePath(currentName), sandboxRegistryPayloadFromModel(plan), &result, workspaceOpts(sandboxRegistryWorkspaceID(workspaceID))...); err != nil {
 		return sandboxRegistryResourceModel{}, err
 	}
 	return sandboxRegistryModelFromAPI(result, plan), nil
 }
 
-func (r *SandboxRegistryResource) deleteSandboxRegistry(ctx context.Context, name string) error {
-	if err := r.client.Delete(ctx, sandboxRegistryResourcePath(name), nil, nil); err != nil {
+func (r *SandboxRegistryResource) deleteSandboxRegistry(ctx context.Context, name string, workspaceID ...types.String) error {
+	if err := r.client.Delete(ctx, sandboxRegistryResourcePath(name), nil, nil, workspaceOpts(sandboxRegistryWorkspaceID(workspaceID))...); err != nil {
 		if isLangSmithNotFound(err) {
 			return nil
 		}
 		return err
 	}
 	return nil
+}
+
+func sandboxRegistryWorkspaceID(workspaceID []types.String) types.String {
+	if len(workspaceID) == 0 {
+		return types.StringNull()
+	}
+	return workspaceID[0]
 }
 
 func sandboxRegistryPayloadFromModel(m sandboxRegistryResourceModel) sandboxRegistryPayload {

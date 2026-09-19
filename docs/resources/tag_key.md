@@ -3,19 +3,20 @@
 page_title: "langsmith_tag_key Resource - langsmith"
 subcategory: ""
 description: |-
-  Manages a workspace-scoped LangSmith resource-tag key.
+  Manages a workspace-scoped LangSmith resource-tag key. Import with <tag_key_id> or <workspace_id>/<tag_key_id>.
 ---
 
 # langsmith_tag_key (Resource)
 
-Manages a workspace-scoped LangSmith resource-tag key.
+Manages a workspace-scoped LangSmith resource-tag key. Import with `<tag_key_id>` or `<workspace_id>/<tag_key_id>`.
 
 ## Example Usage
 
 ```terraform
 resource "langsmith_tag_key" "environment" {
-  key         = "Environment"
-  description = "Deployment environment"
+  workspace_id = "00000000-0000-0000-0000-000000000000"
+  key          = "Environment"
+  description  = "Deployment environment"
 }
 ```
 
@@ -29,6 +30,7 @@ resource "langsmith_tag_key" "environment" {
 ### Optional
 
 - `description` (String) Optional tag key description.
+- `workspace_id` (String) LangSmith workspace (tenant) ID that owns this tag key. When unset, the resource uses the workspace configured on the provider block.
 
 ### Read-Only
 

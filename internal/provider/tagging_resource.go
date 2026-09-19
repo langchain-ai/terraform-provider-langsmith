@@ -34,6 +34,7 @@ type TaggingResource struct{ client *langsmith.Client }
 
 type taggingResourceModel struct {
 	ID           types.String `tfsdk:"id"`
+	WorkspaceID  types.String `tfsdk:"workspace_id"`
 	TagValueID   types.String `tfsdk:"tag_value_id"`
 	ResourceType types.String `tfsdk:"resource_type"`
 	ResourceID   types.String `tfsdk:"resource_id"`
@@ -59,8 +60,9 @@ func (r *TaggingResource) Metadata(ctx context.Context, req resource.MetadataReq
 	resp.TypeName = req.ProviderTypeName + "_tagging"
 }
 func (r *TaggingResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
-	resp.Schema = schema.Schema{MarkdownDescription: "Tags a LangSmith resource with a workspace-scoped tag value. Changes replace the tagging. Import with `<tagging_id>/<tag_value_id>/<resource_type>/<resource_id>`.", Attributes: map[string]schema.Attribute{
+	resp.Schema = schema.Schema{MarkdownDescription: "Tags a LangSmith resource with a workspace-scoped tag value. Changes replace the tagging. Import with `<tagging_id>/<tag_value_id>/<resource_type>/<resource_id>` or `<workspace_id>/<tagging_id>/<tag_value_id>/<resource_type>/<resource_id>`.", Attributes: map[string]schema.Attribute{
 		"id":            schema.StringAttribute{Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, MarkdownDescription: "Tagging ID."},
+		"workspace_id":  schema.StringAttribute{Optional: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, MarkdownDescription: "LangSmith workspace (tenant) ID that owns this tagging. When unset, the resource uses the workspace configured on the provider block."},
 		"tag_value_id":  schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}, MarkdownDescription: "Tag value ID to apply."},
 		"resource_type": schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []frameworkvalidator.String{oneOfStringValidator{values: taggableResourceTypes}}, MarkdownDescription: "Type of resource being tagged."},
 		"resource_id":   schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}, MarkdownDescription: "ID of the resource being tagged."},
@@ -117,15 +119,23 @@ func (r *TaggingResource) Delete(ctx context.Context, req resource.DeleteRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.deleteTagging(ctx, state.ID.ValueString()); err != nil {
+	if err := r.deleteTagging(ctx, state.ID.ValueString(), state.WorkspaceID); err != nil {
 		resp.Diagnostics.AddError("Unable to Delete LangSmith Tagging", err.Error())
 	}
 }
 func (r *TaggingResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	parts := strings.Split(req.ID, "/")
-	if len(parts) != 4 {
-		resp.Diagnostics.AddError("Invalid Tagging Import ID", "Use <tagging_id>/<tag_value_id>/<resource_type>/<resource_id>.")
+	if len(parts) != 4 && len(parts) != 5 {
+		resp.Diagnostics.AddError("Invalid Tagging Import ID", "Use <tagging_id>/<tag_value_id>/<resource_type>/<resource_id> or <workspace_id>/<tagging_id>/<tag_value_id>/<resource_type>/<resource_id>.")
 		return
+	}
+	if len(parts) == 5 {
+		if parts[0] == "" {
+			resp.Diagnostics.AddError("Invalid Tagging Import ID", "Import ID components must not be empty.")
+			return
+		}
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("workspace_id"), parts[0])...)
+		parts = parts[1:]
 	}
 	for i, name := range []string{"id", "tag_value_id", "resource_type", "resource_id"} {
 		if parts[i] == "" {
@@ -138,35 +148,35 @@ func (r *TaggingResource) ImportState(ctx context.Context, req resource.ImportSt
 
 func (r *TaggingResource) createTagging(ctx context.Context, plan taggingResourceModel) (taggingResourceModel, error) {
 	var result taggingAPI
-	if err := r.client.Post(ctx, taggingsPath, taggingPayloadFromModel(plan), &result, option.WithMaxRetries(0)); err != nil {
+	if err := r.client.Post(ctx, taggingsPath, taggingPayloadFromModel(plan), &result, append(workspaceOpts(plan.WorkspaceID), option.WithMaxRetries(0))...); err != nil {
 		return taggingResourceModel{}, err
 	}
 	if result.ID == "" {
 		return taggingResourceModel{}, errors.New("LangSmith did not return a tagging ID")
 	}
-	return taggingModelFromAPI(result), nil
+	return taggingModelFromAPI(result, plan.WorkspaceID), nil
 }
 func (r *TaggingResource) readTagging(ctx context.Context, state taggingResourceModel) (taggingResourceModel, error) {
 	params := url.Values{}
 	params.Set("resource_type", state.ResourceType.ValueString())
 	params.Set("resource_id", state.ResourceID.ValueString())
 	var result []tagKeyWithTaggingsAPI
-	if err := r.client.Get(ctx, "api/v1/workspaces/current/tags/resource?"+params.Encode(), nil, &result); err != nil {
+	if err := r.client.Get(ctx, "api/v1/workspaces/current/tags/resource?"+params.Encode(), nil, &result, workspaceOpts(state.WorkspaceID)...); err != nil {
 		return taggingResourceModel{}, err
 	}
 	for _, key := range result {
 		for _, value := range key.Values {
 			for _, tagging := range value.Taggings {
 				if tagging.ID == state.ID.ValueString() {
-					return taggingModelFromAPI(tagging), nil
+					return taggingModelFromAPI(tagging, state.WorkspaceID), nil
 				}
 			}
 		}
 	}
 	return taggingResourceModel{}, errTaggingNotFound
 }
-func (r *TaggingResource) deleteTagging(ctx context.Context, id string) error {
-	if err := r.client.Delete(ctx, fmt.Sprintf("%s/%s", taggingsPath, id), nil, nil); err != nil && !isLangSmithNotFound(err) {
+func (r *TaggingResource) deleteTagging(ctx context.Context, id string, workspaceID ...types.String) error {
+	if err := r.client.Delete(ctx, fmt.Sprintf("%s/%s", taggingsPath, id), nil, nil, workspaceOpts(tagWorkspaceID(workspaceID))...); err != nil && !isLangSmithNotFound(err) {
 		return err
 	}
 	return nil
@@ -174,8 +184,8 @@ func (r *TaggingResource) deleteTagging(ctx context.Context, id string) error {
 func taggingPayloadFromModel(m taggingResourceModel) taggingAPI {
 	return taggingAPI{TagValueID: m.TagValueID.ValueString(), ResourceType: m.ResourceType.ValueString(), ResourceID: m.ResourceID.ValueString()}
 }
-func taggingModelFromAPI(api taggingAPI) taggingResourceModel {
-	return taggingResourceModel{ID: types.StringValue(api.ID), TagValueID: types.StringValue(api.TagValueID), ResourceType: types.StringValue(api.ResourceType), ResourceID: types.StringValue(api.ResourceID), CreatedAt: nullableString(api.CreatedAt)}
+func taggingModelFromAPI(api taggingAPI, workspaceID ...types.String) taggingResourceModel {
+	return taggingResourceModel{ID: types.StringValue(api.ID), WorkspaceID: tagWorkspaceID(workspaceID), TagValueID: types.StringValue(api.TagValueID), ResourceType: types.StringValue(api.ResourceType), ResourceID: types.StringValue(api.ResourceID), CreatedAt: nullableString(api.CreatedAt)}
 }
 
 type oneOfStringValidator struct{ values []string }

@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/langchain-ai/langsmith-go"
 	"github.com/langchain-ai/langsmith-go/option"
 )
@@ -35,6 +38,140 @@ func TestDeploymentSchemaSecretsAreWriteOnlySensitive(t *testing.T) {
 	}
 	if _, ok := response.Schema.Attributes["secrets_version"].(schema.StringAttribute); !ok {
 		t.Fatal("secrets_version is missing")
+	}
+}
+
+func TestDeploymentSchemaWorkspaceID(t *testing.T) {
+	var response resource.SchemaResponse
+	(&DeploymentResource{}).Schema(context.Background(), resource.SchemaRequest{}, &response)
+	attribute, ok := response.Schema.Attributes["workspace_id"].(schema.StringAttribute)
+	if !ok || !attribute.Optional || !attribute.Computed || len(attribute.PlanModifiers) != 2 {
+		t.Fatalf("workspace_id schema = %#v", response.Schema.Attributes["workspace_id"])
+	}
+	if _, ok := response.Schema.Attributes["tenant_id"]; ok {
+		t.Fatal("tenant_id remains public")
+	}
+	if response.Schema.Version != 1 {
+		t.Fatalf("schema version = %d", response.Schema.Version)
+	}
+}
+
+func TestDeploymentStateUpgradeMigratesTenantID(t *testing.T) {
+	ctx := context.Background()
+	r := &DeploymentResource{}
+	upgrader := r.UpgradeState(ctx)[0]
+	model := testDeploymentModel()
+	model.SourceConfig.ResourceSpec.Annotations = types.MapNull(types.StringType)
+	model.SourceConfig.ResourceSpec.Labels = types.MapNull(types.StringType)
+	old := deploymentResourceModelV0{
+		ID: model.ID, Name: model.Name, Source: model.Source, DisplayName: model.DisplayName,
+		SourceConfig: model.SourceConfig, SourceRevisionConfig: model.SourceRevisionConfig,
+		EnvironmentVariables: model.EnvironmentVariables, Secrets: types.MapNull(types.StringType), SecretsVersion: model.SecretsVersion,
+		SecretsHash: types.StringNull(), SecretReferences: model.SecretReferences, TenantID: types.StringValue("old-workspace"),
+		CreatedAt: types.StringValue("created"), UpdatedAt: types.StringValue("updated"), Status: types.StringValue("READY"),
+		LatestRevisionID: types.StringValue(testRevisionID), ActiveRevisionID: types.StringValue(testRevisionID), LatestRevisionStatus: types.StringValue("DEPLOYED"),
+	}
+	state := tfsdk.State{Schema: *upgrader.PriorSchema}
+	if diagnostics := state.Set(ctx, &old); diagnostics.HasError() {
+		t.Fatalf("setting old state: %v", diagnostics)
+	}
+	var response resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &response)
+	upgradeResponse := resource.UpgradeStateResponse{State: tfsdk.State{Schema: response.Schema}}
+	upgrader.StateUpgrader(ctx, resource.UpgradeStateRequest{State: &state}, &upgradeResponse)
+	if upgradeResponse.Diagnostics.HasError() {
+		t.Fatalf("upgrading state: %v", upgradeResponse.Diagnostics)
+	}
+	var upgraded deploymentResourceModel
+	if diagnostics := upgradeResponse.State.Get(ctx, &upgraded); diagnostics.HasError() {
+		t.Fatalf("reading upgraded state: %v", diagnostics)
+	}
+	if upgraded.WorkspaceID.ValueString() != "old-workspace" {
+		t.Fatalf("workspace_id = %#v", upgraded.WorkspaceID)
+	}
+}
+
+func TestDeploymentImportScopedID(t *testing.T) {
+	const workspaceID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if got := req.Header.Get("X-Tenant-Id"); got != workspaceID {
+			t.Fatalf("workspace header = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(deploymentResponseJSON("READY")))
+	}))
+	defer server.Close()
+	ctx := context.Background()
+	r := testDeploymentResource(server)
+	var schemaResponse resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &schemaResponse)
+	for _, tc := range []struct {
+		id      string
+		invalid bool
+	}{
+		{id: workspaceID + "/" + testDeploymentID},
+		{id: "", invalid: true},
+		{id: "/" + testDeploymentID, invalid: true},
+		{id: workspaceID + "/", invalid: true},
+		{id: workspaceID + "/" + testDeploymentID + "/extra", invalid: true},
+	} {
+		response := resource.ImportStateResponse{State: tfsdk.State{Schema: schemaResponse.Schema, Raw: tftypes.NewValue(schemaResponse.Schema.Type().TerraformType(ctx), nil)}}
+		r.ImportState(ctx, resource.ImportStateRequest{ID: tc.id}, &response)
+		if tc.invalid {
+			if !response.Diagnostics.HasError() {
+				t.Fatalf("ImportState(%q) accepted malformed ID", tc.id)
+			}
+			continue
+		}
+		if response.Diagnostics.HasError() {
+			t.Fatalf("ImportState(%q) diagnostics = %v", tc.id, response.Diagnostics)
+		}
+		var id, workspace types.String
+		response.Diagnostics.Append(response.State.GetAttribute(ctx, path.Root("id"), &id)...)
+		response.Diagnostics.Append(response.State.GetAttribute(ctx, path.Root("workspace_id"), &workspace)...)
+		if response.Diagnostics.HasError() || id.ValueString() != testDeploymentID || workspace.ValueString() != workspaceID {
+			t.Fatalf("ImportState(%q) = id %q, workspace %q, diagnostics %v", tc.id, id.ValueString(), workspace.ValueString(), response.Diagnostics)
+		}
+	}
+}
+
+func TestDeploymentRequestsUseWorkspaceOverride(t *testing.T) {
+	var headers []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		headers = append(headers, req.Header.Get("X-Tenant-Id"))
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(req.URL.Path, "/revisions/") {
+			_, _ = w.Write([]byte(`{"id":"` + testRevisionID + `","status":"DEPLOYED"}`))
+			return
+		}
+		_, _ = w.Write([]byte(deploymentResponseJSON("READY")))
+	}))
+	defer server.Close()
+	model := testDeploymentModel()
+	model.ID = types.StringValue(testDeploymentID)
+	model.WorkspaceID = types.StringValue("override-workspace")
+	if _, err := testDeploymentResource(server).read(context.Background(), testDeploymentID, model); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(headers, []string{"override-workspace", "override-workspace"}) {
+		t.Fatalf("workspace headers = %#v", headers)
+	}
+}
+
+func TestDeploymentRequestsFallBackToProviderWorkspace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if got := req.Header.Get("X-Tenant-Id"); got != "provider-workspace" {
+			t.Fatalf("workspace header = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(deploymentResponseJSON("READY")))
+	}))
+	defer server.Close()
+	r := &DeploymentResource{client: langsmith.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("test-key"), option.WithTenantID("provider-workspace"))}
+	model := testDeploymentModel()
+	model.ID = types.StringValue(testDeploymentID)
+	if _, err := r.read(context.Background(), testDeploymentID, model); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -133,7 +270,7 @@ func TestDeploymentRevisionFailure(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"` + testRevisionID + `","status":"DEPLOY_FAILED"}`))
 	}))
 	defer server.Close()
-	_, err := testDeploymentResource(server).waitForRevision(context.Background(), testDeploymentID, testRevisionID)
+	_, err := testDeploymentResource(server).waitForRevision(context.Background(), testDeploymentID, testRevisionID, types.StringNull())
 	if err == nil || !strings.Contains(err.Error(), "DEPLOY_FAILED") {
 		t.Fatalf("error = %v", err)
 	}
@@ -147,7 +284,7 @@ func TestDeploymentWaitTreatsSupersededAndTransientStatusesAsNonFailures(t *test
 			_, _ = w.Write([]byte(`{"id":"` + testRevisionID + `","status":"SKIPPED"}`))
 		}))
 		defer server.Close()
-		revision, err := testDeploymentResource(server).waitForRevision(context.Background(), testDeploymentID, testRevisionID)
+		revision, err := testDeploymentResource(server).waitForRevision(context.Background(), testDeploymentID, testRevisionID, types.StringNull())
 		if err != nil {
 			t.Fatalf("error = %v", err)
 		}
@@ -169,7 +306,7 @@ func TestDeploymentWaitTreatsSupersededAndTransientStatusesAsNonFailures(t *test
 				_, _ = w.Write([]byte(`{"id":"` + testRevisionID + `","status":"DEPLOYED"}`))
 			}))
 			defer server.Close()
-			revision, err := testDeploymentResource(server).waitForRevision(context.Background(), testDeploymentID, testRevisionID)
+			revision, err := testDeploymentResource(server).waitForRevision(context.Background(), testDeploymentID, testRevisionID, types.StringNull())
 			if err != nil {
 				t.Fatalf("error = %v", err)
 			}
@@ -246,7 +383,7 @@ func TestDeploymentUpdatePreservesAppliedRevisionAfterWaitFailure(t *testing.T) 
 	// Unknown values in applied state are rejected by Terraform as a provider
 	// bug, so the recovery path has to resolve every computed attribute.
 	for name, value := range map[string]attr.Value{
-		"id": partial.ID, "tenant_id": partial.TenantID, "created_at": partial.CreatedAt,
+		"id": partial.ID, "workspace_id": partial.WorkspaceID, "created_at": partial.CreatedAt,
 		"updated_at": partial.UpdatedAt, "status": partial.Status,
 		"active_revision_id": partial.ActiveRevisionID, "display_name": partial.DisplayName,
 	} {
@@ -278,7 +415,7 @@ func TestDeploymentDeletePollsUntilNotFound(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	if err := testDeploymentResource(server).delete(context.Background(), testDeploymentID); err != nil {
+	if err := testDeploymentResource(server).delete(context.Background(), testDeploymentID, types.StringNull()); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -298,7 +435,7 @@ func TestDeploymentDeleteNotFoundIsSuccess(t *testing.T) {
 		_, _ = w.Write([]byte(`{"detail":"not found"}`))
 	}))
 	defer server.Close()
-	if err := testDeploymentResource(server).delete(context.Background(), testDeploymentID); err != nil {
+	if err := testDeploymentResource(server).delete(context.Background(), testDeploymentID, types.StringNull()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -315,7 +452,7 @@ func TestDeploymentDeleteTimeout(t *testing.T) {
 	defer server.Close()
 	r := testDeploymentResource(server)
 	r.waitTimeout = 5 * time.Millisecond
-	err := r.delete(context.Background(), testDeploymentID)
+	err := r.delete(context.Background(), testDeploymentID, types.StringNull())
 	if err == nil || !strings.Contains(err.Error(), "waiting for deployment "+testDeploymentID+" deletion") || !strings.Contains(err.Error(), "deadline exceeded") {
 		t.Fatalf("error = %v", err)
 	}
