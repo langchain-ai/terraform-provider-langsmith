@@ -24,11 +24,28 @@ The provider currently includes:
 - `langsmith_gateway_policy`, which manages LLM Gateway policies.
 - `langsmith_service_key`, which manages organization service keys (org-wide or workspace-scoped).
 - `langsmith_deployment`, which manages the desired state of a LangGraph deployment through the LangSmith API.
+- `langsmith_data_plane`, which provisions an organization-scoped AWS BYOC data plane and manages its maintenance, retention, firewall, and Fleet OIDC settings.
 - `data.langsmith_deployment_revision` and `data.langsmith_deployment_revisions`, which read the service-owned revision history of a deployment.
 
 ## Maintainer documentation
 
 - [Release process](.github/RELEASING.md)
+
+## BYOC Data Planes
+
+[`langsmith_data_plane`](docs/resources/data_plane.md) uses the provider's SaaS control-plane endpoint and current organization. It requires BYOC enabled and organization administrator access. The AWS role must trust the organization's assigned external ID. No resource-level workspace selector is needed: creation also creates a dedicated workspace, exposed through the computed `workspaces` set.
+
+Creation and updates wait for `active`; deletion waits for removal. `timeouts` can override the defaults of two hours for create/delete and one hour for update. The computed `status`, `status_updated_at`, and `api_url` attributes reflect the latest Terraform read. `terraform output` reads saved state; a normal apply or refresh-only apply refreshes that snapshot.
+
+Configure either `vpc_cidr` for a LangSmith-created VPC or `byovpc` for a customer-managed VPC. In BYOVPC mode, `vpc_cidr` is computed from the saved provisioning settings. Name, region, role, networking, IAM flags, and tags are creation-only inputs; changes require replacement. Deletion removes linked workspaces and deprovisions infrastructure, so examples include `prevent_destroy`. The role needs deletion permissions before destroy can succeed.
+
+Omitted maintenance, retention, firewall, and OIDC settings adopt server values. Explicitly configured values are managed for drift. Empty `firewall.allowed_cidrs` and `fleet_oidc.tenant_mappings` maps clear those settings; omitting them leaves them unmanaged. Import uses the data plane UUID and reads its public provisioning settings. A failed reservation without saved provisioning settings cannot reconstruct those inputs; supply the original creation configuration when recovering it.
+
+Automated lifecycle coverage uses a local fake API and provisions no cloud infrastructure:
+
+```sh
+TF_ACC=1 go test ./internal/provider -run '^TestAccDataPlaneOffline' -count=1
+```
 
 ## Resource Tags and ABAC
 
