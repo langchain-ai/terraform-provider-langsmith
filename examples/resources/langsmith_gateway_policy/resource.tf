@@ -57,7 +57,7 @@ resource "langsmith_gateway_policy" "burst_and_sustained_rate_limit" {
 
 resource "langsmith_gateway_policy" "model_access" {
   name        = "workspace-model-access"
-  description = "Only allow selected OpenAI models and every Anthropic model."
+  description = "Only allow selected OpenAI models, every Anthropic model, and one workspace model configuration."
   action      = "block"
 
   config = {
@@ -69,6 +69,10 @@ resource "langsmith_gateway_policy" "model_access" {
         }
         anthropic = {
           access = "all"
+        }
+        custom = {
+          access         = "selected"
+          allowed_models = ["my-custom-model-configuration"]
         }
       }
     }
