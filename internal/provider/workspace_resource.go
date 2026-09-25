@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
+	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -14,6 +18,7 @@ import (
 	frameworkvalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
+	"github.com/langchain-ai/langsmith-go/option"
 )
 
 var (
@@ -36,6 +41,7 @@ type workspaceResourceModel struct {
 	DisplayName    types.String `tfsdk:"display_name"`
 	TenantHandle   types.String `tfsdk:"tenant_handle"`
 	OrganizationID types.String `tfsdk:"organization_id"`
+	DataPlaneID    types.String `tfsdk:"data_plane_id"`
 	DataPlaneURL   types.String `tfsdk:"data_plane_url"`
 	IsPersonal     types.Bool   `tfsdk:"is_personal"`
 	IsDeleted      types.Bool   `tfsdk:"is_deleted"`
@@ -71,6 +77,14 @@ func (r *WorkspaceResource) Schema(ctx context.Context, req resource.SchemaReque
 				Computed:            true,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 				MarkdownDescription: "Organization ID.",
+			},
+			"data_plane_id": schema.StringAttribute{
+				Optional: true,
+				Validators: []frameworkvalidator.String{stringvalidator.RegexMatches(
+					regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`), "must be a UUID",
+				)},
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				MarkdownDescription: "Data plane ID for workspace creation. The provider resolves its API URL through the configured endpoint and creates the workspace through that data plane. Omit to use the provider endpoint. Changing this value requires replacement.",
 			},
 			"data_plane_url": schema.StringAttribute{
 				Computed:            true,
@@ -115,7 +129,7 @@ func (r *WorkspaceResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	created, err := r.client.Workspaces.New(ctx, workspaceNewParamsFromModel(plan))
+	created, err := r.createWorkspace(ctx, plan)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to Create LangSmith Workspace", err.Error())
 		return
@@ -163,6 +177,8 @@ func (r *WorkspaceResource) Update(ctx context.Context, req resource.UpdateReque
 		resp.Diagnostics.AddError("Unable to Update LangSmith Workspace", "Missing workspace ID in plan and state.")
 		return
 	}
+	// The computed URL may be unknown in the plan. Route using refreshed state.
+	plan.DataPlaneURL = state.DataPlaneURL
 	next, err := r.updateWorkspace(ctx, workspaceID, plan)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to Update LangSmith Workspace", err.Error())
@@ -177,7 +193,7 @@ func (r *WorkspaceResource) Delete(ctx context.Context, req resource.DeleteReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.deleteWorkspace(ctx, state.ID.ValueString()); err != nil {
+	if err := r.deleteWorkspace(ctx, state.ID.ValueString(), state.DataPlaneURL); err != nil {
 		if isLangSmithNotFound(err) {
 			return
 		}
@@ -187,7 +203,56 @@ func (r *WorkspaceResource) Delete(ctx context.Context, req resource.DeleteReque
 }
 
 func (r *WorkspaceResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	parts := strings.Split(req.ID, "/")
+	if len(parts) > 2 || parts[0] == "" || (len(parts) == 2 && parts[1] == "") {
+		resp.Diagnostics.AddError("Invalid Workspace Import ID", "Use workspace_id or workspace_id/data_plane_id.")
+		return
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), parts[0])...)
+	if len(parts) == 2 {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("data_plane_id"), parts[1])...)
+	}
+}
+
+func (r *WorkspaceResource) createWorkspace(ctx context.Context, plan workspaceResourceModel) (*langsmith.WorkspaceNewResponse, error) {
+	var opts []option.RequestOption
+	if dataPlaneID := stringValue(plan.DataPlaneID); dataPlaneID != "" {
+		var dataPlane struct {
+			APIURL string `json:"api_url"`
+		}
+		if err := r.client.Get(ctx, "api/v1/orgs/current/data-planes/"+url.PathEscape(dataPlaneID), nil, &dataPlane); err != nil {
+			return nil, fmt.Errorf("resolve workspace data plane: %w", err)
+		}
+		var err error
+		opts, err = workspaceDataPlaneOptions(dataPlane.APIURL)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return r.client.Workspaces.New(ctx, workspaceNewParamsFromModel(plan), opts...)
+}
+
+// URLs come from the authenticated organization API. Private BYOC endpoints are
+// supported, but credentials must only be sent to an absolute HTTPS URL.
+func workspaceDataPlaneOptions(rawURL string) ([]option.RequestOption, error) {
+	endpoint := normalizeAPIURL(rawURL)
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return nil, errors.New("workspace data plane must have an absolute HTTPS API URL without credentials, query, or fragment")
+	}
+	return []option.RequestOption{option.WithBaseURL(endpoint)}, nil
+}
+
+func workspaceMutationOptions(workspaceID string, dataPlaneURL types.String) ([]option.RequestOption, error) {
+	opts := []option.RequestOption{workspaceTenantOption(workspaceID)}
+	if endpoint := stringValue(dataPlaneURL); endpoint != "" {
+		routing, err := workspaceDataPlaneOptions(endpoint)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, routing...)
+	}
+	return opts, nil
 }
 
 func (r *WorkspaceResource) readWorkspace(ctx context.Context, workspaceID string, previous workspaceResourceModel) (workspaceResourceModel, error) {
@@ -207,16 +272,24 @@ func (r *WorkspaceResource) readWorkspace(ctx context.Context, workspaceID strin
 }
 
 func (r *WorkspaceResource) updateWorkspace(ctx context.Context, workspaceID string, plan workspaceResourceModel) (workspaceResourceModel, error) {
+	opts, err := workspaceMutationOptions(workspaceID, plan.DataPlaneURL)
+	if err != nil {
+		return workspaceResourceModel{}, err
+	}
 	if _, err := r.client.Workspaces.Update(ctx, workspaceID, langsmith.WorkspaceUpdateParams{
 		DisplayName: langsmith.F(plan.DisplayName.ValueString()),
-	}, workspaceTenantOption(workspaceID)); err != nil {
+	}, opts...); err != nil {
 		return workspaceResourceModel{}, err
 	}
 	return r.readWorkspace(ctx, workspaceID, plan)
 }
 
-func (r *WorkspaceResource) deleteWorkspace(ctx context.Context, workspaceID string) error {
-	_, err := r.client.Workspaces.Delete(ctx, workspaceID, workspaceTenantOption(workspaceID))
+func (r *WorkspaceResource) deleteWorkspace(ctx context.Context, workspaceID string, dataPlaneURL types.String) error {
+	opts, err := workspaceMutationOptions(workspaceID, dataPlaneURL)
+	if err != nil {
+		return err
+	}
+	_, err = r.client.Workspaces.Delete(ctx, workspaceID, opts...)
 	return err
 }
 
