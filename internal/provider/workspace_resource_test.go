@@ -187,7 +187,7 @@ func TestWorkspaceResourceDeleteUsesWorkspaceTenant(t *testing.T) {
 		writeJSON(t, w, map[string]string{"id": "workspace-id"})
 	}), option.WithTenantID("configured-workspace-id"))
 
-	if err := resource.deleteWorkspace(context.Background(), "workspace-id"); err != nil {
+	if err := resource.deleteWorkspace(context.Background(), "workspace-id", types.StringNull()); err != nil {
 		t.Fatalf("deleteWorkspace returned error: %v", err)
 	}
 }
@@ -197,7 +197,7 @@ func TestWorkspaceResourceDeleteReturnsNotFound(t *testing.T) {
 		http.Error(w, `{"detail":"workspace not found"}`, http.StatusNotFound)
 	}))
 
-	err := resource.deleteWorkspace(context.Background(), "workspace-id")
+	err := resource.deleteWorkspace(context.Background(), "workspace-id", types.StringNull())
 	if !isLangSmithNotFound(err) {
 		t.Fatalf("deleteWorkspace error = %v, want not found", err)
 	}
