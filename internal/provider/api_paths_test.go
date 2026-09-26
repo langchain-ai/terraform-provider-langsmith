@@ -20,6 +20,8 @@ func TestAPIPathsUsePublicPrefix(t *testing.T) {
 		sandboxRegistriesPath,
 		sandboxRegistryResourcePath("registry-name"),
 		workspaceSecretsPath,
+		dataPlanesPath,
+		dataPlanePath("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
 	}
 
 	for _, p := range paths {
