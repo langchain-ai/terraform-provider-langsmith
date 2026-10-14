@@ -198,7 +198,7 @@ func TestAccAlertRuleCRUDLocal(t *testing.T) {
 		t.Fatalf("create test session: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = client.Sessions.Delete(context.Background(), session.ID)
+		_ = client.Sessions.Delete(context.Background(), session.ID)
 	})
 
 	model := alertRuleModel{
