@@ -26,6 +26,16 @@ The provider currently includes:
 - `langsmith_deployment`, which manages the desired state of a LangGraph deployment through the LangSmith API.
 - `data.langsmith_deployment_revision` and `data.langsmith_deployment_revisions`, which read the service-owned revision history of a deployment.
 
+## Agents and Environments
+
+Use `langsmith_agent` to create and import workspace-scoped agents. Agent creation automatically provisions LOCAL, DEVELOPMENT, STAGING, and PRODUCTION environments and their tracing projects. Reference `langsmith_agent.example.environments["PRODUCTION"].tracer_session_id` wherever a tracing project ID is needed.
+
+`data.langsmith_agent` reads an existing agent and its environment map; `data.langsmith_agent_environment` reads one environment by UUID. Both support an optional `workspace_id`, as does the resource. Environments follow the agent lifecycle: the public API does not support independently managing them, so there is no standalone environment resource. Environments removed outside Terraform are reflected on refresh, not recreated independently.
+
+**Destroying or replacing an agent deletes its environments, tracing projects, and attached runtimes.** Set `lifecycle { prevent_destroy = true }` for production agents. Changing `agent_id`, `source_type`, or `workspace_id` requires replacement; display name and agent type update in place. Import with `<agent_id>` or `<workspace_id>/<agent_id>`. These features require a LangSmith deployment with Agent Platform API support.
+
+See the [agent resource example](examples/resources/langsmith_agent/resource.tf) and generated [agent](docs/resources/agent.md), [agent lookup](docs/data-sources/agent.md), and [environment lookup](docs/data-sources/agent_environment.md) documentation.
+
 ## Maintainer documentation
 
 - [Release process](.github/RELEASING.md)

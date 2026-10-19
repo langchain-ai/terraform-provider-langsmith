@@ -8,7 +8,7 @@ description: |-
 
 The LangSmith provider manages [LangSmith](https://www.langchain.com/langsmith)
 resources as code — workspaces, roles, organization and workspace memberships,
-resource tags, ABAC policies, evaluators, run rules, and alert rules.
+resource tags, ABAC policies, agents and their environments, evaluators, run rules, and alert rules.
 
 For LangSmith concepts, setup, and product documentation, see the
 **[LangSmith documentation](https://docs.smith.langchain.com)**.
