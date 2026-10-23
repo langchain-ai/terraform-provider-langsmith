@@ -1,6 +1,11 @@
 # Terraform Provider for LangSmith
 
-This is the first-party LangSmith Terraform provider scaffold.
+This is the first-party LangSmith Terraform provider.
+
+This repository receives reviewed source exports through Copybara. Report bugs
+and propose changes through GitHub issues here; maintainers incorporate changes
+in the development source before exporting them. Public-only source edits are
+overwritten by the next export. Releases remain on this repository’s `v*` tags.
 
 The provider currently includes:
 

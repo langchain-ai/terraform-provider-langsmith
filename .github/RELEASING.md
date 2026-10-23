@@ -4,8 +4,8 @@ This document is the source of truth for releasing
 `langchain-ai/terraform-provider-langsmith`.
 
 Releases are cut from this public repository because the Terraform Registry
-requires it. The copy at `langchainplus/sdks/terraform` is a Copybara mirror;
-tagging the monorepo does not release the provider.
+requires it. Copybara exports the development source to this public repository;
+tagging the development monorepo does not release the provider.
 
 ## Versioning
 
@@ -21,8 +21,9 @@ git tag --list 'v*' --sort=-v:refname | head
 
 ## Before tagging
 
-1. Land the release contents on `main` through a pull request. Copybara syncs
-   also land through pull requests.
+1. Land the release contents through the development source review process,
+   then wait for Copybara to export them to this public repository’s `main`.
+   Do not merge public-only source changes: the next export would overwrite them.
 2. Synchronize local `main` and record the exact commit to release:
 
    ```bash

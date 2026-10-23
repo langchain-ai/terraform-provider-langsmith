@@ -1,8 +1,6 @@
 # Release config for the langsmith Terraform provider
 # (registry.terraform.io/langchain-ai/langsmith).
 #
-# This repo is the source of truth for the provider; non-.github content is
-# vendored into langchainplus/sdks/terraform via Copybara (vendor_terraform).
 # The release workflow (.github/workflows/release.yml) sets GPG_FINGERPRINT after
 # importing the signing key, and GoReleaser detached-signs the checksums.
 version: 2
