@@ -9,21 +9,40 @@ tagging the monorepo does not release the provider.
 
 ## Versioning
 
-There is no version file to bump. `main.go` contains `var version = "dev"`, and
-GoReleaser replaces it at build time with the version from the Git tag. Pushing
-the tag is the version bump.
+Release Please maintains a release pull request on each push to `main` using
+Conventional Commits (`fix:`, `feat:`, and `feat!:` or `BREAKING CHANGE:`).
+Merge commits should preserve the Conventional Commit subject in the squash
+commit. Copybara sync PRs also need a Conventional Commit squash title when
+they contain releasable changes.
 
-Use the next appropriate semantic version. To see existing releases:
+The release PR updates `CHANGELOG.md` and `.release-please-manifest.json`.
+The manifest starts at the latest stable release, `0.0.16`; existing release
+tags provide the commit boundary. Before 1.0, fixes bump the patch version,
+features bump the patch version, and breaking changes bump the minor version.
+Tags retain the Registry-compatible `vX.Y.Z` format, without a component prefix.
+`main.go` stays at `var version = "dev"`; GoReleaser injects the tag version
+at build time.
 
-```bash
-git tag --list 'v*' --sort=-v:refname | head
-```
+## Stable releases
 
-## Before tagging
+Enable **Allow GitHub Actions to create and approve pull requests** in the
+repository's Actions settings. The workflow uses `GITHUB_TOKEN` with
+`contents: write` and `pull-requests: write` for Release Please; the publishing
+job alone imports the existing GPG signing secrets.
 
-1. Land the release contents on `main` through a pull request. Copybara syncs
-   also land through pull requests.
-2. Synchronize local `main` and record the exact commit to release:
+PRs created or updated with `GITHUB_TOKEN` do not automatically trigger other
+Actions workflows. Before merging a release PR, a maintainer must push a
+commit to its branch to trigger the normal pull-request CI (an empty commit
+is sufficient). Repeat this after any bot update that changes the release PR.
+Do not bypass the CI requirements to merge the bot PR.
+
+1. Land the release contents on `main` through a pull request, then review the
+   generated release PR's version and changelog and run its CI as above.
+2. Merge the release PR only after its CI passes. Release Please creates the
+   tag and GitHub Release on the resulting `main` push. The same workflow runs
+   GoReleaser at the released SHA to upload signed Registry artifacts; it does
+   not rely on a tag-push workflow, which `GITHUB_TOKEN` would not trigger.
+3. Synchronize local `main` and record the exact released commit:
 
    ```bash
    git switch main
@@ -58,8 +77,9 @@ git tag --list 'v*' --sort=-v:refname | head
    If `make generate` changes `docs/`, commit the generated files before
    merging. Running plain `make` is not equivalent to CI.
 
-## Tag and publish
+## Development candidates
 
+Stable releases use the release PR rather than manually pushed tags.
 For a development candidate, use a SemVer prerelease tag such as
 `v0.0.14-rc.1` on the tested feature-branch commit. Confirm the five CI jobs
 listed above passed for that commit before tagging. GoReleaser marks these
