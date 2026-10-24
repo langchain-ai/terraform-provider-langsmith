@@ -9,17 +9,27 @@ tagging the development monorepo does not release the provider.
 
 ## Versioning
 
-There is no version file to bump. `main.go` contains `var version = "dev"`, and
-GoReleaser replaces it at build time with the version from the Git tag. Pushing
-the tag is the version bump.
+Release Please maintains a release pull request on each push to public `main`,
+using Conventional Commits (`fix:`, `feat:`, and `feat!:` or `BREAKING CHANGE:`).
+Copybara preserves the source commit title, or its `SDK-Note:` entries when
+present, for release detection.
 
-Use the next appropriate semantic version. To see existing releases:
+The release PR updates `CHANGELOG.md` and `.release-please-manifest.json`.
+These files stay public-owned and are excluded from export. Workflow files,
+`release-please-config.json`, and this runbook are maintained in the development
+source and exported by Copybara; do not edit them only in the public repository.
+The nested workflows execute only after export, not in the development source.
 
-```bash
-git tag --list 'v*' --sort=-v:refname | head
-```
+Before 1.0, fixes and features bump the patch version; breaking changes bump
+the minor version. Tags use `vX.Y.Z` without a component prefix. `main.go`
+stays at `var version = "dev"`; GoReleaser injects the tag version at build time.
 
-## Before tagging
+## Before releasing
+
+Development-source CI runs vet, unit tests, lint, build, offline Terraform
+acceptance tests, and docs drift checks before export. Public CI additionally
+checks vet, unit tests, and builds on Linux, macOS, and Windows. Neither runs
+credentialed live acceptance tests by default.
 
 1. Land the release contents through the development source review process,
    then wait for Copybara to export them to this public repository’s `main`.
@@ -59,8 +69,28 @@ git tag --list 'v*' --sort=-v:refname | head
    If `make generate` changes `docs/`, commit the generated files before
    merging. Running plain `make` is not equivalent to CI.
 
-## Tag and publish
+## Stable releases
 
+Enable **Allow GitHub Actions to create and approve pull requests** in the
+public repository's Actions settings. Release Please uses `GITHUB_TOKEN` with
+`contents: write` and `pull-requests: write`; only the publishing job imports
+the existing GPG signing secrets.
+
+PRs created or updated with `GITHUB_TOKEN` do not automatically trigger other
+Actions workflows. A maintainer must push a commit to the release PR branch
+(an empty commit is sufficient) to trigger normal PR CI. Repeat after bot
+updates, and do not bypass CI requirements.
+
+Review the version and changelog, confirm public CI passed for the latest
+exported changes and the release PR, then merge the release PR. Release Please
+creates the tag and GitHub Release. The same workflow runs GoReleaser at the
+released SHA to upload signed Registry artifacts, since `GITHUB_TOKEN`-created
+tags do not trigger another workflow. Verify artifacts and Registry ingestion
+as described below.
+
+## Development candidates
+
+Stable releases use the release PR rather than manually pushed tags.
 For a development candidate, use a SemVer prerelease tag such as
 `v0.0.14-rc.1` on the tested feature-branch commit. Confirm the five CI jobs
 listed above passed for that commit before tagging. GoReleaser marks these
