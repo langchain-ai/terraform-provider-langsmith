@@ -121,6 +121,11 @@ type workspaceMemberPayload struct {
 	RoleID        string `json:"role_id,omitempty"`
 }
 
+type workspaceInvitePayload struct {
+	Email           string `json:"email"`
+	WorkspaceRoleID string `json:"workspace_role_id,omitempty"`
+}
+
 type membershipReadResult struct {
 	Status            string
 	IdentityID        string
