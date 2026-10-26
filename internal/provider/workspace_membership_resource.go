@@ -20,6 +20,7 @@ const (
 	workspaceMembershipActivePath  = "api/v1/workspaces/current/members/active"
 	workspaceMembershipPendingPath = "api/v1/workspaces/current/members/pending"
 	workspaceMembershipCreatePath  = "api/v1/workspaces/current/members"
+	workspaceMembershipInvitePath  = "api/v1/workspaces/current/members/batch"
 )
 
 var (
@@ -49,7 +50,7 @@ func (r *WorkspaceMembershipResource) Metadata(ctx context.Context, req resource
 
 func (r *WorkspaceMembershipResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages a LangSmith workspace membership for an accepted organization member.",
+		MarkdownDescription: "Manages a LangSmith workspace membership for an organization member. When the user has not accepted the organization invite yet, a pending workspace invite is created and becomes active when the user accepts.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -66,7 +67,7 @@ func (r *WorkspaceMembershipResource) Schema(ctx context.Context, req resource.S
 				Required:            true,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 				Validators:          []frameworkvalidator.String{nonEmptyStringValidator{}},
-				MarkdownDescription: "User email address for the workspace membership. The user must have accepted organization membership before this resource can create workspace membership.",
+				MarkdownDescription: "User email address for the workspace membership. The user must be an organization member or have a pending organization invite, for example from `langsmith_org_membership`.",
 			},
 			"role_id": schema.StringAttribute{
 				Required:            true,
@@ -75,7 +76,7 @@ func (r *WorkspaceMembershipResource) Schema(ctx context.Context, req resource.S
 			},
 			"status": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "Membership status: `active` for accepted membership or `pending` when an existing pending workspace invite is returned by LangSmith.",
+				MarkdownDescription: "Membership status: `active` for accepted membership or `pending` while the workspace invite waits for the user to accept the organization invite.",
 			},
 		},
 	}
@@ -215,7 +216,10 @@ func (r *WorkspaceMembershipResource) ensureWorkspaceMembership(ctx context.Cont
 		return workspaceMembershipResourceModel{}, fmt.Errorf("organization membership for %s was not found; create or import langsmith_org_membership first", email)
 	}
 	if orgMembership.Status == membershipStatusPending {
-		return workspaceMembershipResourceModel{}, fmt.Errorf("organization membership for %s is pending; the invite must be accepted before Terraform can add workspace membership", email)
+		if err := r.inviteToWorkspace(ctx, workspaceID, email, roleID); err != nil {
+			return workspaceMembershipResourceModel{}, err
+		}
+		return r.readWorkspaceMembershipModel(ctx, workspaceID, email)
 	}
 
 	payload, err := workspaceMemberPayloadFromOrgMembership(orgMembership, roleID)
@@ -246,6 +250,15 @@ func (r *WorkspaceMembershipResource) readWorkspaceMembership(ctx context.Contex
 func (r *WorkspaceMembershipResource) createWorkspaceMembership(ctx context.Context, workspaceID string, payload workspaceMemberPayload) error {
 	var result memberIdentityAPI
 	return r.client.Post(ctx, workspaceMembershipCreatePath, payload, &result, workspaceTenantOption(workspaceID))
+}
+
+// inviteToWorkspace creates a pending workspace invite for a user whose organization
+// invite has not been accepted yet. The workspace member endpoint only accepts identity
+// IDs of accepted members, so the batch invite endpoint is used instead: it attaches the
+// workspace invite to the existing pending organization invite.
+func (r *WorkspaceMembershipResource) inviteToWorkspace(ctx context.Context, workspaceID string, email string, roleID string) error {
+	payload := []workspaceInvitePayload{{Email: email, WorkspaceRoleID: roleID}}
+	return r.client.Post(ctx, workspaceMembershipInvitePath, payload, nil, workspaceTenantOption(workspaceID))
 }
 
 func (r *WorkspaceMembershipResource) updateActiveWorkspaceMembershipRole(ctx context.Context, workspaceID string, identityID string, roleID string) error {
