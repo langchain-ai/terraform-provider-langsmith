@@ -3,12 +3,12 @@
 page_title: "langsmith_workspace_membership Resource - langsmith"
 subcategory: ""
 description: |-
-  Manages a LangSmith workspace membership for an accepted organization member.
+  Manages a LangSmith workspace membership for an organization member. When the user has not accepted the organization invite yet, a pending workspace invite is created and becomes active when the user accepts.
 ---
 
 # langsmith_workspace_membership (Resource)
 
-Manages a LangSmith workspace membership for an accepted organization member.
+Manages a LangSmith workspace membership for an organization member. When the user has not accepted the organization invite yet, a pending workspace invite is created and becomes active when the user accepts.
 
 ## Example Usage
 
@@ -29,11 +29,11 @@ resource "langsmith_workspace_membership" "example" {
 
 ### Required
 
-- `email` (String) User email address for the workspace membership. The user must have accepted organization membership before this resource can create workspace membership.
+- `email` (String) User email address for the workspace membership. The user must be an organization member or have a pending organization invite, for example from `langsmith_org_membership`.
 - `role_id` (String) Workspace role ID to assign.
 - `workspace_id` (String) Workspace ID.
 
 ### Read-Only
 
 - `id` (String) Stable membership ID derived from workspace ID and normalized email.
-- `status` (String) Membership status: `active` for accepted membership or `pending` when an existing pending workspace invite is returned by LangSmith.
+- `status` (String) Membership status: `active` for accepted membership or `pending` while the workspace invite waits for the user to accept the organization invite.

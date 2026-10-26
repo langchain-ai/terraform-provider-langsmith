@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"testing"
 
 	frameworkresource "github.com/hashicorp/terraform-plugin-framework/resource"
@@ -108,8 +107,12 @@ func TestParseWorkspaceMembershipImportID(t *testing.T) {
 	}
 }
 
-func TestWorkspaceMembershipEnsureRequiresAcceptedOrgMembership(t *testing.T) {
+func TestWorkspaceMembershipEnsureInvitesPendingOrgMember(t *testing.T) {
+	var invited, accepted bool
+	inviteCount := 0
+	requests := make([]string, 0, 8)
 	resource := newWorkspaceMembershipResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/orgs/current/roles":
 			writeJSON(t, w, []roleAPI{{
@@ -119,9 +122,23 @@ func TestWorkspaceMembershipEnsureRequiresAcceptedOrgMembership(t *testing.T) {
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces/current/members/active":
 			assertWorkspaceTenantHeader(t, r)
+			if accepted {
+				writeJSON(t, w, []memberIdentityAPI{{
+					ID: "workspace-identity-id", Email: "alice@langchain.dev", RoleID: "workspace-role-id",
+				}})
+				return
+			}
 			writeJSON(t, w, []memberIdentityAPI{})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces/current/members/pending":
 			assertWorkspaceTenantHeader(t, r)
+			if invited && !accepted {
+				writeJSON(t, w, []pendingIdentityAPI{{
+					ID:     "pending-workspace-id",
+					Email:  "alice@langchain.dev",
+					RoleID: "workspace-role-id",
+				}})
+				return
+			}
 			writeJSON(t, w, []pendingIdentityAPI{})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/orgs/current/members/active":
 			writeJSON(t, w, []memberIdentityAPI{})
@@ -131,21 +148,62 @@ func TestWorkspaceMembershipEnsureRequiresAcceptedOrgMembership(t *testing.T) {
 				Email:     "alice@langchain.dev",
 				OrgRoleID: "org-role-id",
 			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspaces/current/members/batch":
+			assertWorkspaceTenantHeader(t, r)
+			var payload []map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode workspace invite payload: %v", err)
+			}
+			if !reflect.DeepEqual(payload, []map[string]string{{"email": "alice@langchain.dev", "workspace_role_id": "workspace-role-id"}}) {
+				t.Fatalf("payload = %#v", payload)
+			}
+			inviteCount++
+			invited = true
+			writeJSON(t, w, []pendingIdentityAPI{{ID: "pending-org-id", Email: "alice@langchain.dev"}})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 	}))
 
-	_, err := resource.ensureWorkspaceMembership(context.Background(), workspaceMembershipResourceModel{
+	model, err := resource.ensureWorkspaceMembership(context.Background(), workspaceMembershipResourceModel{
 		WorkspaceID: types.StringValue("workspace-id"),
 		Email:       types.StringValue("alice@langchain.dev"),
 		RoleID:      types.StringValue("workspace-role-id"),
 	})
-	if err == nil {
-		t.Fatalf("ensureWorkspaceMembership returned nil error for pending org membership")
+	if err != nil {
+		t.Fatalf("ensureWorkspaceMembership returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "organization membership for alice@langchain.dev is pending") {
-		t.Fatalf("error = %v", err)
+	if model.Status.ValueString() != membershipStatusPending {
+		t.Fatalf("Status = %q, want pending", model.Status.ValueString())
+	}
+	if model.RoleID.ValueString() != "workspace-role-id" {
+		t.Fatalf("RoleID = %q, want workspace-role-id", model.RoleID.ValueString())
+	}
+	if !reflect.DeepEqual(requests, []string{
+		"GET /api/v1/orgs/current/roles",
+		"GET /api/v1/workspaces/current/members/active",
+		"GET /api/v1/workspaces/current/members/pending",
+		"GET /api/v1/orgs/current/members/active",
+		"GET /api/v1/orgs/current/members/pending",
+		"POST /api/v1/workspaces/current/members/batch",
+		"GET /api/v1/workspaces/current/members/active",
+		"GET /api/v1/workspaces/current/members/pending",
+	}) {
+		t.Fatalf("requests = %#v", requests)
+	}
+
+	pending, err := resource.ensureWorkspaceMembership(context.Background(), model)
+	if err != nil || pending != model || inviteCount != 1 {
+		t.Fatalf("repeated ensure = %#v, %v; invite count = %d", pending, err, inviteCount)
+	}
+
+	accepted = true
+	active, err := resource.readWorkspaceMembershipModel(context.Background(), "workspace-id", "alice@langchain.dev")
+	if err != nil {
+		t.Fatalf("read accepted membership: %v", err)
+	}
+	if active.Status.ValueString() != membershipStatusActive || active.ID != model.ID || active.RoleID != model.RoleID {
+		t.Fatalf("accepted membership = %#v", active)
 	}
 }
 
