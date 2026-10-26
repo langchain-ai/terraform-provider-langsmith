@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.17](https://github.com/langchain-ai/terraform-provider-langsmith/compare/v0.0.16...v0.0.17) (2026-10-26)
+
+
+### Bug Fixes
+
+* allow empty workspace role descriptions ([5ec8daf](https://github.com/langchain-ai/terraform-provider-langsmith/commit/5ec8dafd0606c0d9b97dafe6fa3564107f71096a))
+* allow empty workspace role descriptions ([099f3c8](https://github.com/langchain-ai/terraform-provider-langsmith/commit/099f3c85e5a2348f5bd2394f551c74b0cd4dddc8))
+* **terraform:** create workspace memberships for pending org invites ([ec46f23](https://github.com/langchain-ai/terraform-provider-langsmith/commit/ec46f2365ef576959672c123d652ba545844f3f8))
+
 ## v0.0.6 (2026-08-10)
 
 v0.0.6 adds Terraform support for LangSmith resource tags and attribute-based access control (ABAC). You can now define workspace-scoped tags, apply them to LangSmith resources, create organization-scoped access policies based on those tags, and attach policies to workspace roles.
