@@ -296,28 +296,36 @@ func fillDashboardDefaults(definition map[string]any) map[string]any {
 	setDefault(definition, "description", nil)
 	setDefault(definition, "layout", nil)
 	setDefault(definition, "charts", []any{})
-	for _, rawChart := range definition["charts"].([]any) {
-		chart := rawChart.(map[string]any)
+	charts, _ := definition["charts"].([]any)
+	for _, rawChart := range charts {
+		chart, ok := rawChart.(map[string]any)
+		if !ok {
+			continue
+		}
 		setDefault(chart, "metadata", nil)
 		if chart["chart_type"] == dashboardTextChartType {
 			continue
 		}
 		setDefault(chart, "description", nil)
 		setDefault(chart, "common_filters", nil)
-		for _, rawSeries := range chart["series"].([]any) {
-			series := rawSeries.(map[string]any)
+		seriesList, _ := chart["series"].([]any)
+		for _, rawSeries := range seriesList {
+			series, ok := rawSeries.(map[string]any)
+			if !ok {
+				continue
+			}
 			for _, key := range []string{"metadata", "filters", "metric", "project_metric", "feedback_key", "workspace_id", "group_by", "group_by_definitions"} {
 				setDefault(series, key, nil)
 			}
-			metric := series["metric_definition"].(map[string]any)
-			setDefault(metric, "filter", nil)
-			for _, side := range []string{"numerator", "denominator"} {
-				if leaf, ok := metric[side].(map[string]any); ok {
-					setDefault(leaf, "filter", nil)
+			if metric, ok := series["metric_definition"].(map[string]any); ok {
+				setDefault(metric, "filter", nil)
+				for _, side := range []string{"numerator", "denominator"} {
+					if leaf, ok := metric[side].(map[string]any); ok {
+						setDefault(leaf, "filter", nil)
+					}
 				}
 			}
-			filter := series["filter_definition"].(map[string]any)
-			if filter["source_type"] == "tracing_project" {
+			if filter, ok := series["filter_definition"].(map[string]any); ok && filter["source_type"] == "tracing_project" {
 				for _, key := range []string{"run_filter", "trace_filter", "tree_filter"} {
 					setDefault(filter, key, nil)
 				}
