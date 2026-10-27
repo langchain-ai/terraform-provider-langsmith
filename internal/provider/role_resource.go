@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -107,7 +108,7 @@ func (r *WorkspaceRoleResource) Create(ctx context.Context, req resource.CreateR
 		resp.Diagnostics.AddError("Unable to Create LangSmith Workspace Role", err.Error())
 		return
 	}
-	next := roleModelFromAPI(role)
+	next := roleModelFromAPI(role, plan.Permissions)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
 
@@ -127,7 +128,7 @@ func (r *WorkspaceRoleResource) Read(ctx context.Context, req resource.ReadReque
 		resp.Diagnostics.AddError("Unable to Read LangSmith Workspace Role", err.Error())
 		return
 	}
-	next := roleModelFromAPI(role)
+	next := roleModelFromAPI(role, state.Permissions)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
 
@@ -154,7 +155,7 @@ func (r *WorkspaceRoleResource) Update(ctx context.Context, req resource.UpdateR
 		resp.Diagnostics.AddError("Unable to Update LangSmith Workspace Role", err.Error())
 		return
 	}
-	next := roleModelFromAPI(role)
+	next := roleModelFromAPI(role, plan.Permissions)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
 
@@ -217,14 +218,18 @@ func rolePayloadFromModel(data roleResourceModel) rolePayload {
 	}
 }
 
-func roleModelFromAPI(role roleAPI) roleResourceModel {
+func roleModelFromAPI(role roleAPI, priorPermissions []string) roleResourceModel {
+	permissions := coalesceStringSlice(role.Permissions)
+	if slices.Equal(slices.Sorted(slices.Values(permissions)), slices.Sorted(slices.Values(priorPermissions))) {
+		permissions = coalesceStringSlice(priorPermissions)
+	}
 	return roleResourceModel{
 		ID:             types.StringValue(role.ID),
 		Name:           nullableString(role.Name),
 		DisplayName:    types.StringValue(role.DisplayName),
 		Description:    types.StringValue(role.Description),
 		OrganizationID: nullableString(role.OrganizationID),
-		Permissions:    coalesceStringSlice(role.Permissions),
+		Permissions:    permissions,
 	}
 }
 

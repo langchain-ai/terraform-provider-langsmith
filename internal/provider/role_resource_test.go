@@ -69,7 +69,7 @@ func TestRoleModelFromAPI(t *testing.T) {
 		OrganizationID: "org-id",
 		Permissions:    []string{"projects:read"},
 		AccessScope:    "workspace",
-	})
+	}, nil)
 
 	if model.ID.ValueString() != "role-id" {
 		t.Fatalf("ID = %q", model.ID.ValueString())
@@ -82,6 +82,29 @@ func TestRoleModelFromAPI(t *testing.T) {
 	}
 }
 
+func TestRoleModelFromAPIPreservesOrderWithoutHidingDrift(t *testing.T) {
+	prior := []string{"projects:read", "projects:create"}
+	for _, tc := range []struct {
+		name     string
+		returned []string
+		want     []string
+	}{
+		{"reordered", []string{"projects:create", "projects:read"}, prior},
+		{"added", []string{"projects:create", "projects:read", "projects:delete"}, []string{"projects:create", "projects:read", "projects:delete"}},
+		{"removed", []string{"projects:read"}, []string{"projects:read"}},
+		{"replaced", []string{"projects:read", "projects:delete"}, []string{"projects:read", "projects:delete"}},
+		{"duplicate", []string{"projects:read", "projects:read"}, []string{"projects:read", "projects:read"}},
+		{"empty", nil, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := roleModelFromAPI(roleAPI{Permissions: tc.returned}, prior)
+			if !reflect.DeepEqual(model.Permissions, tc.want) {
+				t.Fatalf("Permissions = %#v, want %#v", model.Permissions, tc.want)
+			}
+		})
+	}
+}
+
 func TestRoleModelFromAPIUsesEmptyPermissionsWhenResponseOmitsPermissions(t *testing.T) {
 	model := roleModelFromAPI(roleAPI{
 		ID:          "role-id",
@@ -89,7 +112,7 @@ func TestRoleModelFromAPIUsesEmptyPermissionsWhenResponseOmitsPermissions(t *tes
 		DisplayName: "Custom Role",
 		Description: "desc",
 		AccessScope: accessScopeWorkspace,
-	})
+	}, nil)
 
 	if model.Permissions == nil {
 		t.Fatalf("Permissions = nil, want empty list")
