@@ -16,7 +16,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
-	"github.com/langchain-ai/langsmith-go/option"
 )
 
 var (
@@ -93,16 +92,15 @@ func (r *dashboardJSONResource) Create(ctx context.Context, req resource.CreateR
 		resp.Diagnostics.AddError("Invalid dashboard", err.Error())
 		return
 	}
-	var result map[string]any
-	// Creating is not idempotent, so a retried request could create a second dashboard.
-	opts := append(workspaceOpts(plan.WorkspaceID), option.WithMaxRetries(0))
-	if err := r.client.Post(ctx, dashboardDefinitionCreatePath, body, &result, opts...); err != nil {
+	id := newDashboardID()
+	etag, err := putDashboardDefinition(ctx, r.client, id, plan.WorkspaceID, "", body, nil)
+	if err != nil {
 		resp.Diagnostics.AddError("Failed to create dashboard", err.Error())
 		return
 	}
-	id, _ := result["id"].(string)
 	plan.ID = types.StringValue(id)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	resp.Diagnostics.Append(saveDashboardETag(ctx, resp.Private, etag)...)
 }
 
 func (r *dashboardJSONResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -112,7 +110,8 @@ func (r *dashboardJSONResource) Read(ctx context.Context, req resource.ReadReque
 		return
 	}
 	var live map[string]any
-	if err := r.client.Get(ctx, dashboardDefinitionPath(state.ID.ValueString()), nil, &live, workspaceOpts(state.WorkspaceID)...); err != nil {
+	etag, err := getDashboardDefinition(ctx, r.client, state.ID.ValueString(), state.WorkspaceID, &live)
+	if err != nil {
 		if isLangSmithNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -129,6 +128,7 @@ func (r *dashboardJSONResource) Read(ctx context.Context, req resource.ReadReque
 	}
 	state.Dashboard = dashboard
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	resp.Diagnostics.Append(saveDashboardETag(ctx, resp.Private, etag)...)
 }
 
 func (r *dashboardJSONResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -143,12 +143,16 @@ func (r *dashboardJSONResource) Update(ctx context.Context, req resource.UpdateR
 		resp.Diagnostics.AddError("Invalid dashboard", err.Error())
 		return
 	}
-	if err := r.client.Put(ctx, dashboardDefinitionPath(state.ID.ValueString()), body, nil, workspaceOpts(plan.WorkspaceID)...); err != nil {
+	ifMatch, diags := loadDashboardETag(ctx, req.Private)
+	resp.Diagnostics.Append(diags...)
+	etag, err := putDashboardDefinition(ctx, r.client, state.ID.ValueString(), plan.WorkspaceID, ifMatch, body, nil)
+	if err != nil {
 		resp.Diagnostics.AddError("Failed to update dashboard", err.Error())
 		return
 	}
 	plan.ID = state.ID
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	resp.Diagnostics.Append(saveDashboardETag(ctx, resp.Private, etag)...)
 }
 
 func (r *dashboardJSONResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -179,10 +183,12 @@ func dashboardJSONBody(raw string) (map[string]any, error) {
 
 // reconcileDashboardJSON keeps the configured string while the live dashboard
 // still matches every field it sets, and otherwise returns the live
-// definition so the next plan shows the drift.
+// definition so the next plan shows the drift. Chart IDs are not compared:
+// they only tell a write which existing chart to adopt.
 func reconcileDashboardJSON(configured types.String, live map[string]any) (types.String, error) {
 	if !configured.IsNull() && !configured.IsUnknown() {
-		if want, err := dashboardJSONBody(configured.ValueString()); err == nil && jsonSubset(want, live) {
+		if want, err := dashboardJSONBody(configured.ValueString()); err == nil &&
+			jsonSubset(withoutChartIDs(want), withoutChartIDs(live)) {
 			return configured, nil
 		}
 	}
@@ -193,9 +199,39 @@ func reconcileDashboardJSON(configured types.String, live map[string]any) (types
 	return types.StringValue(string(out)), nil
 }
 
+// withoutChartIDs returns a copy of a definition with each chart's id removed.
+func withoutChartIDs(definition map[string]any) map[string]any {
+	out := make(map[string]any, len(definition))
+	for key, value := range definition {
+		out[key] = value
+	}
+	charts, ok := definition["charts"].([]any)
+	if !ok {
+		return out
+	}
+	stripped := make([]any, len(charts))
+	for i, rawChart := range charts {
+		chart, ok := rawChart.(map[string]any)
+		if !ok {
+			stripped[i] = rawChart
+			continue
+		}
+		copied := make(map[string]any, len(chart))
+		for key, value := range chart {
+			if key != "id" {
+				copied[key] = value
+			}
+		}
+		stripped[i] = copied
+	}
+	out["charts"] = stripped
+	return out
+}
+
 // jsonSubset reports whether got has every value set in want. Objects may
 // carry extra keys, and a null in want also matches a missing key; arrays
-// must have the same length and match element by element.
+// must have the same length and match element by element, except "series"
+// arrays, which the API returns sorted and so match in any order.
 func jsonSubset(want, got any) bool {
 	switch w := want.(type) {
 	case map[string]any:
@@ -211,7 +247,16 @@ func jsonSubset(want, got any) bool {
 				}
 				continue
 			}
-			if !present || !jsonSubset(wantValue, gotValue) {
+			if !present {
+				return false
+			}
+			if key == "series" {
+				if !jsonSubsetUnordered(wantValue, gotValue) {
+					return false
+				}
+				continue
+			}
+			if !jsonSubset(wantValue, gotValue) {
 				return false
 			}
 		}
@@ -230,4 +275,31 @@ func jsonSubset(want, got any) bool {
 	default:
 		return reflect.DeepEqual(want, got)
 	}
+}
+
+// jsonSubsetUnordered is jsonSubset for arrays whose order does not matter:
+// each element of want must match a different element of got.
+func jsonSubsetUnordered(want, got any) bool {
+	w, wOK := want.([]any)
+	g, gOK := got.([]any)
+	if !wOK || !gOK {
+		return jsonSubset(want, got)
+	}
+	if len(w) != len(g) {
+		return false
+	}
+	used := make([]bool, len(g))
+	for _, wantElement := range w {
+		found := false
+		for i, gotElement := range g {
+			if !used[i] && jsonSubset(wantElement, gotElement) {
+				used[i], found = true, true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }

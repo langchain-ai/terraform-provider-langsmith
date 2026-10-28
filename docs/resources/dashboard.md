@@ -107,6 +107,7 @@ Required:
 Optional:
 
 - `description` (String) Chart description. Not used by text blocks.
+- `id` (String) ID of a chart already on the dashboard to manage under this `key`. Use it after importing a dashboard built in the UI, whose charts read back with their IDs as keys, to give a chart a new key without recreating it.
 - `markdown` (String) Markdown content. Required for text blocks; not used by charts.
 - `metadata_json` (String) Display settings the LangSmith UI stores on the chart, as a JSON object.
 - `series` (Attributes List) The chart's series. Charts need between one and three; text blocks have none. (see [below for nested schema](#nestedatt--charts--series))

@@ -21,7 +21,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
-	"github.com/langchain-ai/langsmith-go/option"
 )
 
 var (
@@ -48,6 +47,7 @@ type dashboardResourceModel struct {
 }
 
 type dashboardChartModel struct {
+	ID           types.String           `tfsdk:"id"`
 	Key          types.String           `tfsdk:"key"`
 	Type         types.String           `tfsdk:"type"`
 	Title        types.String           `tfsdk:"title"`
@@ -194,6 +194,12 @@ func (r *dashboardResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				MarkdownDescription: "Charts and text blocks, in display order. Charts not placed by `layout` are shown after it.",
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
+						"id": schema.StringAttribute{
+							Optional: true,
+							MarkdownDescription: "ID of a chart already on the dashboard to manage under this `key`. " +
+								"Use it after importing a dashboard built in the UI, whose charts read back with their " +
+								"IDs as keys, to give a chart a new key without recreating it.",
+						},
 						"key": schema.StringAttribute{
 							Required: true,
 							MarkdownDescription: "Identifies the chart within the dashboard and in `layout`. Up to 64 " +
@@ -347,13 +353,13 @@ func (r *dashboardResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 	var result dashboardDefinitionAPI
-	// Creating is not idempotent, so a retried request could create a second dashboard.
-	opts := append(workspaceOpts(plan.WorkspaceID), option.WithMaxRetries(0))
-	if err := r.client.Post(ctx, dashboardDefinitionCreatePath, body, &result, opts...); err != nil {
+	etag, err := putDashboardDefinition(ctx, r.client, newDashboardID(), plan.WorkspaceID, "", body, &result)
+	if err != nil {
 		resp.Diagnostics.AddError("Failed to create dashboard", err.Error())
 		return
 	}
 	r.setState(ctx, result, plan, &resp.State, &resp.Diagnostics)
+	resp.Diagnostics.Append(saveDashboardETag(ctx, resp.Private, etag)...)
 }
 
 func (r *dashboardResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -363,7 +369,8 @@ func (r *dashboardResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 	var result dashboardDefinitionAPI
-	if err := r.client.Get(ctx, dashboardDefinitionPath(state.ID.ValueString()), nil, &result, workspaceOpts(state.WorkspaceID)...); err != nil {
+	etag, err := getDashboardDefinition(ctx, r.client, state.ID.ValueString(), state.WorkspaceID, &result)
+	if err != nil {
 		if isLangSmithNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -372,6 +379,7 @@ func (r *dashboardResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 	r.setState(ctx, result, state, &resp.State, &resp.Diagnostics)
+	resp.Diagnostics.Append(saveDashboardETag(ctx, resp.Private, etag)...)
 }
 
 func (r *dashboardResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -386,12 +394,18 @@ func (r *dashboardResource) Update(ctx context.Context, req resource.UpdateReque
 		resp.Diagnostics.AddError("Invalid dashboard", err.Error())
 		return
 	}
+	// Writing only if the dashboard is as last read turns an edit made in the
+	// UI between plan and apply into an error rather than a silent overwrite.
+	ifMatch, diags := loadDashboardETag(ctx, req.Private)
+	resp.Diagnostics.Append(diags...)
 	var result dashboardDefinitionAPI
-	if err := r.client.Put(ctx, dashboardDefinitionPath(state.ID.ValueString()), body, &result, workspaceOpts(plan.WorkspaceID)...); err != nil {
+	etag, err := putDashboardDefinition(ctx, r.client, state.ID.ValueString(), plan.WorkspaceID, ifMatch, body, &result)
+	if err != nil {
 		resp.Diagnostics.AddError("Failed to update dashboard", err.Error())
 		return
 	}
 	r.setState(ctx, result, plan, &resp.State, &resp.Diagnostics)
+	resp.Diagnostics.Append(saveDashboardETag(ctx, resp.Private, etag)...)
 }
 
 func (r *dashboardResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -451,6 +465,7 @@ func dashboardChartFromModel(m dashboardChartModel) (dashboardChartAPI, error) {
 		return dashboardChartAPI{}, err
 	}
 	out := dashboardChartAPI{
+		ID:        m.ID.ValueStringPointer(),
 		Key:       m.Key.ValueString(),
 		ChartType: m.Type.ValueString(),
 		Metadata:  metadata,
@@ -583,14 +598,14 @@ func dashboardLeafMetricFromModel(m dashboardMetricLeafModel) (*dashboardMetricA
 	return out, nil
 }
 
-// dashboardLayoutFromModel builds both breakpoints from the wide-screen rows:
-// on narrow screens each chart gets a full-width row of its own.
+// dashboardLayoutFromModel builds the wide-screen breakpoint. The API derives
+// the narrow-screen one, giving each chart a full-width row of its own.
 func dashboardLayoutFromModel(rows []dashboardRowModel) (*dashboardLayoutAPI, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	layout := &dashboardLayoutAPI{Version: 1}
-	layout.Breakpoints.SM.Rows = []dashboardLayoutRowAPI{}
+	layout.Breakpoints.MD.Rows = []dashboardLayoutRowAPI{}
 	for i, row := range rows {
 		widths := defaultLayoutWidths(len(row.Charts), dashboardMediumWidthUnits)
 		widthsSet := 0
@@ -610,10 +625,6 @@ func dashboardLayoutFromModel(rows []dashboardRowModel) (*dashboardLayoutAPI, er
 				width = item.WidthUnits.ValueInt64()
 			}
 			mdRow.Items = append(mdRow.Items, dashboardLayoutItemAPI{ChartKey: item.Key.ValueString(), WidthUnits: width})
-			layout.Breakpoints.SM.Rows = append(layout.Breakpoints.SM.Rows, dashboardLayoutRowAPI{
-				HeightUnits: mdRow.HeightUnits,
-				Items:       []dashboardLayoutItemAPI{{ChartKey: item.Key.ValueString(), WidthUnits: dashboardSmallWidthUnits}},
-			})
 		}
 		layout.Breakpoints.MD.Rows = append(layout.Breakpoints.MD.Rows, mdRow)
 	}
@@ -654,6 +665,8 @@ func dashboardModelFromAPI(api dashboardDefinitionAPI, prior dashboardResourceMo
 
 func dashboardChartModelFromAPI(api dashboardChartAPI, prior dashboardChartModel) (dashboardChartModel, error) {
 	out := dashboardChartModel{
+		// id is only an input; keep whatever the configuration said.
+		ID:           prior.ID,
 		Key:          types.StringValue(api.Key),
 		Type:         types.StringValue(api.ChartType),
 		Title:        types.StringPointerValue(api.Title),
@@ -664,18 +677,53 @@ func dashboardChartModelFromAPI(api dashboardChartAPI, prior dashboardChartModel
 	if api.ChartType == dashboardTextChartType {
 		return out, nil
 	}
-	for i, series := range api.Series {
-		var priorSeries dashboardSeriesModel
-		if i < len(prior.Series) {
-			priorSeries = prior.Series[i]
-		}
-		model, err := dashboardSeriesModelFromAPI(series, priorSeries)
+	for _, pair := range pairSeriesWithPrior(api.Series, prior.Series) {
+		model, err := dashboardSeriesModelFromAPI(pair.api, pair.prior)
 		if err != nil {
-			return out, fmt.Errorf("series %q: %w", series.Name, err)
+			return out, fmt.Errorf("series %q: %w", pair.api.Name, err)
 		}
 		out.Series = append(out.Series, model)
 	}
 	return out, nil
+}
+
+type seriesPair struct {
+	api   dashboardSeriesAPI
+	prior dashboardSeriesModel
+}
+
+// pairSeriesWithPrior puts the API's series in the order prior lists them.
+// The API returns series sorted by name, so this keeps a configuration's
+// order from showing as a change. Each series is paired with the prior one
+// it equals; series with no equal, which are changes, come last in API order.
+func pairSeriesWithPrior(api []dashboardSeriesAPI, prior []dashboardSeriesModel) []seriesPair {
+	encoded := make([]string, len(api))
+	for i, series := range api {
+		raw, _ := json.Marshal(series)
+		encoded[i] = string(raw)
+	}
+	used := make([]bool, len(api))
+	var out []seriesPair
+	for _, priorSeries := range prior {
+		apiForm, err := dashboardSeriesFromModel(priorSeries)
+		if err != nil {
+			continue
+		}
+		raw, _ := json.Marshal(apiForm)
+		for i := range api {
+			if !used[i] && encoded[i] == string(raw) {
+				used[i] = true
+				out = append(out, seriesPair{api: api[i], prior: priorSeries})
+				break
+			}
+		}
+	}
+	for i, series := range api {
+		if !used[i] {
+			out = append(out, seriesPair{api: series})
+		}
+	}
+	return out
 }
 
 func dashboardSeriesModelFromAPI(api dashboardSeriesAPI, prior dashboardSeriesModel) (dashboardSeriesModel, error) {

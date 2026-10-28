@@ -9,7 +9,7 @@ import (
 )
 
 func TestDashboardPathsUsePublicPrefix(t *testing.T) {
-	for _, p := range []string{dashboardDefinitionCreatePath, dashboardPath("id"), dashboardDefinitionPath("id")} {
+	for _, p := range []string{dashboardPath("id"), dashboardDefinitionPath("id")} {
 		if !strings.HasPrefix(p, "api/") {
 			t.Errorf("path %q must start with api/", p)
 		}
@@ -145,11 +145,8 @@ func TestDashboardLayoutFromModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(layout)
-	want := `{"version":1,"breakpoints":{` +
-		`"sm":{"rows":[{"height_units":4,"items":[{"chart_key":"a","width_units":60}]},` +
-		`{"height_units":4,"items":[{"chart_key":"b","width_units":60}]},` +
-		`{"height_units":2,"items":[{"chart_key":"c","width_units":60}]}]},` +
-		`"md":{"rows":[{"height_units":4,"items":[{"chart_key":"a","width_units":60},{"chart_key":"b","width_units":60}]},` +
+	want := `{"version":1,"breakpoints":{"md":{"rows":[` +
+		`{"height_units":4,"items":[{"chart_key":"a","width_units":60},{"chart_key":"b","width_units":60}]},` +
 		`{"height_units":2,"items":[{"chart_key":"c","width_units":120}]}]}}}`
 	if string(raw) != want {
 		t.Fatalf("got  %s\nwant %s", raw, want)
@@ -217,5 +214,51 @@ func TestReconcileDashboardJSON(t *testing.T) {
 	got, err = reconcileDashboardJSON(configured, live)
 	if err != nil || got.ValueString() != `{"charts":[],"description":null,"title":"changed"}` {
 		t.Fatalf("got %v, %v; want the live definition", got, err)
+	}
+}
+
+func TestPairSeriesWithPriorKeepsConfigOrder(t *testing.T) {
+	series := func(name string) dashboardSeriesModel {
+		return dashboardSeriesModel{
+			Name:        types.StringValue(name),
+			Metric:      metricModel(leafMetric("count")),
+			ProjectIDs:  []types.String{types.StringValue("p")},
+			RunFilter:   types.StringNull(),
+			TraceFilter: types.StringNull(),
+			TreeFilter:  types.StringNull(),
+		}
+	}
+	apiForm := func(m dashboardSeriesModel) dashboardSeriesAPI {
+		out, err := dashboardSeriesFromModel(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	prior := []dashboardSeriesModel{series("b"), series("a"), series("c")}
+	changed := series("c")
+	changed.RunFilter = types.StringValue("eq(is_root, true)")
+	// The API returns series sorted by name; "c" changed outside Terraform.
+	api := []dashboardSeriesAPI{apiForm(series("a")), apiForm(series("b")), apiForm(changed)}
+
+	var names []string
+	for _, pair := range pairSeriesWithPrior(api, prior) {
+		names = append(names, pair.api.Name)
+	}
+	if strings.Join(names, ",") != "b,a,c" {
+		t.Fatalf("order = %v, want b,a,c with the changed series last", names)
+	}
+}
+
+func TestJSONSubsetIgnoresSeriesOrderAndChartIDs(t *testing.T) {
+	var want, live map[string]any
+	_ = json.Unmarshal([]byte(`{"charts":[{"id":"old","key":"a","series":[{"name":"x"},{"name":"y"}]}]}`), &want)
+	_ = json.Unmarshal([]byte(`{"charts":[{"id":"new","key":"a","series":[{"name":"y"},{"name":"x"}]}]}`), &live)
+	if !jsonSubset(withoutChartIDs(want), withoutChartIDs(live)) {
+		t.Fatal("series order or chart IDs counted as drift")
+	}
+	_ = json.Unmarshal([]byte(`{"charts":[{"id":"new","key":"a","series":[{"name":"x"},{"name":"x"}]}]}`), &live)
+	if jsonSubset(withoutChartIDs(want), withoutChartIDs(live)) {
+		t.Fatal("a changed series was not detected")
 	}
 }

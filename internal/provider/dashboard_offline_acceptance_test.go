@@ -1,11 +1,13 @@
 package provider
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -41,6 +43,7 @@ func TestAccDashboardResourcesOffline(t *testing.T) {
 					resource.TestCheckResourceAttrSet("langsmith_dashboard.test", "id"),
 					resource.TestCheckResourceAttr("langsmith_dashboard.test", "charts.#", "4"),
 					resource.TestCheckResourceAttr("langsmith_dashboard.test", "charts.1.series.0.metric.percentile", "0.99"),
+					resource.TestCheckResourceAttr("langsmith_dashboard.test", "charts.1.series.1.name", "p50"),
 					resource.TestCheckNoResourceAttr("langsmith_dashboard.test", "layout.0.charts.0.width_units"),
 					resource.TestCheckResourceAttrSet("langsmith_dashboard_json.test", "id"),
 				),
@@ -75,6 +78,9 @@ func TestAccDashboardResourcesOffline(t *testing.T) {
 				ResourceName:      "langsmith_dashboard.test",
 				ImportState:       true,
 				ImportStateVerify: true,
+				// With no configuration to follow, an import lists series in the
+				// order the API returns them, sorted by name.
+				ImportStateVerifyIgnore: []string{"charts.1.series"},
 			},
 			// A change made outside Terraform shows up in the next plan.
 			{
@@ -94,6 +100,9 @@ func TestAccDashboardResourcesOffline(t *testing.T) {
 
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
+	if backend.conditionalWrites == 0 {
+		t.Fatal("no update sent a matching If-Match")
+	}
 	if len(backend.dashboards) != 0 {
 		t.Fatalf("Terraform destroy left %d dashboards", len(backend.dashboards))
 	}
@@ -194,11 +203,19 @@ resource "langsmith_dashboard" "test" {
       key   = "latency"
       type  = "line"
       title = %[4]q
-      series = [{
-        name        = "p99"
-        metric      = { type = "percentile", field = "latency_seconds", percentile = 0.99 }
-        project_ids = [local.project_id]
-      }]
+      # Listed out of name order: the API returns series sorted by name.
+      series = [
+        {
+          name        = "p99"
+          metric      = { type = "percentile", field = "latency_seconds", percentile = 0.99 }
+          project_ids = [local.project_id]
+        },
+        {
+          name        = "p50"
+          metric      = { type = "percentile", field = "latency_seconds", percentile = 0.5 }
+          project_ids = [local.project_id]
+        },
+      ]
     },%[5]s
   ]
 %[6]s
@@ -217,6 +234,8 @@ type dashboardContractBackend struct {
 	mu         sync.Mutex
 	nextID     int
 	dashboards map[string]map[string]any
+	// conditionalWrites counts writes that sent a matching If-Match.
+	conditionalWrites int
 }
 
 func (b *dashboardContractBackend) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -226,21 +245,26 @@ func (b *dashboardContractBackend) ServeHTTP(w http.ResponseWriter, req *http.Re
 	path := strings.TrimPrefix(req.URL.Path, "/")
 	sectionPrefix := "api/v1/charts/section/"
 	switch {
-	case path == dashboardDefinitionCreatePath && req.Method == http.MethodPost:
-		b.nextID++
-		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", b.nextID)
-		b.write(w, req, id)
 	case strings.HasSuffix(path, "/definition") && strings.HasPrefix(path, sectionPrefix):
 		id := strings.TrimSuffix(strings.TrimPrefix(path, sectionPrefix), "/definition")
-		if _, ok := b.dashboards[id]; !ok {
-			http.Error(w, `{"detail":"Section not found"}`, http.StatusNotFound)
-			return
-		}
+		stored, exists := b.dashboards[id]
 		switch req.Method {
 		case http.MethodGet:
-			writeDashboardJSON(w, b.dashboards[id])
+			if !exists {
+				http.Error(w, `{"detail":"Section not found"}`, http.StatusNotFound)
+				return
+			}
+			w.Header().Set("ETag", dashboardTestETag(stored))
+			writeDashboardJSON(w, stored)
 		case http.MethodPut:
-			b.write(w, req, id)
+			if ifMatch := req.Header.Get("If-Match"); ifMatch != "" {
+				if !exists || ifMatch != dashboardTestETag(stored) {
+					http.Error(w, `{"detail":"Dashboard has changed since it was read"}`, http.StatusPreconditionFailed)
+					return
+				}
+				b.conditionalWrites++
+			}
+			b.write(w, req, id, !exists)
 		default:
 			b.reject(w, req, "unexpected method")
 		}
@@ -252,7 +276,7 @@ func (b *dashboardContractBackend) ServeHTTP(w http.ResponseWriter, req *http.Re
 	}
 }
 
-func (b *dashboardContractBackend) write(w http.ResponseWriter, req *http.Request, id string) {
+func (b *dashboardContractBackend) write(w http.ResponseWriter, req *http.Request, id string, created bool) {
 	if req.Header.Get("X-Tenant-Id") != "offline-workspace" {
 		b.reject(w, req, "missing workspace header")
 		return
@@ -266,10 +290,48 @@ func (b *dashboardContractBackend) write(w http.ResponseWriter, req *http.Reques
 		b.reject(w, req, "request body carries an id")
 		return
 	}
+	previous := b.dashboards[id]
 	stored := fillDashboardDefaults(definition)
 	stored["id"] = id
+	b.assignChartIDs(stored, previous)
 	b.dashboards[id] = stored
+	w.Header().Set("ETag", dashboardTestETag(stored))
+	if created {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+	}
 	writeDashboardJSON(w, stored)
+}
+
+// assignChartIDs keeps the ID of each chart whose key was already on the
+// dashboard and gives new charts new IDs.
+func (b *dashboardContractBackend) assignChartIDs(definition, previous map[string]any) {
+	previousIDs := map[string]any{}
+	if previousCharts, ok := previous["charts"].([]any); ok {
+		for _, rawChart := range previousCharts {
+			if chart, ok := rawChart.(map[string]any); ok {
+				previousIDs[fmt.Sprint(chart["key"])] = chart["id"]
+			}
+		}
+	}
+	charts, _ := definition["charts"].([]any)
+	for _, rawChart := range charts {
+		chart, ok := rawChart.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id, ok := previousIDs[fmt.Sprint(chart["key"])]; ok {
+			chart["id"] = id
+			continue
+		}
+		b.nextID++
+		chart["id"] = fmt.Sprintf("00000000-0000-4000-9000-%012d", b.nextID)
+	}
+}
+
+func dashboardTestETag(definition map[string]any) string {
+	raw, _ := json.Marshal(definition)
+	return fmt.Sprintf("%q", fmt.Sprintf("%x", sha256.Sum256(raw)))
 }
 
 func (b *dashboardContractBackend) editTitles(title string) {
@@ -331,11 +393,44 @@ func fillDashboardDefaults(definition map[string]any) map[string]any {
 				}
 			}
 		}
+		// The API returns series sorted by name.
+		sort.SliceStable(seriesList, func(i, j int) bool {
+			return seriesName(seriesList[i]) < seriesName(seriesList[j])
+		})
 	}
 	if layout, ok := definition["layout"].(map[string]any); ok {
 		setDefault(layout, "version", float64(1))
+		if breakpoints, ok := layout["breakpoints"].(map[string]any); ok {
+			setDefault(breakpoints, "sm", deriveSmallBreakpoint(breakpoints["md"]))
+		}
 	}
 	return definition
+}
+
+func seriesName(series any) string {
+	if object, ok := series.(map[string]any); ok {
+		return fmt.Sprint(object["name"])
+	}
+	return ""
+}
+
+// deriveSmallBreakpoint gives each wide-screen chart its own full-width row.
+func deriveSmallBreakpoint(md any) map[string]any {
+	rows := []any{}
+	breakpoint, _ := md.(map[string]any)
+	mdRows, _ := breakpoint["rows"].([]any)
+	for _, rawRow := range mdRows {
+		row, _ := rawRow.(map[string]any)
+		items, _ := row["items"].([]any)
+		for _, rawItem := range items {
+			item, _ := rawItem.(map[string]any)
+			rows = append(rows, map[string]any{
+				"height_units": row["height_units"],
+				"items":        []any{map[string]any{"chart_key": item["chart_key"], "width_units": float64(60)}},
+			})
+		}
+	}
+	return map[string]any{"rows": rows}
 }
 
 func writeDashboardJSON(w http.ResponseWriter, value any) {
