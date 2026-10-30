@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	frameworkresource "github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
 	"github.com/langchain-ai/langsmith-go/option"
@@ -383,6 +384,72 @@ func TestWorkspaceMembershipDeleteUsesPendingEndpoint(t *testing.T) {
 		"DELETE /api/v1/workspaces/current/members/pending-id/pending",
 	}) {
 		t.Fatalf("requests = %#v", requests)
+	}
+}
+
+func TestWorkspaceMembershipDeletedWorkspace(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		status       int
+		workspaces   string
+		lookupStatus int
+		wantError    bool
+	}{
+		{"deleted", http.StatusForbidden, `[{"id":"workspace-id","is_deleted":true}]`, http.StatusOK, false},
+		{"deleted_not_found", http.StatusNotFound, `[{"id":"workspace-id","is_deleted":true}]`, http.StatusOK, false},
+		{"live", http.StatusForbidden, `[{"id":"workspace-id","is_deleted":false}]`, http.StatusOK, true},
+		{"absent", http.StatusForbidden, `[]`, http.StatusOK, false},
+		{"absent_other_tombstone", http.StatusForbidden, `[{"id":"other-id","is_deleted":true}]`, http.StatusOK, false},
+		{"lookup_forbidden", http.StatusForbidden, `{}`, http.StatusForbidden, true},
+		{"lookup_failure", http.StatusForbidden, `{}`, http.StatusBadRequest, true},
+		{"unauthorized", http.StatusUnauthorized, `[]`, http.StatusOK, true},
+	} {
+		for _, operation := range []string{"read", "delete"} {
+			t.Run(tc.name+"/"+operation, func(t *testing.T) {
+				resource := newWorkspaceMembershipResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch r.URL.Path {
+					case "/api/v1/workspaces/current/members/active":
+						assertWorkspaceTenantHeader(t, r)
+						w.WriteHeader(tc.status)
+					case "/api/v1/workspaces":
+						if r.URL.Query().Get("include_deleted") != "true" || r.Header.Get("X-Tenant-Id") != "" {
+							t.Fatalf("workspace lookup must include deleted workspaces without a tenant override: %s %v", r.URL, r.Header)
+						}
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(tc.lookupStatus)
+						_, _ = w.Write([]byte(tc.workspaces))
+					default:
+						t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+					}
+				}))
+				ctx := context.Background()
+				var schema frameworkresource.SchemaResponse
+				resource.Schema(ctx, frameworkresource.SchemaRequest{}, &schema)
+				state := tfsdk.State{Schema: schema.Schema}
+				if diags := state.Set(ctx, workspaceMembershipResourceModel{
+					ID:          types.StringValue("workspace/workspace-id/email/alice@langchain.dev"),
+					WorkspaceID: types.StringValue("workspace-id"),
+					Email:       types.StringValue("alice@langchain.dev"),
+					RoleID:      types.StringValue("role-id"),
+					Status:      types.StringValue(membershipStatusActive),
+				}); diags.HasError() {
+					t.Fatal(diags)
+				}
+				if operation == "read" {
+					resp := frameworkresource.ReadResponse{State: state}
+					resource.Read(ctx, frameworkresource.ReadRequest{State: state}, &resp)
+					if resp.Diagnostics.HasError() != tc.wantError || resp.State.Raw.IsNull() == tc.wantError {
+						t.Fatalf("Read diagnostics = %v, null state = %v", resp.Diagnostics, resp.State.Raw.IsNull())
+					}
+				} else {
+					resp := frameworkresource.DeleteResponse{State: state}
+					resource.Delete(ctx, frameworkresource.DeleteRequest{State: state}, &resp)
+					if resp.Diagnostics.HasError() != tc.wantError {
+						t.Fatalf("Delete diagnostics = %v", resp.Diagnostics)
+					}
+				}
+			})
+		}
 	}
 }
 

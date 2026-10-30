@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -121,6 +122,10 @@ func (r *WorkspaceMembershipResource) Read(ctx context.Context, req resource.Rea
 
 	result, ok, err := r.readWorkspaceMembership(ctx, state.WorkspaceID.ValueString(), state.Email.ValueString())
 	if err != nil {
+		if r.workspaceDeletedAfterError(ctx, state.WorkspaceID.ValueString(), err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		resp.Diagnostics.AddError("Unable to Read LangSmith Workspace Membership", err.Error())
 		return
 	}
@@ -157,7 +162,7 @@ func (r *WorkspaceMembershipResource) Delete(ctx context.Context, req resource.D
 	}
 
 	if err := r.deleteWorkspaceMembership(ctx, state); err != nil {
-		if isLangSmithNotFound(err) {
+		if isLangSmithNotFound(err) || r.workspaceDeletedAfterError(ctx, state.WorkspaceID.ValueString(), err) {
 			return
 		}
 		resp.Diagnostics.AddError("Unable to Delete LangSmith Workspace Membership", err.Error())
@@ -245,6 +250,26 @@ func (r *WorkspaceMembershipResource) readWorkspaceMembershipModel(ctx context.C
 
 func (r *WorkspaceMembershipResource) readWorkspaceMembership(ctx context.Context, workspaceID string, email string) (membershipReadResult, bool, error) {
 	return readMembershipLists(ctx, r.client, workspaceMembershipActivePath, workspaceMembershipPendingPath, email, workspaceTenantOption(workspaceID))
+}
+
+func (r *WorkspaceMembershipResource) workspaceDeletedAfterError(ctx context.Context, workspaceID string, err error) bool {
+	var apiErr *langsmith.Error
+	if !errors.As(err, &apiErr) || (apiErr.StatusCode != http.StatusForbidden && apiErr.StatusCode != http.StatusNotFound) {
+		return false
+	}
+	workspaces, listErr := r.client.Workspaces.List(ctx, langsmith.WorkspaceListParams{IncludeDeleted: langsmith.Bool(true)})
+	if listErr != nil || workspaces == nil {
+		return false
+	}
+	for _, workspace := range *workspaces {
+		if workspace.ID == workspaceID {
+			return workspace.IsDeleted
+		}
+	}
+	// Hard delete removes the tenant row, so the list has no tombstone.
+	// Absence matches langsmith_workspace Read. A listed live workspace
+	// still returns false above, which keeps a real permission error.
+	return true
 }
 
 func (r *WorkspaceMembershipResource) createWorkspaceMembership(ctx context.Context, workspaceID string, payload workspaceMemberPayload) error {
