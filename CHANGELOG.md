@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.18](https://github.com/langchain-ai/terraform-provider-langsmith/compare/v0.0.17...v0.0.18) (2026-10-30)
+
+
+### Bug Fixes
+
+* **terraform:** preserve role permission order when grants are unchanged ([1cb78d9](https://github.com/langchain-ai/terraform-provider-langsmith/commit/1cb78d9b99fa3f1445454ec7f6b088a4d6224c04))
+* **terraform:** recover memberships after workspace deletion ([8c1683e](https://github.com/langchain-ai/terraform-provider-langsmith/commit/8c1683e521fa03baad78acf18d859b6f0987ef35))
+
 ## [0.0.17](https://github.com/langchain-ai/terraform-provider-langsmith/compare/v0.0.16...v0.0.17) (2026-10-26)
 
 
