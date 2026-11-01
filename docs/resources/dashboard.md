@@ -69,11 +69,11 @@ resource "langsmith_dashboard" "service_health" {
     },
   ]
 
-  # Charts share a row evenly unless every chart in the row sets width_units
+  # Charts share a row evenly unless every chart in the row sets width
   # (out of 120). Charts left out of the layout are placed after it.
   layout = [
-    { height_units = 4, charts = [{ key = "requests" }, { key = "latency" }] },
-    { height_units = 3, charts = [{ key = "error_rate", width_units = 40 }, { key = "runbook", width_units = 80 }] },
+    { height = 4, charts = [{ key = "requests" }, { key = "latency" }] },
+    { height = 3, charts = [{ key = "error_rate", width = 40 }, { key = "runbook", width = 80 }] },
   ]
 }
 ```
@@ -198,7 +198,7 @@ Optional:
 Required:
 
 - `charts` (Attributes List) Charts in the row, left to right. (see [below for nested schema](#nestedatt--layout--charts))
-- `height_units` (Number) Row height, in grid units.
+- `height` (Number) Row height, in grid units.
 
 <a id="nestedatt--layout--charts"></a>
 ### Nested Schema for `layout.charts`
@@ -209,7 +209,7 @@ Required:
 
 Optional:
 
-- `width_units` (Number) Width out of 120 units, at least 20. Set it on every chart in the row, totalling 120, or on none to share the row evenly.
+- `width` (Number) Width out of 120 units, at least 20. Set it on every chart in the row, totalling 120, or on none to share the row evenly.
 
 ## Import
 

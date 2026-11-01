@@ -59,123 +59,80 @@ func metricModel(leaf dashboardMetricLeafModel) *dashboardMetricModel {
 	}
 }
 
-func TestDashboardMetricFromModel(t *testing.T) {
-	feedbackCount := leafMetric("count")
-	feedbackCount.FeedbackKey = types.StringValue("correctness")
+func ptr[T any](v T) *T { return &v }
+
+func seriesWithMetric(metric *dashboardMetricModel) dashboardSeriesModel {
+	return dashboardSeriesModel{
+		Name: types.StringValue("s"), Metric: metric, ProjectIDs: []types.String{types.StringValue("p")},
+		RunFilter: types.StringNull(), TraceFilter: types.StringNull(), TreeFilter: types.StringNull(),
+		MetadataJSON: types.StringNull(),
+	}
+}
+
+// The configuration maps field for field onto the API's format, and reading
+// the API's form back gives the same configuration.
+func TestDashboardMetricRoundTrip(t *testing.T) {
 	p99 := leafMetric("percentile")
 	p99.Field, p99.Percentile = types.StringValue("latency_seconds"), types.Float64Value(0.99)
-	feedbackAvg := leafMetric("avg")
-	feedbackAvg.Field, feedbackAvg.FeedbackKey = types.StringValue("feedback_score"), types.StringValue("helpful")
-	ratio := &dashboardMetricModel{
-		Type: types.StringValue("ratio"), Field: types.StringNull(), Percentile: types.Float64Null(),
-		FeedbackKey: types.StringNull(), Filter: types.StringNull(),
-		Numerator: &feedbackCount, Denominator: ptr(leafMetric("count")),
-	}
+	errors := leafMetric("count")
+	errors.Filter = types.StringValue(`eq(status, "error")`)
+	ratio := metricModel(leafMetric("ratio"))
+	ratio.Numerator, ratio.Denominator = &errors, ptr(leafMetric("count"))
 
 	for name, tc := range map[string]struct {
 		metric *dashboardMetricModel
 		want   string
 	}{
-		"count":          {metricModel(leafMetric("count")), `{"type":"count"}`},
-		"feedback count": {metricModel(feedbackCount), `{"type":"count","entity":"feedback","params":{"feedback_key":"correctness"}}`},
-		"percentile":     {metricModel(p99), `{"type":"percentile","field":"latency_seconds","params":{"p":0.99}}`},
-		"feedback avg":   {metricModel(feedbackAvg), `{"type":"avg","field":"feedback_score","params":{"feedback_key":"helpful"}}`},
-		"ratio": {ratio, `{"type":"ratio","numerator":{"type":"count","entity":"feedback","params":{"feedback_key":"correctness"}},` +
+		"count":      {metricModel(leafMetric("count")), `{"type":"count"}`},
+		"percentile": {metricModel(p99), `{"type":"percentile","field":"latency_seconds","percentile":0.99}`},
+		"ratio": {ratio, `{"type":"ratio","numerator":{"type":"count","filter":"eq(status, \"error\")"},` +
 			`"denominator":{"type":"count"}}`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, err := dashboardMetricFromModel(tc.metric)
+			series, err := dashboardSeriesFromModel(seriesWithMetric(tc.metric))
 			if err != nil {
 				t.Fatal(err)
 			}
-			raw, _ := json.Marshal(got)
+			raw, _ := json.Marshal(series.Metric)
 			if string(raw) != tc.want {
 				t.Fatalf("got %s, want %s", raw, tc.want)
 			}
-			// Reading the API form back gives the same model.
-			back, err := dashboardMetricModelFromAPI(*got)
-			if err != nil {
-				t.Fatal(err)
-			}
-			again, _ := dashboardMetricFromModel(back)
-			if rawAgain, _ := json.Marshal(again); string(rawAgain) != tc.want {
+			back := dashboardSeriesModelFromAPI(series, dashboardSeriesModel{})
+			again, _ := dashboardSeriesFromModel(back)
+			if rawAgain, _ := json.Marshal(again.Metric); string(rawAgain) != tc.want {
 				t.Fatalf("round trip gave %s", rawAgain)
 			}
 		})
 	}
 }
 
-func ptr[T any](v T) *T { return &v }
-
-func TestDashboardMetricFromModelRejectsInvalidCombinations(t *testing.T) {
-	missingField := leafMetric("sum")
-	missingPercentile := leafMetric("percentile")
-	missingPercentile.Field = types.StringValue("latency_seconds")
-	feedbackWithoutKey := leafMetric("avg")
-	feedbackWithoutKey.Field = types.StringValue("feedback_score")
-	countWithField := leafMetric("count")
-	countWithField.Field = types.StringValue("latency_seconds")
-	ratioWithoutSides := metricModel(leafMetric("ratio"))
-	countWithSides := metricModel(leafMetric("count"))
-	countWithSides.Numerator = ptr(leafMetric("count"))
-
-	for name, metric := range map[string]*dashboardMetricModel{
-		"missing field":         metricModel(missingField),
-		"missing percentile":    metricModel(missingPercentile),
-		"feedback without key":  metricModel(feedbackWithoutKey),
-		"count with field":      metricModel(countWithField),
-		"ratio without sides":   ratioWithoutSides,
-		"non-ratio with a side": countWithSides,
-	} {
-		if _, err := dashboardMetricFromModel(metric); err == nil {
-			t.Errorf("%s: expected an error", name)
-		}
-	}
-}
-
-func TestDashboardLayoutFromModel(t *testing.T) {
+func TestDashboardLayoutRows(t *testing.T) {
 	item := func(key string, width types.Int64) dashboardRowItemModel {
-		return dashboardRowItemModel{Key: types.StringValue(key), WidthUnits: width}
+		return dashboardRowItemModel{Key: types.StringValue(key), Width: width}
 	}
-	layout, err := dashboardLayoutFromModel([]dashboardRowModel{
-		{HeightUnits: types.Int64Value(4), Charts: []dashboardRowItemModel{item("a", types.Int64Null()), item("b", types.Int64Null())}},
-		{HeightUnits: types.Int64Value(2), Charts: []dashboardRowItemModel{item("c", types.Int64Value(120))}},
-	})
+	rows := []dashboardRowModel{
+		{Height: types.Int64Value(4), Charts: []dashboardRowItemModel{item("a", types.Int64Null()), item("b", types.Int64Null())}},
+		{Height: types.Int64Value(2), Charts: []dashboardRowItemModel{item("c", types.Int64Value(120))}},
+	}
+	definition, err := dashboardDefinitionFromModel(dashboardResourceModel{Title: types.StringValue("t"), Layout: rows})
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := json.Marshal(layout)
-	want := `{"version":1,"breakpoints":{"md":{"rows":[` +
-		`{"height_units":4,"items":[{"chart_key":"a","width_units":60},{"chart_key":"b","width_units":60}]},` +
-		`{"height_units":2,"items":[{"chart_key":"c","width_units":120}]}]}}}`
+	raw, _ := json.Marshal(definition.Layout)
+	want := `[{"height":4,"charts":[{"key":"a"},{"key":"b"}]},{"height":2,"charts":[{"key":"c","width":120}]}]`
 	if string(raw) != want {
 		t.Fatalf("got  %s\nwant %s", raw, want)
 	}
 
-	// Reading it back keeps widths unset where the config left them unset.
-	rows := dashboardLayoutModelFromAPI(layout, []dashboardRowModel{
-		{Charts: []dashboardRowItemModel{item("a", types.Int64Null()), item("b", types.Int64Null())}},
-		{Charts: []dashboardRowItemModel{item("c", types.Int64Value(120))}},
-	})
-	if !rows[0].Charts[0].WidthUnits.IsNull() || rows[1].Charts[0].WidthUnits.ValueInt64() != 120 {
-		t.Fatalf("unexpected widths: %+v", rows)
+	// The API fills in widths; reading them back keeps unset widths unset.
+	sixty, full := int64(60), int64(120)
+	api := []dashboardRowAPI{
+		{Height: 4, Charts: []dashboardRowChartAPI{{Key: "a", Width: &sixty}, {Key: "b", Width: &sixty}}},
+		{Height: 2, Charts: []dashboardRowChartAPI{{Key: "c", Width: &full}}},
 	}
-
-	if _, err := dashboardLayoutFromModel([]dashboardRowModel{
-		{HeightUnits: types.Int64Value(4), Charts: []dashboardRowItemModel{item("a", types.Int64Value(60)), item("b", types.Int64Null())}},
-	}); err == nil {
-		t.Fatal("expected an error for a row with some widths set")
-	}
-}
-
-func TestDashboardModelFromAPIRejectsLegacySeries(t *testing.T) {
-	legacy := "run_count"
-	_, err := dashboardModelFromAPI(dashboardDefinitionAPI{
-		ID: "id", Title: "t",
-		Charts: []dashboardChartAPI{{Key: "a", ChartType: "line", Series: []dashboardSeriesAPI{{Name: "s", Metric: &legacy}}}},
-	}, dashboardResourceModel{})
-	if err == nil || !strings.Contains(err.Error(), "langsmith_dashboard_json") {
-		t.Fatalf("err = %v, want a pointer to langsmith_dashboard_json", err)
+	back := dashboardLayoutModelFromAPI(api, rows)
+	if !back[0].Charts[0].Width.IsNull() || back[1].Charts[0].Width.ValueInt64() != 120 {
+		t.Fatalf("unexpected widths: %+v", back)
 	}
 }
 
@@ -219,14 +176,9 @@ func TestReconcileDashboardJSON(t *testing.T) {
 
 func TestPairSeriesWithPriorKeepsConfigOrder(t *testing.T) {
 	series := func(name string) dashboardSeriesModel {
-		return dashboardSeriesModel{
-			Name:        types.StringValue(name),
-			Metric:      metricModel(leafMetric("count")),
-			ProjectIDs:  []types.String{types.StringValue("p")},
-			RunFilter:   types.StringNull(),
-			TraceFilter: types.StringNull(),
-			TreeFilter:  types.StringNull(),
-		}
+		s := seriesWithMetric(metricModel(leafMetric("count")))
+		s.Name = types.StringValue(name)
+		return s
 	}
 	apiForm := func(m dashboardSeriesModel) dashboardSeriesAPI {
 		out, err := dashboardSeriesFromModel(m)

@@ -44,7 +44,7 @@ func TestAccDashboardResourcesOffline(t *testing.T) {
 					resource.TestCheckResourceAttr("langsmith_dashboard.test", "charts.#", "4"),
 					resource.TestCheckResourceAttr("langsmith_dashboard.test", "charts.1.series.0.metric.percentile", "0.99"),
 					resource.TestCheckResourceAttr("langsmith_dashboard.test", "charts.1.series.1.name", "p50"),
-					resource.TestCheckNoResourceAttr("langsmith_dashboard.test", "layout.0.charts.0.width_units"),
+					resource.TestCheckNoResourceAttr("langsmith_dashboard.test", "layout.0.charts.0.width"),
 					resource.TestCheckResourceAttrSet("langsmith_dashboard_json.test", "id"),
 				),
 			},
@@ -65,7 +65,7 @@ func TestAccDashboardResourcesOffline(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("langsmith_dashboard.test", "title", "Service health (updated)"),
 					resource.TestCheckResourceAttr("langsmith_dashboard.test", "charts.#", "3"),
-					resource.TestCheckResourceAttr("langsmith_dashboard.test", "layout.0.charts.0.width_units", "80"),
+					resource.TestCheckResourceAttr("langsmith_dashboard.test", "layout.0.charts.0.width", "80"),
 					resource.TestCheckResourceAttr("langsmith_dashboard_json.test", "dashboard", dashboardJSONConfigValue("updated")),
 				),
 			},
@@ -116,12 +116,12 @@ func dashboardJSONConfigValue(phase string) string {
 	definition := map[string]any{
 		"title": title,
 		"charts": []any{map[string]any{
-			"key": "runs", "title": "Runs", "chart_type": "bar",
-			"series": []any{map[string]any{
-				"name":              "runs",
-				"metric_definition": map[string]any{"type": "count"},
-				"filter_definition": map[string]any{"source_type": "tracing_project", "project_ids": []any{dashboardTestProjectID}},
-			}},
+			"key": "runs", "title": "Runs", "type": "bar",
+			"series": []any{
+				map[string]any{"name": "runs", "metric": map[string]any{"type": "count"}, "project_ids": []any{dashboardTestProjectID}},
+				// Out of name order: the comparison ignores series order.
+				map[string]any{"name": "errors", "metric": map[string]any{"type": "count", "filter": "eq(error, true)"}, "project_ids": []any{dashboardTestProjectID}},
+			},
 		}},
 	}
 	out, _ := json.Marshal(definition)
@@ -147,8 +147,8 @@ func dashboardAcceptanceConfig(apiURL, phase string) string {
       markdown = "Owned by the platform team."
     },`, `
   layout = [
-    { height_units = 4, charts = [{ key = "requests" }, { key = "latency" }] },
-    { height_units = 3, charts = [{ key = "errors" }, { key = "notes" }] },
+    { height = 4, charts = [{ key = "requests" }, { key = "latency" }] },
+    { height = 3, charts = [{ key = "errors" }, { key = "notes" }] },
   ]`
 	if phase == "updated" {
 		title, latencyTitle, charts, layout = "Service health (updated)", "Latency", `
@@ -167,7 +167,7 @@ func dashboardAcceptanceConfig(apiURL, phase string) string {
       }]
     },`, `
   layout = [
-    { height_units = 4, charts = [{ key = "requests", width_units = 80 }, { key = "latency", width_units = 40 }] },
+    { height = 4, charts = [{ key = "requests", width = 80 }, { key = "latency", width = 40 }] },
   ]`
 	}
 
@@ -348,11 +348,23 @@ func (b *dashboardContractBackend) reject(w http.ResponseWriter, req *http.Reque
 }
 
 // fillDashboardDefaults adds the null and default fields the real API
-// returns for anything a request leaves out.
+// returns for anything a request leaves out, sorts series by name, and fills
+// in the even widths of layout rows that leave them unset.
 func fillDashboardDefaults(definition map[string]any) map[string]any {
 	setDefault := func(object map[string]any, key string, value any) {
 		if _, ok := object[key]; !ok {
 			object[key] = value
+		}
+	}
+	var fillMetric func(metric map[string]any)
+	fillMetric = func(metric map[string]any) {
+		for _, key := range []string{"field", "percentile", "feedback_key", "filter", "numerator", "denominator"} {
+			setDefault(metric, key, nil)
+		}
+		for _, side := range []string{"numerator", "denominator"} {
+			if leaf, ok := metric[side].(map[string]any); ok {
+				fillMetric(leaf)
+			}
 		}
 	}
 	setDefault(definition, "description", nil)
@@ -364,44 +376,36 @@ func fillDashboardDefaults(definition map[string]any) map[string]any {
 		if !ok {
 			continue
 		}
-		setDefault(chart, "metadata", nil)
-		if chart["chart_type"] == dashboardTextChartType {
-			continue
+		for _, key := range []string{"title", "description", "markdown", "metadata"} {
+			setDefault(chart, key, nil)
 		}
-		setDefault(chart, "description", nil)
-		setDefault(chart, "common_filters", nil)
+		setDefault(chart, "series", []any{})
 		seriesList, _ := chart["series"].([]any)
 		for _, rawSeries := range seriesList {
 			series, ok := rawSeries.(map[string]any)
 			if !ok {
 				continue
 			}
-			for _, key := range []string{"metadata", "filters", "metric", "project_metric", "feedback_key", "workspace_id", "group_by", "group_by_definitions"} {
+			for _, key := range []string{"project_ids", "dataset_ids", "run_filter", "trace_filter", "tree_filter", "group_by", "metadata"} {
 				setDefault(series, key, nil)
 			}
-			if metric, ok := series["metric_definition"].(map[string]any); ok {
-				setDefault(metric, "filter", nil)
-				for _, side := range []string{"numerator", "denominator"} {
-					if leaf, ok := metric[side].(map[string]any); ok {
-						setDefault(leaf, "filter", nil)
-					}
-				}
-			}
-			if filter, ok := series["filter_definition"].(map[string]any); ok && filter["source_type"] == "tracing_project" {
-				for _, key := range []string{"run_filter", "trace_filter", "tree_filter"} {
-					setDefault(filter, key, nil)
-				}
+			if metric, ok := series["metric"].(map[string]any); ok {
+				fillMetric(metric)
 			}
 		}
-		// The API returns series sorted by name.
 		sort.SliceStable(seriesList, func(i, j int) bool {
 			return seriesName(seriesList[i]) < seriesName(seriesList[j])
 		})
 	}
-	if layout, ok := definition["layout"].(map[string]any); ok {
-		setDefault(layout, "version", float64(1))
-		if breakpoints, ok := layout["breakpoints"].(map[string]any); ok {
-			setDefault(breakpoints, "sm", deriveSmallBreakpoint(breakpoints["md"]))
+	rows, _ := definition["layout"].([]any)
+	for _, rawRow := range rows {
+		row, _ := rawRow.(map[string]any)
+		items, _ := row["charts"].([]any)
+		widths := defaultLayoutWidths(len(items), dashboardMediumWidthUnits)
+		for k, rawItem := range items {
+			if item, ok := rawItem.(map[string]any); ok {
+				setDefault(item, "width", float64(widths[k]))
+			}
 		}
 	}
 	return definition
@@ -412,25 +416,6 @@ func seriesName(series any) string {
 		return fmt.Sprint(object["name"])
 	}
 	return ""
-}
-
-// deriveSmallBreakpoint gives each wide-screen chart its own full-width row.
-func deriveSmallBreakpoint(md any) map[string]any {
-	rows := []any{}
-	breakpoint, _ := md.(map[string]any)
-	mdRows, _ := breakpoint["rows"].([]any)
-	for _, rawRow := range mdRows {
-		row, _ := rawRow.(map[string]any)
-		items, _ := row["items"].([]any)
-		for _, rawItem := range items {
-			item, _ := rawItem.(map[string]any)
-			rows = append(rows, map[string]any{
-				"height_units": row["height_units"],
-				"items":        []any{map[string]any{"chart_key": item["chart_key"], "width_units": float64(60)}},
-			})
-		}
-	}
-	return map[string]any{"rows": rows}
 }
 
 func writeDashboardJSON(w http.ResponseWriter, value any) {

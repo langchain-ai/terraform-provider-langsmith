@@ -5,7 +5,6 @@ package provider
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -94,13 +93,13 @@ type dashboardGroupByModel struct {
 }
 
 type dashboardRowModel struct {
-	HeightUnits types.Int64             `tfsdk:"height_units"`
-	Charts      []dashboardRowItemModel `tfsdk:"charts"`
+	Height types.Int64             `tfsdk:"height"`
+	Charts []dashboardRowItemModel `tfsdk:"charts"`
 }
 
 type dashboardRowItemModel struct {
-	Key        types.String `tfsdk:"key"`
-	WidthUnits types.Int64  `tfsdk:"width_units"`
+	Key   types.String `tfsdk:"key"`
+	Width types.Int64  `tfsdk:"width"`
 }
 
 const dashboardTextChartType = "text"
@@ -300,7 +299,7 @@ func (r *dashboardResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 					"gets its own full-width row, in the same order.",
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
-						"height_units": schema.Int64Attribute{
+						"height": schema.Int64Attribute{
 							Required:            true,
 							MarkdownDescription: "Row height, in grid units.",
 						},
@@ -314,7 +313,7 @@ func (r *dashboardResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 										Required:            true,
 										MarkdownDescription: "Key of a chart in `charts`.",
 									},
-									"width_units": schema.Int64Attribute{
+									"width": schema.Int64Attribute{
 										Optional: true,
 										MarkdownDescription: "Width out of 120 units, at least 20. Set it on every chart " +
 											"in the row, totalling 120, or on none to share the row evenly.",
@@ -437,6 +436,9 @@ func (r *dashboardResource) setState(ctx context.Context, result dashboardDefini
 }
 
 // Terraform model -> API
+//
+// The configuration maps field for field onto the API's definition format,
+// and the API validates it, so these functions only change representation.
 
 func dashboardDefinitionFromModel(m dashboardResourceModel) (dashboardDefinitionAPI, error) {
 	out := dashboardDefinitionAPI{
@@ -451,11 +453,13 @@ func dashboardDefinitionFromModel(m dashboardResourceModel) (dashboardDefinition
 		}
 		out.Charts = append(out.Charts, apiChart)
 	}
-	layout, err := dashboardLayoutFromModel(m.Layout)
-	if err != nil {
-		return out, err
+	for _, row := range m.Layout {
+		apiRow := dashboardRowAPI{Height: row.Height.ValueInt64()}
+		for _, item := range row.Charts {
+			apiRow.Charts = append(apiRow.Charts, dashboardRowChartAPI{Key: item.Key.ValueString(), Width: item.Width.ValueInt64Pointer()})
+		}
+		out.Layout = append(out.Layout, apiRow)
 	}
-	out.Layout = layout
 	return out, nil
 }
 
@@ -465,30 +469,14 @@ func dashboardChartFromModel(m dashboardChartModel) (dashboardChartAPI, error) {
 		return dashboardChartAPI{}, err
 	}
 	out := dashboardChartAPI{
-		ID:        m.ID.ValueStringPointer(),
-		Key:       m.Key.ValueString(),
-		ChartType: m.Type.ValueString(),
-		Metadata:  metadata,
+		ID:          m.ID.ValueStringPointer(),
+		Key:         m.Key.ValueString(),
+		Type:        m.Type.ValueString(),
+		Title:       m.Title.ValueStringPointer(),
+		Description: m.Description.ValueStringPointer(),
+		Markdown:    m.Markdown.ValueStringPointer(),
+		Metadata:    metadata,
 	}
-	if out.ChartType == dashboardTextChartType {
-		if m.Markdown.IsNull() {
-			return out, errors.New("text blocks need markdown")
-		}
-		if !m.Title.IsNull() || !m.Description.IsNull() || len(m.Series) > 0 {
-			return out, errors.New("text blocks take only markdown and metadata_json, not title, description or series")
-		}
-		out.Markdown = m.Markdown.ValueStringPointer()
-		return out, nil
-	}
-	if m.Title.IsNull() {
-		return out, errors.New("charts need a title")
-	}
-	if !m.Markdown.IsNull() {
-		return out, errors.New("markdown is only for charts of type \"text\"")
-	}
-	out.Title = m.Title.ValueStringPointer()
-	out.Description = m.Description.ValueStringPointer()
-	out.Series = make([]dashboardSeriesAPI, 0, len(m.Series))
 	for _, series := range m.Series {
 		apiSeries, err := dashboardSeriesFromModel(series)
 		if err != nil {
@@ -504,139 +492,51 @@ func dashboardSeriesFromModel(m dashboardSeriesModel) (dashboardSeriesAPI, error
 	if err != nil {
 		return dashboardSeriesAPI{}, err
 	}
-	metric, err := dashboardMetricFromModel(m.Metric)
-	if err != nil {
-		return dashboardSeriesAPI{}, err
+	out := dashboardSeriesAPI{
+		Name:        m.Name.ValueString(),
+		ProjectIDs:  stringValues(m.ProjectIDs),
+		DatasetIDs:  stringValues(m.DatasetIDs),
+		RunFilter:   m.RunFilter.ValueStringPointer(),
+		TraceFilter: m.TraceFilter.ValueStringPointer(),
+		TreeFilter:  m.TreeFilter.ValueStringPointer(),
+		Metadata:    metadata,
 	}
-	out := dashboardSeriesAPI{Name: m.Name.ValueString(), Metadata: metadata, MetricDefinition: metric}
-
-	switch {
-	case len(m.ProjectIDs) > 0 && len(m.DatasetIDs) > 0:
-		return out, errors.New("set project_ids or dataset_ids, not both")
-	case len(m.ProjectIDs) > 0:
-		out.FilterDefinition = &dashboardFilterAPI{
-			SourceType:  "tracing_project",
-			ProjectIDs:  stringValues(m.ProjectIDs),
-			RunFilter:   m.RunFilter.ValueStringPointer(),
-			TraceFilter: m.TraceFilter.ValueStringPointer(),
-			TreeFilter:  m.TreeFilter.ValueStringPointer(),
+	if m.Metric != nil {
+		out.Metric = &dashboardMetricAPI{
+			Type:        m.Metric.Type.ValueString(),
+			Field:       m.Metric.Field.ValueStringPointer(),
+			Percentile:  m.Metric.Percentile.ValueFloat64Pointer(),
+			FeedbackKey: m.Metric.FeedbackKey.ValueStringPointer(),
+			Filter:      m.Metric.Filter.ValueStringPointer(),
+			Numerator:   dashboardLeafMetricFromModel(m.Metric.Numerator),
+			Denominator: dashboardLeafMetricFromModel(m.Metric.Denominator),
 		}
-	case len(m.DatasetIDs) > 0:
-		if !m.RunFilter.IsNull() || !m.TraceFilter.IsNull() || !m.TreeFilter.IsNull() {
-			return out, errors.New("run_filter, trace_filter and tree_filter only apply with project_ids")
-		}
-		out.FilterDefinition = &dashboardFilterAPI{SourceType: "dataset", DatasetIDs: stringValues(m.DatasetIDs)}
-	default:
-		return out, errors.New("set project_ids or dataset_ids")
 	}
-
 	for _, group := range m.GroupBy {
-		out.GroupByDefinitions = append(out.GroupByDefinitions, dashboardGroupByAPI{
-			Attribute: group.Attribute.ValueString(),
-			Path:      group.Path.ValueStringPointer(),
-		})
+		out.GroupBy = append(out.GroupBy, dashboardGroupByAPI{Attribute: group.Attribute.ValueString(), Path: group.Path.ValueStringPointer()})
 	}
 	return out, nil
 }
 
-func dashboardMetricFromModel(m *dashboardMetricModel) (*dashboardMetricAPI, error) {
-	if m.Type.ValueString() != "ratio" {
-		if m.Numerator != nil || m.Denominator != nil {
-			return nil, errors.New("numerator and denominator are only for ratio metrics")
-		}
-		return dashboardLeafMetricFromModel(dashboardMetricLeafModel{
-			Type: m.Type, Field: m.Field, Percentile: m.Percentile, FeedbackKey: m.FeedbackKey, Filter: m.Filter,
-		})
+func dashboardLeafMetricFromModel(m *dashboardMetricLeafModel) *dashboardMetricAPI {
+	if m == nil {
+		return nil
 	}
-	if m.Numerator == nil || m.Denominator == nil {
-		return nil, errors.New("ratio metrics need a numerator and a denominator")
+	return &dashboardMetricAPI{
+		Type:        m.Type.ValueString(),
+		Field:       m.Field.ValueStringPointer(),
+		Percentile:  m.Percentile.ValueFloat64Pointer(),
+		FeedbackKey: m.FeedbackKey.ValueStringPointer(),
+		Filter:      m.Filter.ValueStringPointer(),
 	}
-	if !m.Field.IsNull() || !m.Percentile.IsNull() || !m.FeedbackKey.IsNull() || !m.Filter.IsNull() {
-		return nil, errors.New("ratio metrics set field, percentile, feedback_key and filter on the numerator and denominator")
-	}
-	numerator, err := dashboardLeafMetricFromModel(*m.Numerator)
-	if err != nil {
-		return nil, fmt.Errorf("numerator: %w", err)
-	}
-	denominator, err := dashboardLeafMetricFromModel(*m.Denominator)
-	if err != nil {
-		return nil, fmt.Errorf("denominator: %w", err)
-	}
-	return &dashboardMetricAPI{Type: "ratio", Numerator: numerator, Denominator: denominator}, nil
-}
-
-func dashboardLeafMetricFromModel(m dashboardMetricLeafModel) (*dashboardMetricAPI, error) {
-	out := &dashboardMetricAPI{Type: m.Type.ValueString(), Filter: m.Filter.ValueStringPointer()}
-	if out.Type == "count" {
-		if !m.Field.IsNull() || !m.Percentile.IsNull() {
-			return nil, errors.New("count metrics take no field or percentile")
-		}
-		if !m.FeedbackKey.IsNull() {
-			entity := "feedback"
-			out.Entity = &entity
-			out.Params = &dashboardMetricParamsAPI{FeedbackKey: m.FeedbackKey.ValueStringPointer()}
-		}
-		return out, nil
-	}
-
-	if m.Field.IsNull() {
-		return nil, fmt.Errorf("%s metrics need a field", out.Type)
-	}
-	out.Field = m.Field.ValueStringPointer()
-	if m.FeedbackKey.IsNull() != (m.Field.ValueString() != "feedback_score") {
-		return nil, errors.New("feedback_key is required with field = \"feedback_score\" and not allowed otherwise")
-	}
-	if (out.Type == "percentile") == m.Percentile.IsNull() {
-		return nil, errors.New("percentile is required for percentile metrics and not allowed otherwise")
-	}
-	if !m.FeedbackKey.IsNull() || !m.Percentile.IsNull() {
-		out.Params = &dashboardMetricParamsAPI{
-			P:           m.Percentile.ValueFloat64Pointer(),
-			FeedbackKey: m.FeedbackKey.ValueStringPointer(),
-		}
-	}
-	return out, nil
-}
-
-// dashboardLayoutFromModel builds the wide-screen breakpoint. The API derives
-// the narrow-screen one, giving each chart a full-width row of its own.
-func dashboardLayoutFromModel(rows []dashboardRowModel) (*dashboardLayoutAPI, error) {
-	if len(rows) == 0 {
-		return nil, nil
-	}
-	layout := &dashboardLayoutAPI{Version: 1}
-	layout.Breakpoints.MD.Rows = []dashboardLayoutRowAPI{}
-	for i, row := range rows {
-		widths := defaultLayoutWidths(len(row.Charts), dashboardMediumWidthUnits)
-		widthsSet := 0
-		for _, item := range row.Charts {
-			if !item.WidthUnits.IsNull() {
-				widthsSet++
-			}
-		}
-		if widthsSet != 0 && widthsSet != len(row.Charts) {
-			return nil, fmt.Errorf("layout row %d: set width_units on every chart in the row or on none", i)
-		}
-
-		mdRow := dashboardLayoutRowAPI{HeightUnits: row.HeightUnits.ValueInt64()}
-		for j, item := range row.Charts {
-			width := widths[j]
-			if widthsSet > 0 {
-				width = item.WidthUnits.ValueInt64()
-			}
-			mdRow.Items = append(mdRow.Items, dashboardLayoutItemAPI{ChartKey: item.Key.ValueString(), WidthUnits: width})
-		}
-		layout.Breakpoints.MD.Rows = append(layout.Breakpoints.MD.Rows, mdRow)
-	}
-	return layout, nil
 }
 
 // API -> Terraform model
 
 // dashboardModelFromAPI converts an API definition to the Terraform model.
 // Where the API and prior hold equivalent values (metadata JSON with
-// different formatting, or layout widths the row would get by default), it
-// keeps prior's value so a refresh does not report a change.
+// different formatting, series in another order, or layout widths a row gets
+// by default), it keeps prior's form so a refresh does not report a change.
 func dashboardModelFromAPI(api dashboardDefinitionAPI, prior dashboardResourceModel) (dashboardResourceModel, error) {
 	out := dashboardResourceModel{
 		ID:          types.StringValue(api.ID),
@@ -649,11 +549,7 @@ func dashboardModelFromAPI(api dashboardDefinitionAPI, prior dashboardResourceMo
 		priorCharts[chart.Key.ValueString()] = chart
 	}
 	for _, chart := range api.Charts {
-		model, err := dashboardChartModelFromAPI(chart, priorCharts[chart.Key])
-		if err != nil {
-			return out, fmt.Errorf("chart %q: %w", chart.Key, err)
-		}
-		out.Charts = append(out.Charts, model)
+		out.Charts = append(out.Charts, dashboardChartModelFromAPI(chart, priorCharts[chart.Key]))
 	}
 	// Keep an empty list when prior had one, rather than flip it to null.
 	if out.Charts == nil && prior.Charts != nil {
@@ -663,28 +559,21 @@ func dashboardModelFromAPI(api dashboardDefinitionAPI, prior dashboardResourceMo
 	return out, nil
 }
 
-func dashboardChartModelFromAPI(api dashboardChartAPI, prior dashboardChartModel) (dashboardChartModel, error) {
+func dashboardChartModelFromAPI(api dashboardChartAPI, prior dashboardChartModel) dashboardChartModel {
 	out := dashboardChartModel{
 		// id is only an input; keep whatever the configuration said.
 		ID:           prior.ID,
 		Key:          types.StringValue(api.Key),
-		Type:         types.StringValue(api.ChartType),
+		Type:         types.StringValue(api.Type),
 		Title:        types.StringPointerValue(api.Title),
 		Description:  types.StringPointerValue(api.Description),
 		Markdown:     types.StringPointerValue(api.Markdown),
 		MetadataJSON: jsonStringFromObject(api.Metadata, prior.MetadataJSON),
 	}
-	if api.ChartType == dashboardTextChartType {
-		return out, nil
-	}
 	for _, pair := range pairSeriesWithPrior(api.Series, prior.Series) {
-		model, err := dashboardSeriesModelFromAPI(pair.api, pair.prior)
-		if err != nil {
-			return out, fmt.Errorf("series %q: %w", pair.api.Name, err)
-		}
-		out.Series = append(out.Series, model)
+		out.Series = append(out.Series, dashboardSeriesModelFromAPI(pair.api, pair.prior))
 	}
-	return out, nil
+	return out
 }
 
 type seriesPair struct {
@@ -726,78 +615,50 @@ func pairSeriesWithPrior(api []dashboardSeriesAPI, prior []dashboardSeriesModel)
 	return out
 }
 
-func dashboardSeriesModelFromAPI(api dashboardSeriesAPI, prior dashboardSeriesModel) (dashboardSeriesModel, error) {
-	if api.MetricDefinition == nil || api.FilterDefinition == nil {
-		return dashboardSeriesModel{}, errors.New("this series uses the legacy chart format, which langsmith_dashboard " +
-			"cannot manage; edit it in the LangSmith UI to upgrade it, or manage the dashboard with langsmith_dashboard_json")
-	}
-	metric, err := dashboardMetricModelFromAPI(*api.MetricDefinition)
-	if err != nil {
-		return dashboardSeriesModel{}, err
-	}
+func dashboardSeriesModelFromAPI(api dashboardSeriesAPI, prior dashboardSeriesModel) dashboardSeriesModel {
 	out := dashboardSeriesModel{
 		Name:         types.StringValue(api.Name),
-		Metric:       metric,
-		RunFilter:    types.StringPointerValue(api.FilterDefinition.RunFilter),
-		TraceFilter:  types.StringPointerValue(api.FilterDefinition.TraceFilter),
-		TreeFilter:   types.StringPointerValue(api.FilterDefinition.TreeFilter),
+		ProjectIDs:   stringModels(api.ProjectIDs),
+		DatasetIDs:   stringModels(api.DatasetIDs),
+		RunFilter:    types.StringPointerValue(api.RunFilter),
+		TraceFilter:  types.StringPointerValue(api.TraceFilter),
+		TreeFilter:   types.StringPointerValue(api.TreeFilter),
 		MetadataJSON: jsonStringFromObject(api.Metadata, prior.MetadataJSON),
 	}
-	switch api.FilterDefinition.SourceType {
-	case "tracing_project":
-		out.ProjectIDs = stringModels(api.FilterDefinition.ProjectIDs)
-	case "dataset":
-		out.DatasetIDs = stringModels(api.FilterDefinition.DatasetIDs)
-	default:
-		return out, fmt.Errorf("unsupported filter source_type %q", api.FilterDefinition.SourceType)
+	if api.Metric != nil {
+		out.Metric = &dashboardMetricModel{
+			Type:        types.StringValue(api.Metric.Type),
+			Field:       types.StringPointerValue(api.Metric.Field),
+			Percentile:  types.Float64PointerValue(api.Metric.Percentile),
+			FeedbackKey: types.StringPointerValue(api.Metric.FeedbackKey),
+			Filter:      types.StringPointerValue(api.Metric.Filter),
+			Numerator:   dashboardLeafMetricModelFromAPI(api.Metric.Numerator),
+			Denominator: dashboardLeafMetricModelFromAPI(api.Metric.Denominator),
+		}
 	}
-	for _, group := range api.GroupByDefinitions {
-		out.GroupBy = append(out.GroupBy, dashboardGroupByModel{
-			Attribute: types.StringValue(group.Attribute),
-			Path:      types.StringPointerValue(group.Path),
-		})
-	}
-	return out, nil
-}
-
-func dashboardMetricModelFromAPI(api dashboardMetricAPI) (*dashboardMetricModel, error) {
-	if api.Type != "ratio" {
-		leaf := dashboardLeafMetricModelFromAPI(api)
-		return &dashboardMetricModel{
-			Type: leaf.Type, Field: leaf.Field, Percentile: leaf.Percentile, FeedbackKey: leaf.FeedbackKey, Filter: leaf.Filter,
-			Numerator: nil, Denominator: nil,
-		}, nil
-	}
-	if api.Numerator == nil || api.Denominator == nil {
-		return nil, errors.New("ratio metric is missing its numerator or denominator")
-	}
-	numerator := dashboardLeafMetricModelFromAPI(*api.Numerator)
-	denominator := dashboardLeafMetricModelFromAPI(*api.Denominator)
-	return &dashboardMetricModel{
-		Type: types.StringValue("ratio"), Field: types.StringNull(), Percentile: types.Float64Null(),
-		FeedbackKey: types.StringNull(), Filter: types.StringNull(),
-		Numerator: &numerator, Denominator: &denominator,
-	}, nil
-}
-
-func dashboardLeafMetricModelFromAPI(api dashboardMetricAPI) dashboardMetricLeafModel {
-	out := dashboardMetricLeafModel{
-		Type:        types.StringValue(api.Type),
-		Field:       types.StringPointerValue(api.Field),
-		Percentile:  types.Float64Null(),
-		FeedbackKey: types.StringNull(),
-		Filter:      types.StringPointerValue(api.Filter),
-	}
-	if api.Params != nil {
-		out.Percentile = types.Float64PointerValue(api.Params.P)
-		out.FeedbackKey = types.StringPointerValue(api.Params.FeedbackKey)
+	for _, group := range api.GroupBy {
+		out.GroupBy = append(out.GroupBy, dashboardGroupByModel{Attribute: types.StringValue(group.Attribute), Path: types.StringPointerValue(group.Path)})
 	}
 	return out
 }
 
-// dashboardLayoutModelFromAPI reads the wide-screen rows. The narrow-screen
-// rows are always derived from them, so they are not read back.
-func dashboardLayoutModelFromAPI(api *dashboardLayoutAPI, prior []dashboardRowModel) []dashboardRowModel {
+func dashboardLeafMetricModelFromAPI(api *dashboardMetricAPI) *dashboardMetricLeafModel {
+	if api == nil {
+		return nil
+	}
+	return &dashboardMetricLeafModel{
+		Type:        types.StringValue(api.Type),
+		Field:       types.StringPointerValue(api.Field),
+		Percentile:  types.Float64PointerValue(api.Percentile),
+		FeedbackKey: types.StringPointerValue(api.FeedbackKey),
+		Filter:      types.StringPointerValue(api.Filter),
+	}
+}
+
+// dashboardLayoutModelFromAPI reads the layout rows. The API fills in every
+// width; a row whose configuration left widths unset keeps them unset while
+// the row still has the even widths that implies.
+func dashboardLayoutModelFromAPI(api []dashboardRowAPI, prior []dashboardRowModel) []dashboardRowModel {
 	if api == nil {
 		if prior != nil && len(prior) == 0 {
 			return []dashboardRowModel{}
@@ -805,29 +666,27 @@ func dashboardLayoutModelFromAPI(api *dashboardLayoutAPI, prior []dashboardRowMo
 		return nil
 	}
 	var out []dashboardRowModel
-	for i, row := range api.Breakpoints.MD.Rows {
+	for i, row := range api {
 		var priorRow dashboardRowModel
 		if i < len(prior) {
 			priorRow = prior[i]
 		}
-		// Keep widths unset when the config left them unset and the row still
-		// has the widths that implies.
-		keepUnset := len(priorRow.Charts) == len(row.Items) &&
-			!slices.ContainsFunc(priorRow.Charts, func(item dashboardRowItemModel) bool { return !item.WidthUnits.IsNull() })
-		defaults := defaultLayoutWidths(len(row.Items), dashboardMediumWidthUnits)
-		for j, item := range row.Items {
-			if item.WidthUnits != defaults[j] {
+		keepUnset := len(priorRow.Charts) == len(row.Charts) &&
+			!slices.ContainsFunc(priorRow.Charts, func(item dashboardRowItemModel) bool { return !item.Width.IsNull() })
+		defaults := defaultLayoutWidths(len(row.Charts), dashboardMediumWidthUnits)
+		for j, item := range row.Charts {
+			if item.Width == nil || *item.Width != defaults[j] {
 				keepUnset = false
 			}
 		}
 
-		model := dashboardRowModel{HeightUnits: types.Int64Value(row.HeightUnits)}
-		for _, item := range row.Items {
-			width := types.Int64Value(item.WidthUnits)
+		model := dashboardRowModel{Height: types.Int64Value(row.Height)}
+		for _, item := range row.Charts {
+			width := types.Int64PointerValue(item.Width)
 			if keepUnset {
 				width = types.Int64Null()
 			}
-			model.Charts = append(model.Charts, dashboardRowItemModel{Key: types.StringValue(item.ChartKey), WidthUnits: width})
+			model.Charts = append(model.Charts, dashboardRowItemModel{Key: types.StringValue(item.Key), Width: width})
 		}
 		out = append(out, model)
 	}

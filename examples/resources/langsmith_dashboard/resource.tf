@@ -51,10 +51,10 @@ resource "langsmith_dashboard" "service_health" {
     },
   ]
 
-  # Charts share a row evenly unless every chart in the row sets width_units
+  # Charts share a row evenly unless every chart in the row sets width
   # (out of 120). Charts left out of the layout are placed after it.
   layout = [
-    { height_units = 4, charts = [{ key = "requests" }, { key = "latency" }] },
-    { height_units = 3, charts = [{ key = "error_rate", width_units = 40 }, { key = "runbook", width_units = 80 }] },
+    { height = 4, charts = [{ key = "requests" }, { key = "latency" }] },
+    { height = 3, charts = [{ key = "error_rate", width = 40 }, { key = "runbook", width = 80 }] },
   ]
 }
