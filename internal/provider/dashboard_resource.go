@@ -427,11 +427,7 @@ func (r *dashboardResource) ImportState(ctx context.Context, req resource.Import
 func (r *dashboardResource) setState(ctx context.Context, result dashboardDefinitionAPI, prior dashboardResourceModel, state interface {
 	Set(context.Context, any) diag.Diagnostics
 }, diags *diag.Diagnostics) {
-	model, err := dashboardModelFromAPI(result, prior)
-	if err != nil {
-		diags.AddError("Unsupported dashboard", err.Error())
-		return
-	}
+	model := dashboardModelFromAPI(result, prior)
 	diags.Append(state.Set(ctx, &model)...)
 }
 
@@ -537,7 +533,7 @@ func dashboardLeafMetricFromModel(m *dashboardMetricLeafModel) *dashboardMetricA
 // Where the API and prior hold equivalent values (metadata JSON with
 // different formatting, series in another order, or layout widths a row gets
 // by default), it keeps prior's form so a refresh does not report a change.
-func dashboardModelFromAPI(api dashboardDefinitionAPI, prior dashboardResourceModel) (dashboardResourceModel, error) {
+func dashboardModelFromAPI(api dashboardDefinitionAPI, prior dashboardResourceModel) dashboardResourceModel {
 	out := dashboardResourceModel{
 		ID:          types.StringValue(api.ID),
 		WorkspaceID: prior.WorkspaceID,
@@ -556,7 +552,7 @@ func dashboardModelFromAPI(api dashboardDefinitionAPI, prior dashboardResourceMo
 		out.Charts = []dashboardChartModel{}
 	}
 	out.Layout = dashboardLayoutModelFromAPI(api.Layout, prior.Layout)
-	return out, nil
+	return out
 }
 
 func dashboardChartModelFromAPI(api dashboardChartAPI, prior dashboardChartModel) dashboardChartModel {
