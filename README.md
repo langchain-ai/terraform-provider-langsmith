@@ -30,6 +30,8 @@ The provider currently includes:
 - `langsmith_service_key`, which manages organization service keys (org-wide or workspace-scoped).
 - `langsmith_deployment`, which manages the desired state of a LangGraph deployment through the LangSmith API.
 - `data.langsmith_deployment_revision` and `data.langsmith_deployment_revisions`, which read the service-owned revision history of a deployment.
+- `langsmith_agent`, which manages LangSmith agents.
+- `data.langsmith_agent`, which reads existing agents and their environments.
 
 ## Maintainer documentation
 

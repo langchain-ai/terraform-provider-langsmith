@@ -114,6 +114,7 @@ func (p *LangSmithProvider) Configure(ctx context.Context, req frameworkprovider
 func (p *LangSmithProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewInfoDataSource,
+		NewAgentDataSource,
 		NewProjectDataSource,
 		NewOrgDataSource,
 		NewWorkspaceDataSource,
@@ -129,6 +130,7 @@ func (p *LangSmithProvider) DataSources(ctx context.Context) []func() datasource
 func (p *LangSmithProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewAlertRuleResource,
+		NewAgentResource,
 		NewAccessPolicyResource,
 		NewAccessPolicyAttachmentResource,
 		NewEvaluatorResource,
