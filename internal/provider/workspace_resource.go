@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -14,6 +17,7 @@ import (
 	frameworkvalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/langchain-ai/langsmith-go"
+	"github.com/langchain-ai/langsmith-go/option"
 )
 
 var (
@@ -22,6 +26,8 @@ var (
 )
 
 var errWorkspaceNotFound = errors.New("workspace not found")
+
+const unresolvedDataPlaneMessage = "This BYOC workspace's data_plane_id could not be resolved. Grant organization:read or organization:infrastructure:read access and refresh before changing or deleting the workspace."
 
 func NewWorkspaceResource() resource.Resource {
 	return &WorkspaceResource{}
@@ -36,10 +42,15 @@ type workspaceResourceModel struct {
 	DisplayName    types.String `tfsdk:"display_name"`
 	TenantHandle   types.String `tfsdk:"tenant_handle"`
 	OrganizationID types.String `tfsdk:"organization_id"`
+	DataPlaneID    types.String `tfsdk:"data_plane_id"`
 	DataPlaneURL   types.String `tfsdk:"data_plane_url"`
 	IsPersonal     types.Bool   `tfsdk:"is_personal"`
 	IsDeleted      types.Bool   `tfsdk:"is_deleted"`
 	CreatedAt      types.String `tfsdk:"created_at"`
+}
+
+func (m workspaceResourceModel) hasUnresolvedDataPlane() bool {
+	return stringValue(m.DataPlaneURL) != "" && stringValue(m.DataPlaneID) == ""
 }
 
 func (r *WorkspaceResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -71,6 +82,15 @@ func (r *WorkspaceResource) Schema(ctx context.Context, req resource.SchemaReque
 				Computed:            true,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 				MarkdownDescription: "Organization ID.",
+			},
+			"data_plane_id": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplaceIf(workspaceDataPlaneRequiresReplace, "Changing a resolved data plane requires replacement.", "Changing a resolved data plane requires replacement."),
+				},
+				MarkdownDescription: "BYOC data plane ID. The provider sends workspace create, update, and delete requests to this data plane's API URL. Leave unset for a workspace on the control plane. Data plane discovery requires organization:read or organization:infrastructure:read. Import and refresh with only workspace metadata access retain the workspace with a warning, but changes and deletion are blocked until its data plane ID can be resolved.",
 			},
 			"data_plane_url": schema.StringAttribute{
 				Computed:            true,
@@ -115,7 +135,12 @@ func (r *WorkspaceResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	created, err := r.client.Workspaces.New(ctx, workspaceNewParamsFromModel(plan))
+	opts, err := r.dataPlaneOptions(ctx, stringValue(plan.DataPlaneID))
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("data_plane_id"), "Unable to Resolve LangSmith Data Plane", err.Error())
+		return
+	}
+	created, err := r.client.Workspaces.New(ctx, workspaceNewParamsFromModel(plan), opts...)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to Create LangSmith Workspace", err.Error())
 		return
@@ -136,12 +161,17 @@ func (r *WorkspaceResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 	next, err := r.readWorkspace(ctx, state.ID.ValueString(), state)
 	if err != nil {
-		if errors.Is(err, errWorkspaceNotFound) || isLangSmithNotFound(err) {
+		if errors.Is(err, errWorkspaceNotFound) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Unable to Read LangSmith Workspace", err.Error())
-		return
+		var apiErr *langsmith.Error
+		if next.hasUnresolvedDataPlane() && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
+			resp.Diagnostics.AddWarning("Unable to Resolve LangSmith Data Plane", unresolvedDataPlaneMessage)
+		} else {
+			resp.Diagnostics.AddError("Unable to Read LangSmith Workspace", err.Error())
+			return
+		}
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
@@ -163,6 +193,10 @@ func (r *WorkspaceResource) Update(ctx context.Context, req resource.UpdateReque
 		resp.Diagnostics.AddError("Unable to Update LangSmith Workspace", "Missing workspace ID in plan and state.")
 		return
 	}
+	if state.hasUnresolvedDataPlane() {
+		resp.Diagnostics.AddError("Unable to Resolve LangSmith Data Plane", unresolvedDataPlaneMessage)
+		return
+	}
 	next, err := r.updateWorkspace(ctx, workspaceID, plan)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to Update LangSmith Workspace", err.Error())
@@ -177,8 +211,12 @@ func (r *WorkspaceResource) Delete(ctx context.Context, req resource.DeleteReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.deleteWorkspace(ctx, state.ID.ValueString()); err != nil {
-		if isLangSmithNotFound(err) {
+	if state.hasUnresolvedDataPlane() {
+		resp.Diagnostics.AddError("Unable to Resolve LangSmith Data Plane", unresolvedDataPlaneMessage)
+		return
+	}
+	if err := r.deleteWorkspace(ctx, state.ID.ValueString(), stringValue(state.DataPlaneID)); err != nil {
+		if errors.Is(err, errWorkspaceNotFound) {
 			return
 		}
 		resp.Diagnostics.AddError("Unable to Delete LangSmith Workspace", err.Error())
@@ -200,24 +238,123 @@ func (r *WorkspaceResource) readWorkspace(ctx context.Context, workspaceID strin
 			if workspace.IsDeleted {
 				return workspaceResourceModel{}, fmt.Errorf("%w: %s", errWorkspaceNotFound, workspaceID)
 			}
-			return workspaceModelFromListResponse(workspace, previous), nil
+			next := workspaceModelFromListResponse(workspace, previous)
+			if next.DataPlaneURL.IsNull() {
+				next.DataPlaneID = types.StringNull()
+			} else if stringValue(next.DataPlaneID) == "" {
+				dataPlaneID, err := r.dataPlaneIDForURL(ctx, workspace.DataPlaneURL)
+				if err != nil {
+					return next, fmt.Errorf("resolve data plane for workspace %s: %w", workspaceID, err)
+				}
+				next.DataPlaneID = types.StringValue(dataPlaneID)
+			}
+			return next, nil
 		}
 	}
 	return workspaceResourceModel{}, fmt.Errorf("%w: %s", errWorkspaceNotFound, workspaceID)
 }
 
+func workspaceDataPlaneRequiresReplace(ctx context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+	var state workspaceResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if state.hasUnresolvedDataPlane() {
+		resp.Diagnostics.AddAttributeError(req.Path, "Unable to Resolve LangSmith Data Plane", unresolvedDataPlaneMessage)
+		return
+	}
+	resp.RequiresReplace = true
+}
+
 func (r *WorkspaceResource) updateWorkspace(ctx context.Context, workspaceID string, plan workspaceResourceModel) (workspaceResourceModel, error) {
+	opts, err := r.dataPlaneOptions(ctx, stringValue(plan.DataPlaneID))
+	if err != nil {
+		return workspaceResourceModel{}, err
+	}
 	if _, err := r.client.Workspaces.Update(ctx, workspaceID, langsmith.WorkspaceUpdateParams{
 		DisplayName: langsmith.F(plan.DisplayName.ValueString()),
-	}, workspaceTenantOption(workspaceID)); err != nil {
+	}, append(opts, workspaceTenantOption(workspaceID))...); err != nil {
 		return workspaceResourceModel{}, err
 	}
 	return r.readWorkspace(ctx, workspaceID, plan)
 }
 
-func (r *WorkspaceResource) deleteWorkspace(ctx context.Context, workspaceID string) error {
-	_, err := r.client.Workspaces.Delete(ctx, workspaceID, workspaceTenantOption(workspaceID))
+func (r *WorkspaceResource) deleteWorkspace(ctx context.Context, workspaceID, dataPlaneID string) error {
+	opts, err := r.dataPlaneOptions(ctx, dataPlaneID)
+	if err != nil {
+		return err
+	}
+	_, err = r.client.Workspaces.Delete(ctx, workspaceID, append(opts, workspaceTenantOption(workspaceID))...)
+	if isLangSmithNotFound(err) {
+		return fmt.Errorf("%w: %s", errWorkspaceNotFound, workspaceID)
+	}
 	return err
+}
+
+const dataPlanesSummaryPath = "api/v1/orgs/current/data-planes?view=SUMMARY"
+
+type dataPlaneSummary struct {
+	ID     string `json:"id"`
+	APIURL string `json:"api_url"`
+}
+
+// dataPlaneOptions routes a workspace mutation through the data plane, because
+// the control plane only assigns a data plane to requests the data plane proxies.
+func (r *WorkspaceResource) dataPlaneOptions(ctx context.Context, dataPlaneID string) ([]option.RequestOption, error) {
+	if dataPlaneID == "" {
+		return nil, nil
+	}
+	dataPlanes, err := r.listDataPlanes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, dataPlane := range dataPlanes {
+		if dataPlane.ID == dataPlaneID {
+			baseURL, err := dataPlaneBaseURL(dataPlane.APIURL)
+			if err != nil {
+				return nil, fmt.Errorf("data plane %s: %w", dataPlaneID, err)
+			}
+			return []option.RequestOption{option.WithBaseURL(baseURL)}, nil
+		}
+	}
+	return nil, fmt.Errorf("data plane %s not found in the current organization", dataPlaneID)
+}
+
+func (r *WorkspaceResource) dataPlaneIDForURL(ctx context.Context, apiURL string) (string, error) {
+	dataPlanes, err := r.listDataPlanes(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, dataPlane := range dataPlanes {
+		if normalizeAPIURL(dataPlane.APIURL) == normalizeAPIURL(apiURL) {
+			return dataPlane.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no data plane in the current organization has API URL %s", apiURL)
+}
+
+func (r *WorkspaceResource) listDataPlanes(ctx context.Context) ([]dataPlaneSummary, error) {
+	var result struct {
+		DataPlanes []dataPlaneSummary `json:"data_planes"`
+	}
+	if err := r.client.Get(ctx, dataPlanesSummaryPath, nil, &result); err != nil {
+		return nil, fmt.Errorf("list data planes: %w", err)
+	}
+	return result.DataPlanes, nil
+}
+
+// dataPlaneBaseURL rejects data plane URLs that would expose the API key over
+// plain HTTP or carry extra URL parts.
+func dataPlaneBaseURL(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", fmt.Errorf("invalid API URL: %w", err)
+	}
+	if u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("API URL %q must be an absolute https URL without credentials, query, or fragment", raw)
+	}
+	return normalizeAPIURL(u.String()), nil
 }
 
 func workspaceNewParamsFromModel(data workspaceResourceModel) langsmith.WorkspaceNewParams {
