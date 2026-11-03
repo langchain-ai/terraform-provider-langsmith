@@ -129,6 +129,8 @@ func (p *LangSmithProvider) DataSources(ctx context.Context) []func() datasource
 func (p *LangSmithProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewAlertRuleResource,
+		NewDashboardResource,
+		NewDashboardJSONResource,
 		NewAccessPolicyResource,
 		NewAccessPolicyAttachmentResource,
 		NewEvaluatorResource,
