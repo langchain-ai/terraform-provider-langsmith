@@ -72,7 +72,7 @@ resource "langsmith_gateway_policy" "burst_and_sustained_rate_limit" {
 
 resource "langsmith_gateway_policy" "model_access" {
   name        = "workspace-model-access"
-  description = "Only allow selected OpenAI models and every Anthropic model."
+  description = "Only allow selected OpenAI models, every Anthropic model, and one workspace model configuration."
   action      = "block"
 
   config = {
@@ -84,6 +84,10 @@ resource "langsmith_gateway_policy" "model_access" {
         }
         anthropic = {
           access = "all"
+        }
+        custom = {
+          access         = "selected"
+          allowed_models = ["my-custom-model-configuration"]
         }
       }
     }
@@ -240,7 +244,7 @@ Required:
 
 Required:
 
-- `providers` (Attributes Map) The direct gateway providers and models that are allowed, keyed by provider name. Providers not listed are denied. (see [below for nested schema](#nestedatt--config--model_access--providers))
+- `providers` (Attributes Map) The direct gateway providers and models that are allowed, keyed by provider name. Providers not listed are denied. The special custom provider controls saved model configurations: access all allows every configuration, while access selected uses model configuration names in allowed_models. The Gateway API key must belong to the same workspace as the model configuration for the configuration to be usable. (see [below for nested schema](#nestedatt--config--model_access--providers))
 
 <a id="nestedatt--config--model_access--providers"></a>
 ### Nested Schema for `config.model_access.providers`
@@ -251,7 +255,7 @@ Required:
 
 Optional:
 
-- `allowed_models` (List of String) Provider-native model IDs to allow when access is selected. Omit this when access is all.
+- `allowed_models` (List of String) Provider-native model IDs to allow when access is selected. For the special custom provider, use model configuration names. Omit this when access is all.
 
 
 
