@@ -4,12 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	frameworkvalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -22,6 +27,18 @@ var (
 )
 
 var errWorkspaceNotFound = errors.New("workspace not found")
+
+const (
+	workspaceDeletionPolicyDelete  = "DELETE"
+	workspaceDeletionPolicyPrevent = "PREVENT"
+	workspaceDeletionPolicyAbandon = "ABANDON"
+)
+
+var workspaceDeletionPolicies = []string{
+	workspaceDeletionPolicyDelete,
+	workspaceDeletionPolicyPrevent,
+	workspaceDeletionPolicyAbandon,
+}
 
 func NewWorkspaceResource() resource.Resource {
 	return &WorkspaceResource{}
@@ -40,6 +57,7 @@ type workspaceResourceModel struct {
 	IsPersonal     types.Bool   `tfsdk:"is_personal"`
 	IsDeleted      types.Bool   `tfsdk:"is_deleted"`
 	CreatedAt      types.String `tfsdk:"created_at"`
+	DeletionPolicy types.String `tfsdk:"deletion_policy"`
 }
 
 func (r *WorkspaceResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -74,20 +92,39 @@ func (r *WorkspaceResource) Schema(ctx context.Context, req resource.SchemaReque
 			},
 			"data_plane_url": schema.StringAttribute{
 				Computed:            true,
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 				MarkdownDescription: "Workspace data plane URL when returned by the API.",
 			},
 			"is_personal": schema.BoolAttribute{
 				Computed:            true,
+				PlanModifiers:       []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 				MarkdownDescription: "Whether this is a personal workspace.",
 			},
 			"is_deleted": schema.BoolAttribute{
 				Computed:            true,
+				PlanModifiers:       []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 				MarkdownDescription: "Whether this workspace is deleted.",
 			},
 			"created_at": schema.StringAttribute{
 				Computed:            true,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 				MarkdownDescription: "Creation timestamp.",
+			},
+			"deletion_policy": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  stringdefault.StaticString(workspaceDeletionPolicyDelete),
+				Validators: []frameworkvalidator.String{
+					stringvalidator.OneOf(workspaceDeletionPolicies...),
+				},
+				MarkdownDescription: fmt.Sprintf(
+					"What Terraform does with the workspace on destroy. One of: `%s`. "+
+						"`DELETE` deletes the workspace in LangSmith, `PREVENT` fails the destroy and deletes nothing, "+
+						"and `ABANDON` removes the workspace from Terraform state and leaves it in LangSmith. "+
+						"Changing this value makes no API call. Destroy uses the value stored in state, "+
+						"so apply a new value before destroying with it.",
+					strings.Join(workspaceDeletionPolicies, "`, `"),
+				),
 			},
 		},
 	}
@@ -134,6 +171,9 @@ func (r *WorkspaceResource) Read(ctx context.Context, req resource.ReadRequest, 
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if state.DeletionPolicy.IsNull() {
+		state.DeletionPolicy = types.StringValue(workspaceDeletionPolicyDelete)
+	}
 	next, err := r.readWorkspace(ctx, state.ID.ValueString(), state)
 	if err != nil {
 		if errors.Is(err, errWorkspaceNotFound) || isLangSmithNotFound(err) {
@@ -158,6 +198,14 @@ func (r *WorkspaceResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
+	if plan.DisplayName.Equal(state.DisplayName) {
+		// deletion_policy is the only other in-place attribute and lives only in Terraform state.
+		next := state
+		next.DeletionPolicy = plan.DeletionPolicy
+		resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
+		return
+	}
+
 	workspaceID := firstNonEmpty(state.ID.ValueString(), plan.ID.ValueString())
 	if workspaceID == "" {
 		resp.Diagnostics.AddError("Unable to Update LangSmith Workspace", "Missing workspace ID in plan and state.")
@@ -177,6 +225,16 @@ func (r *WorkspaceResource) Delete(ctx context.Context, req resource.DeleteReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	switch state.DeletionPolicy.ValueString() {
+	case workspaceDeletionPolicyPrevent:
+		resp.Diagnostics.AddError(
+			"Unable to Delete LangSmith Workspace",
+			fmt.Sprintf("cannot delete workspace %q: deletion_policy is PREVENT; set it to DELETE or ABANDON and apply first", state.DisplayName.ValueString()),
+		)
+		return
+	case workspaceDeletionPolicyAbandon:
+		return
+	}
 	if err := r.deleteWorkspace(ctx, state.ID.ValueString()); err != nil {
 		if isLangSmithNotFound(err) {
 			return
@@ -188,6 +246,7 @@ func (r *WorkspaceResource) Delete(ctx context.Context, req resource.DeleteReque
 
 func (r *WorkspaceResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("deletion_policy"), workspaceDeletionPolicyDelete)...)
 }
 
 func (r *WorkspaceResource) readWorkspace(ctx context.Context, workspaceID string, previous workspaceResourceModel) (workspaceResourceModel, error) {

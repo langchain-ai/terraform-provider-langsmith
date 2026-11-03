@@ -14,8 +14,9 @@ Manages a LangSmith workspace.
 
 ```terraform
 resource "langsmith_workspace" "example" {
-  display_name  = "Demo Workspace"
-  tenant_handle = "demo-workspace"
+  display_name    = "Demo Workspace"
+  tenant_handle   = "demo-workspace"
+  deletion_policy = "PREVENT"
 }
 ```
 
@@ -28,6 +29,7 @@ resource "langsmith_workspace" "example" {
 
 ### Optional
 
+- `deletion_policy` (String) What Terraform does with the workspace on destroy. One of: `DELETE`, `PREVENT`, `ABANDON`. `DELETE` deletes the workspace in LangSmith, `PREVENT` fails the destroy and deletes nothing, and `ABANDON` removes the workspace from Terraform state and leaves it in LangSmith. Changing this value makes no API call. Destroy uses the value stored in state, so apply a new value before destroying with it.
 - `id` (String) Workspace ID. Leave unset to let LangSmith generate one.
 - `tenant_handle` (String) Workspace handle. LangSmith only accepts this on create.
 
