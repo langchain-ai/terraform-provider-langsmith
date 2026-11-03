@@ -92,7 +92,7 @@ func (p *LangSmithProvider) Configure(ctx context.Context, req frameworkprovider
 	workspaceID := stringConfig(config.WorkspaceID)
 	profileName := stringConfig(config.Profile)
 
-	var opts []option.RequestOption
+	opts := []option.RequestOption{option.WithHeader("User-Agent", userAgent(p.version, req.TerraformVersion))}
 	if profileName != "" {
 		opts = append(opts, langsmith.WithProfile(profileName))
 	}
@@ -177,6 +177,15 @@ func resolveAPIURL(configured string) string {
 func normalizeAPIURL(raw string) string {
 	u := strings.TrimRight(strings.TrimSpace(raw), "/")
 	return strings.TrimSuffix(u, "/api/v1")
+}
+
+// userAgent identifies provider requests so LangSmith can count Terraform usage.
+func userAgent(providerVersion, terraformVersion string) string {
+	ua := "terraform-provider-langsmith/" + providerVersion
+	if terraformVersion != "" {
+		ua += " terraform/" + terraformVersion
+	}
+	return ua
 }
 
 func stringConfig(value types.String) string {
