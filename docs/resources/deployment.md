@@ -96,10 +96,10 @@ Optional:
 - `custom_url` (String) Custom hostname to serve the deployment on. The service has no way to clear this once set, so removing the argument leaves the last value in place.
 - `deployment_type` (String) Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. The provider defaults this to `prod` when creating a Cloud deployment. Omitted values on existing deployments retain the service's tier. Changing it replaces the deployment.
 - `install_command` (String) Command used to install dependencies during a JS build. Retained as desired configuration because older API versions do not return it.
-- `integration_id` (String) UUID of the GitHub integration to build through. Only applicable to the `github` source. Changing this replaces the deployment.
+- `integration_id` (String) UUID of the GitHub integration to build through. Only applicable to the `github` source. Changing it moves the existing deployment to the repositories that integration can reach, keeping its URL and data. When omitted, a `repo_url` change uses whichever workspace integration can reach the new repository.
 - `listener_config` (Attributes) Listener settings. The service does not report these back, so Terraform is their source of truth. (see [below for nested schema](#nestedatt--source_config--listener_config))
 - `listener_id` (String) UUID of the listener to bind the deployment to. Changing this replaces the deployment.
-- `repo_url` (String) URL of the repository to build from. Only applicable to the `github` source. Changing this replaces the deployment.
+- `repo_url` (String) URL of the repository to build from. Only applicable to the `github` source. Changing it moves the existing deployment to that repository, keeping its URL and data; the repository must contain `langgraph_config_path` at `repo_ref`.
 - `resource_spec` (Attributes) Compute resources for the deployment. Refresh detects remote changes to previously configured fields. Configured fields are merged with the current API resource specification before each revision, preserving unconfigured fields, defaults, and fields this schema does not model. Removing an argument relinquishes management of that field and preserves its current value. Changing any argument creates a new revision. (see [below for nested schema](#nestedatt--source_config--resource_spec))
 - `template_id` (String) Identifier of the LangChain template to deploy. Only applicable to the `internal_template` source. Changing this replaces the deployment.
 

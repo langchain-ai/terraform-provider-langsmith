@@ -322,9 +322,11 @@ func sourceConfigSchema() map[string]schema.Attribute {
 			MarkdownDescription: description,
 		}
 	}
+	integrationID := serverOwnedString("UUID of the GitHub integration to build through. Only applicable to the `github` source. Changing it moves the existing deployment to the repositories that integration can reach, keeping its URL and data. When omitted, a `repo_url` change uses whichever workspace integration can reach the new repository.", false, nonEmptyStringValidator{})
+	integrationID.PlanModifiers = append(integrationID.PlanModifiers, integrationFollowsRepository{})
 	return map[string]schema.Attribute{
-		"integration_id":  serverOwnedString("UUID of the GitHub integration to build through. Only applicable to the `github` source. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
-		"repo_url":        serverOwnedString("URL of the repository to build from. Only applicable to the `github` source. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
+		"integration_id":  integrationID,
+		"repo_url":        serverOwnedString("URL of the repository to build from. Only applicable to the `github` source. Changing it moves the existing deployment to that repository, keeping its URL and data; the repository must contain `langgraph_config_path` at `repo_ref`.", false, nonEmptyStringValidator{}),
 		"deployment_type": serverOwnedString("Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. The provider defaults this to `prod` when creating a Cloud deployment. Omitted values on existing deployments retain the service's tier. Changing it replaces the deployment.", true, oneOfStringValidator{values: []string{"dev_free", "dev", "prod", "dev_zero", "dev_free_zero"}}),
 		"listener_id":     serverOwnedString("UUID of the listener to bind the deployment to. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
 		"template_id":     serverOwnedString("Identifier of the LangChain template to deploy. Only applicable to the `internal_template` source. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
@@ -612,6 +614,7 @@ func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentR
 	id := state.ID.ValueString()
 	needsRevision := revisionChanged(state, plan)
 	mutable := mutablePayload(state, plan)
+	repository := repositoryPayload(state, plan)
 	var payload map[string]any
 	var revision deploymentResourceRevisionAPI
 	if needsRevision {
@@ -642,10 +645,54 @@ func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentR
 			}
 		}
 	}
+	// The API moves a deployment to another repository only through PATCH, and
+	// checks the new repository at the ref and config path that request names.
+	// A revision that changes either has to ride on the same PATCH, which then
+	// creates it; posting it separately would check the old ones.
+	revisionInPatch := len(repository) > 0 && needsRevision
+	if len(repository) > 0 {
+		sourceConfig, _ := mutable["source_config"].(map[string]any)
+		if sourceConfig == nil {
+			sourceConfig = map[string]any{}
+		}
+		for key, value := range repository {
+			sourceConfig[key] = value
+		}
+		if revisionInPatch {
+			for key, value := range payload {
+				if key != "source_config" {
+					mutable[key] = value
+				}
+			}
+			if revisionSource, ok := payload["source_config"].(map[string]any); ok {
+				for key, value := range revisionSource {
+					sourceConfig[key] = value
+				}
+			}
+			needsRevision = false
+		}
+		mutable["source_config"] = sourceConfig
+	}
 	if len(mutable) > 0 {
-		var ignored deploymentAPI
-		if err := r.client.Patch(ctx, deploymentPath(id), mutable, &ignored, workspaceOpts(plan.WorkspaceID)...); err != nil {
+		var patched deploymentAPI
+		if err := r.client.Patch(ctx, deploymentPath(id), mutable, &patched, workspaceOpts(plan.WorkspaceID)...); err != nil {
 			return state, err
+		}
+		if revisionInPatch {
+			if patched.LatestRevisionID == nil || *patched.LatestRevisionID == "" {
+				return r.applied(ctx, id, state, plan, revision), errors.New("LangSmith did not return the revision the repository change created")
+			}
+			revision.ID = *patched.LatestRevisionID
+			waited, err := r.waitForRevision(ctx, id, revision.ID, plan.WorkspaceID)
+			if waited.ID != "" {
+				revision.ID = waited.ID
+			}
+			if waited.Status != "" {
+				revision.Status = waited.Status
+			}
+			if err != nil {
+				return r.applied(ctx, id, state, plan, revision), err
+			}
 		}
 	}
 	if needsRevision {
@@ -838,6 +885,61 @@ func mutablePayload(state, plan deploymentResourceModel) map[string]any {
 		p["source_config"] = sourceConfig
 	}
 	return p
+}
+
+// repositoryPayload is the source_config fields that move a GitHub deployment
+// to another repository, or nil when neither changed.
+func repositoryPayload(state, plan deploymentResourceModel) map[string]any {
+	if state.SourceConfig == nil || plan.SourceConfig == nil {
+		return nil
+	}
+	p := map[string]any{}
+	repoChanged := changedValue(state.SourceConfig.RepoURL, plan.SourceConfig.RepoURL)
+	if repoChanged {
+		p["repo_url"] = plan.SourceConfig.RepoURL.ValueString()
+	}
+	// A configured integration goes with a repository change, so the API checks that it
+	// reaches the new repository instead of choosing another one the plan does not name.
+	// An omitted one is unknown in the plan (integrationFollowsRepository) and is left
+	// for the API to choose.
+	if changedValue(state.SourceConfig.IntegrationID, plan.SourceConfig.IntegrationID) ||
+		(repoChanged && !plan.SourceConfig.IntegrationID.IsNull() && !plan.SourceConfig.IntegrationID.IsUnknown()) {
+		p["integration_id"] = plan.SourceConfig.IntegrationID.ValueString()
+	}
+	if len(p) == 0 {
+		return nil
+	}
+	return p
+}
+
+// integrationFollowsRepository leaves an omitted integration_id unknown when
+// repo_url changes or is not known until apply: the API then picks the workspace integration that reaches the
+// new repository, which may not be the one in state.
+type integrationFollowsRepository struct{}
+
+func (integrationFollowsRepository) Description(context.Context) string {
+	return "When integration_id is not configured and repo_url changes, the integration is chosen by LangSmith."
+}
+
+func (m integrationFollowsRepository) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (integrationFollowsRepository) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if !req.ConfigValue.IsNull() || req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+	repoPath := req.Path.ParentPath().AtName("repo_url")
+	var planned, current types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, repoPath, &planned)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, repoPath, &current)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// An unknown repo_url may turn out to be another repository at apply time.
+	if planned.IsUnknown() || changedValue(current, planned) {
+		resp.PlanValue = types.StringUnknown()
+	}
 }
 
 // Null cannot clear an API field; unknown carries no value to send.
