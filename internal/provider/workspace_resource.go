@@ -292,7 +292,7 @@ func (r *WorkspaceResource) deleteWorkspace(ctx context.Context, workspaceID, da
 	return err
 }
 
-const dataPlanesSummaryPath = "api/v1/orgs/current/data-planes?view=SUMMARY"
+const dataPlanesSummaryPath = "orgs/current/data-planes?view=SUMMARY"
 
 type dataPlaneSummary struct {
 	ID     string `json:"id"`

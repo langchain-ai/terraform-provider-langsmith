@@ -211,7 +211,7 @@ func TestWorkspaceResourceRoutesMutationsThroughDataPlane(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/orgs/current/data-planes":
+		case r.Method == http.MethodGet && r.URL.Path == "/orgs/current/data-planes":
 			if got, want := r.URL.Query().Get("view"), "SUMMARY"; got != want {
 				t.Fatalf("view = %q, want %q", got, want)
 			}
@@ -285,16 +285,16 @@ func TestWorkspaceResourceRoutesMutationsThroughDataPlane(t *testing.T) {
 		t.Fatalf("imported DataPlaneID = %q, want dp-id", imported.DataPlaneID.ValueString())
 	}
 	if !reflect.DeepEqual(requests, []string{
-		"GET /api/v1/orgs/current/data-planes",
+		"GET /orgs/current/data-planes",
 		"POST /dp/api/v1/workspaces",
 		"GET /api/v1/workspaces",
-		"GET /api/v1/orgs/current/data-planes",
+		"GET /orgs/current/data-planes",
 		"PATCH /dp/api/v1/workspaces/workspace-id",
 		"GET /api/v1/workspaces",
-		"GET /api/v1/orgs/current/data-planes",
+		"GET /orgs/current/data-planes",
 		"DELETE /dp/api/v1/workspaces/workspace-id",
 		"GET /api/v1/workspaces",
-		"GET /api/v1/orgs/current/data-planes",
+		"GET /orgs/current/data-planes",
 	}) {
 		t.Fatalf("requests = %#v", requests)
 	}
@@ -320,7 +320,7 @@ func TestWorkspaceImportReadPreservesStateOnDataPlaneLookupFailure(t *testing.T)
 					writeJSON(t, w, []langsmith.WorkspaceListResponse{{
 						ID: "workspace-id", DataPlaneURL: "https://dp.example.com",
 					}})
-				case "/api/v1/orgs/current/data-planes":
+				case "/orgs/current/data-planes":
 					if allowDiscovery {
 						writeJSON(t, w, map[string]any{"data_planes": []map[string]string{{"id": "dp-id", "api_url": "https://dp.example.com"}}})
 					} else if tc.status == http.StatusOK {
@@ -444,7 +444,7 @@ func TestWorkspaceDataPlaneReplacement(t *testing.T) {
 
 func TestWorkspaceDeleteReportsDataPlaneLookupNotFound(t *testing.T) {
 	resourceUnderTest := newWorkspaceResourceWithServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/orgs/current/data-planes" {
+		if r.Method != http.MethodGet || r.URL.Path != "/orgs/current/data-planes" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		http.Error(w, `{"detail":"data plane lookup failed"}`, http.StatusNotFound)
