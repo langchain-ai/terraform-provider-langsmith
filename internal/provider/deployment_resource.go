@@ -10,11 +10,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	frameworkvalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -40,6 +43,7 @@ type DeploymentResource struct {
 type deploymentResourceModel struct {
 	ID                   types.String                     `tfsdk:"id"`
 	Name                 types.String                     `tfsdk:"name"`
+	Agent                *deploymentAgentModel            `tfsdk:"agent"`
 	Source               types.String                     `tfsdk:"source"`
 	DisplayName          types.String                     `tfsdk:"display_name"`
 	SourceConfig         *deploymentSourceConfigModel     `tfsdk:"source_config"`
@@ -56,6 +60,15 @@ type deploymentResourceModel struct {
 	LatestRevisionID     types.String                     `tfsdk:"latest_revision_id"`
 	ActiveRevisionID     types.String                     `tfsdk:"active_revision_id"`
 	LatestRevisionStatus types.String                     `tfsdk:"latest_revision_status"`
+}
+
+type deploymentAgentModel struct {
+	AgentID     types.String `tfsdk:"agent_id"`
+	Environment types.String `tfsdk:"environment"`
+}
+
+func (r *DeploymentResource) ConfigValidators(context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{resourcevalidator.ExactlyOneOf(path.MatchRoot("name"), path.MatchRoot("agent"))}
 }
 
 type deploymentSourceConfigModel struct {
@@ -167,10 +180,20 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 				MarkdownDescription: "Deployment UUID.",
 			},
 			"name": schema.StringAttribute{
-				Required:            true,
-				PlanModifiers:       replace,
+				Optional:            true,
+				Computed:            true,
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplaceIfConfigured()},
 				Validators:          []frameworkvalidator.String{nonEmptyStringValidator{}},
-				MarkdownDescription: "Deployment name. A LangSmith tracing project of the same name is created alongside it. Changing this replaces the deployment.",
+				MarkdownDescription: "Deployment name. Configure exactly one of name or agent. When agent is configured, the service generates this name. Changing a configured name replaces the deployment.",
+			},
+			"agent": schema.SingleNestedAttribute{
+				Optional:            true,
+				PlanModifiers:       []planmodifier.Object{objectplanmodifier.RequiresReplace()},
+				MarkdownDescription: "Target agent and environment. Configure exactly one of name or agent. Requires Agent Platform associations to be enabled. The service generates the deployment name and rejects environments that already have a deployment. Changing or removing this target replaces the deployment; it does not move an existing deployment. This is separate from the infrastructure tier in source_config.deployment_type. The deployment API does not return this association, so refresh preserves the configured target and import does not discover it.",
+				Attributes: map[string]schema.Attribute{
+					"agent_id":    schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{nonEmptyStringValidator{}}, MarkdownDescription: "Agent ID in the selected workspace, for example langsmith_agent.example.agent_id."},
+					"environment": schema.StringAttribute{Required: true, Validators: []frameworkvalidator.String{stringvalidator.OneOf("local", "development", "staging", "production")}, MarkdownDescription: "Agent environment: local, development, staging, or production. This is not the deployment infrastructure tier."},
+				},
 			},
 			"source": schema.StringAttribute{
 				Required:            true,
@@ -264,6 +287,7 @@ func (r *DeploymentResource) UpgradeState(ctx context.Context) map[int64]resourc
 	prior := response.Schema
 	prior.Version = 0
 	delete(prior.Attributes, "workspace_id")
+	delete(prior.Attributes, "agent")
 	prior.Attributes["tenant_id"] = schema.StringAttribute{Computed: true}
 	return map[int64]resource.StateUpgrader{0: {
 		PriorSchema: &prior,
@@ -861,6 +885,10 @@ func createPayload(m deploymentResourceModel) map[string]any {
 		"source_revision_config": sourceRevisionPayload(m.SourceRevisionConfig),
 		"secrets":                secretsPayload(m.EnvironmentVariables, m.Secrets),
 	}
+	if m.Agent != nil {
+		delete(p, "name")
+		p["agent"] = map[string]any{"agent_id": m.Agent.AgentID.ValueString(), "environment": m.Agent.Environment.ValueString()}
+	}
 	if m.SecretReferences != nil {
 		p["secret_references"] = secretReferencesPayload(m.SecretReferences)
 	}
@@ -1075,7 +1103,7 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 	next.Source = types.StringValue(api.Source)
 	next.DisplayName = nullableStringPointer(api.DisplayName)
 
-	adopt := previous.Name.IsNull() || previous.Name.IsUnknown()
+	adopt := previous.SourceConfig == nil
 	sourceConfig := sourceConfigModelFromAPI(api.SourceConfig)
 	if !adopt && previous.SourceConfig != nil {
 		// Some API versions omit commands and listener settings.

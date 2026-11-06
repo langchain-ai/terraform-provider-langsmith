@@ -31,3 +31,29 @@ resource "langsmith_deployment" "agent" {
   # Secret values remain ephemeral and write-only.
   secrets = var.deployment_secrets
 }
+
+resource "langsmith_agent" "support" {
+  agent_id    = "support"
+  source_type = "LSD"
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "langsmith_deployment" "staging" {
+  agent = {
+    agent_id    = langsmith_agent.support.agent_id
+    environment = "staging"
+  }
+  source = "github"
+  source_config = {
+    integration_id  = var.github_integration_id
+    repo_url        = "https://github.com/example/support-agent"
+    deployment_type = "dev"
+  }
+  source_revision_config = {
+    repo_ref              = "main"
+    langgraph_config_path = "langgraph.json"
+  }
+  secrets = var.deployment_secrets
+}

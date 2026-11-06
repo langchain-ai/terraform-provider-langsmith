@@ -539,3 +539,38 @@ func TestDeploymentReadKeepsDeploymentWhenRevisionMissing(t *testing.T) {
 		t.Fatalf("revision status = %#v, want null", model.LatestRevisionStatus)
 	}
 }
+
+func TestDeploymentAgentOccupiedEnvironment(t *testing.T) {
+	for _, workspace := range []types.String{types.StringNull(), types.StringValue("target-workspace")} {
+		t.Run(workspace.ValueString(), func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				requests++
+				if req.Method != http.MethodPost || req.URL.Path != "/v2/deployments" {
+					t.Errorf("unexpected request: %s %s", req.Method, req.URL.Path)
+				}
+				var payload map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				if _, named := payload["name"]; named || deploymentNestedString(payload, "agent", "environment") != "staging" {
+					t.Errorf("invalid target payload: %#v", payload)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"detail":"A deployment already exists for this agent environment."}`))
+			}))
+			defer server.Close()
+			plan := testDeploymentModel()
+			plan.Name = types.StringUnknown()
+			plan.WorkspaceID = workspace
+			plan.Agent = &deploymentAgentModel{AgentID: types.StringValue("support-agent"), Environment: types.StringValue("staging")}
+			r := testDeploymentResource(server)
+			r.client = langsmith.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("test-key"), option.WithMaxRetries(0))
+			result, err := r.create(context.Background(), plan)
+			if err == nil || !strings.Contains(err.Error(), "already exists") || requests != 1 || !result.ID.IsNull() {
+				t.Fatalf("conflict result: ID=%v error=%v requests=%d", result.ID, err, requests)
+			}
+		})
+	}
+}

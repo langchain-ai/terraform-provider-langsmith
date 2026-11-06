@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
@@ -144,6 +146,57 @@ func TestAccDeploymentOfflineWithoutDisplayName(t *testing.T) {
 	})
 }
 
+func TestAccDeploymentOfflineAgentTarget(t *testing.T) {
+	if os.Getenv("TF_ACC") != "1" {
+		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
+	}
+	for _, workspace := range []string{"", `workspace_id = "offline-workspace"`} {
+		t.Run(workspace, func(t *testing.T) {
+			backend := newDeploymentContractBackend(t)
+			backend.agentTarget = map[string]any{"agent_id": "support-agent", "environment": "staging"}
+			backend.revisionSecret = offlineSecretOne
+			server := httptest.NewServer(backend)
+			t.Cleanup(server.Close)
+			config := func(environment string) string {
+				return strings.Replace(deploymentAcceptanceConfig(server.URL, workspace, "registry.example.com/agent:v1", "1", offlineSecretOne), `name   = "offline-agent"`, fmt.Sprintf(`agent = { agent_id = "support-agent", environment = %q }`, environment), 1)
+			}
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: offlineDeploymentFactories(),
+				Steps: []resource.TestStep{
+					{Config: config("staging"), Check: resource.ComposeAggregateTestCheckFunc(
+						resource.TestCheckResourceAttr("langsmith_deployment.test", "name", "offline-agent"),
+						resource.TestCheckResourceAttr("langsmith_deployment.test", "agent.agent_id", "support-agent"),
+						resource.TestCheckResourceAttr("langsmith_deployment.test", "agent.environment", "staging"),
+						deploymentStateExcludesSecrets,
+					)},
+					{Config: config("staging"), PlanOnly: true, ExpectNonEmptyPlan: false},
+					{Config: config("production"), PlanOnly: true, ExpectNonEmptyPlan: true, ConfigPlanChecks: resource.ConfigPlanChecks{PostApplyPreRefresh: []plancheck.PlanCheck{plancheck.ExpectResourceAction("langsmith_deployment.test", plancheck.ResourceActionDestroyBeforeCreate)}}},
+					{Config: strings.Replace(config("staging"), "support-agent", "other-agent", 1), PlanOnly: true, ExpectNonEmptyPlan: true, ConfigPlanChecks: resource.ConfigPlanChecks{PostApplyPreRefresh: []plancheck.PlanCheck{plancheck.ExpectResourceAction("langsmith_deployment.test", plancheck.ResourceActionDestroyBeforeCreate)}}},
+					{Config: strings.Replace(config("staging"), `agent = { agent_id = "support-agent", environment = "staging" }`, `name = "offline-agent"`, 1), PlanOnly: true, ExpectNonEmptyPlan: true, ConfigPlanChecks: resource.ConfigPlanChecks{PostApplyPreRefresh: []plancheck.PlanCheck{plancheck.ExpectResourceAction("langsmith_deployment.test", plancheck.ResourceActionDestroyBeforeCreate)}}},
+					{Config: strings.Replace(config("staging"), "agent:v1", "agent:v2", 1), Check: resource.ComposeAggregateTestCheckFunc(resource.TestCheckResourceAttr("langsmith_deployment.test", "agent.environment", "staging"), backend.expectRevisionPosts(1))},
+					{Config: strings.Replace(config("staging"), "agent:v1", "agent:v2", 1), PlanOnly: true, ExpectNonEmptyPlan: false},
+				},
+			})
+		})
+	}
+}
+
+func TestAccDeploymentOfflineIdentityValidation(t *testing.T) {
+	if os.Getenv("TF_ACC") != "1" {
+		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
+	}
+	base := deploymentAcceptanceConfig("http://127.0.0.1:1", "", "registry.example.com/agent:v1", "1", offlineSecretOne)
+	for _, identity := range []string{"", `name = "offline-agent"
+ agent = {agent_id = "support-agent", environment = "staging"}`} {
+		t.Run(identity, func(t *testing.T) {
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: offlineDeploymentFactories(),
+				Steps:                    []resource.TestStep{{Config: strings.Replace(base, `name   = "offline-agent"`, identity, 1), ExpectError: regexp.MustCompile("(Invalid Attribute Combination|Missing Attribute Configuration)")}},
+			})
+		})
+	}
+}
+
 func offlineDeploymentFactories() map[string]func() (tfprotov6.ProviderServer, error) {
 	return map[string]func() (tfprotov6.ProviderServer, error){
 		"langsmith": providerserver.NewProtocol6WithError(New("test")()),
@@ -205,6 +258,7 @@ func deploymentStateExcludesSecrets(state *terraform.State) error {
 type deploymentContractBackend struct {
 	t              *testing.T
 	mu             sync.Mutex
+	agentTarget    map[string]any
 	displayName    *string
 	image          string
 	latestRevision string
@@ -297,7 +351,12 @@ func (b *deploymentContractBackend) create(w http.ResponseWriter, req *http.Requ
 	if !b.decode(w, req, body, &payload) {
 		return
 	}
-	if payload["name"] != "offline-agent" || payload["source"] != "external_docker" || deploymentNestedString(payload, "source_revision_config", "image_uri") != "registry.example.com/agent:v1" || !deploymentPayloadHasSecret(payload, offlineSecretOne) {
+	validIdentity := payload["name"] == "offline-agent"
+	if b.agentTarget != nil {
+		_, named := payload["name"]
+		validIdentity = !named && deploymentNestedString(payload, "agent", "agent_id") == b.agentTarget["agent_id"] && deploymentNestedString(payload, "agent", "environment") == b.agentTarget["environment"]
+	}
+	if !validIdentity || payload["source"] != "external_docker" || deploymentNestedString(payload, "source_revision_config", "image_uri") != "registry.example.com/agent:v1" || !deploymentPayloadHasSecret(payload, offlineSecretOne) {
 		b.reject(w, req, "invalid create payload")
 		return
 	}
