@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.19](https://github.com/langchain-ai/terraform-provider-langsmith/compare/v0.0.18...v0.0.19) (2026-11-08)
+
+
+### Features
+
+* count Terraform provider requests as a terraform client ([bdf1796](https://github.com/langchain-ai/terraform-provider-langsmith/commit/bdf1796739e0f9f9761109e8c40f3aa636e3787d))
+* **terraform:** manage registry agents and expose environments ([6420a9f](https://github.com/langchain-ai/terraform-provider-langsmith/commit/6420a9f66ecdd3999512de55f980e914c3403f57))
+* **terraform:** support data_plane_id on langsmith_workspace ([71932ae](https://github.com/langchain-ai/terraform-provider-langsmith/commit/71932ae235d7aa11485d2f6718140e532480a28a))
+
 ## [0.0.18](https://github.com/langchain-ai/terraform-provider-langsmith/compare/v0.0.17...v0.0.18) (2026-10-30)
 
 
