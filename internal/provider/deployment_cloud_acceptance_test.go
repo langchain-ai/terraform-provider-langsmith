@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
@@ -105,6 +106,72 @@ resource "langsmith_deployment" "test" {
 	}
 }
 
+func TestAccDeploymentOfflineDeploymentTypeNormalization(t *testing.T) {
+	if os.Getenv("TF_ACC") != "1" {
+		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
+	}
+	replacement := resource.ConfigPlanChecks{PostApplyPostRefresh: []plancheck.PlanCheck{
+		plancheck.ExpectResourceAction("langsmith_deployment.test", plancheck.ResourceActionDestroyBeforeCreate),
+	}}
+	for _, tc := range []struct {
+		requested, observed string
+		unexpected          bool
+	}{
+		{"dev", "dev_zero", false},
+		{"dev", "dev_free_zero", false},
+		{"dev", "dev_free", false},
+		{"dev_free", "dev_free_zero", false},
+		{"dev_free", "dev", true},
+		{"dev_free_zero", "dev_free_zero", false},
+		{"dev_zero", "dev_free_zero", false},
+		{"prod", "dev_zero", true},
+		{"dev_zero", "dev", true},
+	} {
+		t.Run(tc.requested+"/"+tc.observed, func(t *testing.T) {
+			backend := &cloudDeploymentBackend{deploymentType: tc.observed}
+			server := httptest.NewServer(backend)
+			defer server.Close()
+			config := fmt.Sprintf(`
+provider "langsmith" {
+  api_url = %q
+  api_key = "offline-test-key"
+}
+resource "langsmith_deployment" "test" {
+  name = "cloud-agent"
+  source = "internal_template"
+  source_config = { template_id = "template", deployment_type = %q }
+  source_revision_config = {}
+}`, server.URL, tc.requested)
+			steps := []resource.TestStep{{Config: config, ExpectError: regexp.MustCompile("Provider produced inconsistent result after apply")}}
+			if !tc.unexpected {
+				steps = []resource.TestStep{
+					{Config: config, Check: resource.TestCheckResourceAttr("langsmith_deployment.test", "source_config.deployment_type", tc.requested)},
+					{Config: config, PlanOnly: true, ExpectNonEmptyPlan: false},
+				}
+				if tc.requested == "dev_free" || tc.requested == "dev_free_zero" {
+					for _, paid := range []string{"dev", "dev_zero"} {
+						steps = append(steps, resource.TestStep{
+							PreConfig: func() {
+								backend.mu.Lock()
+								defer backend.mu.Unlock()
+								backend.deployment.SourceConfig["deployment_type"] = paid
+							},
+							Config: config, PlanOnly: true, ExpectNonEmptyPlan: true, ConfigPlanChecks: replacement,
+						})
+					}
+				}
+				if tc.requested == "dev" && tc.observed == "dev_zero" {
+					steps = append(steps, resource.TestStep{
+						Config:   strings.Replace(config, `deployment_type = "dev"`, `deployment_type = "prod"`, 1),
+						PlanOnly: true, ExpectNonEmptyPlan: true, ConfigPlanChecks: replacement,
+					})
+				}
+			}
+			resource.Test(t, resource.TestCase{ProtoV6ProviderFactories: offlineDeploymentFactories(), Steps: steps})
+		})
+	}
+}
+
 func TestAccDeploymentOfflineRejectsCLISources(t *testing.T) {
 	if os.Getenv("TF_ACC") != "1" {
 		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
@@ -145,10 +212,11 @@ resource "langsmith_deployment" "test" {
 // Cloud creates require explicit tier/push settings, and GitHub updates
 // validate the ref and push flag together.
 type cloudDeploymentBackend struct {
-	mu            sync.Mutex
-	deployment    *deploymentAPI
-	creates       int
-	revisionPosts int
+	mu             sync.Mutex
+	deployment     *deploymentAPI
+	deploymentType string
+	creates        int
+	revisionPosts  int
 }
 
 func (b *cloudDeploymentBackend) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -178,6 +246,9 @@ func (b *cloudDeploymentBackend) ServeHTTP(w http.ResponseWriter, req *http.Requ
 		deployment.CreatedAt, deployment.UpdatedAt = "2025-01-01T00:00:00Z", "2025-01-01T00:00:00Z"
 		if deployment.SourceConfig["build_on_push"] == nil {
 			deployment.SourceConfig["build_on_push"] = false
+		}
+		if b.deploymentType != "" {
+			deployment.SourceConfig["deployment_type"] = b.deploymentType
 		}
 		revision := offlineRevisionOne
 		deployment.LatestRevisionID, deployment.ActiveRevisionID = &revision, &revision

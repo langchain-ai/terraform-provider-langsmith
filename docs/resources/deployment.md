@@ -5,7 +5,8 @@ subcategory: ""
 description: |-
   Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the langsmith_deployment_revision data source to read one.
   The v2 API has one environment map. Terraform separates it into ordinary environment_variables, which appear in plans and state, and sensitive write-only secrets. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing secrets map, move ordinary entries into environment_variables without changing the combined keys or values; this records the public values in state without creating a revision.
-  Use workspace_id to select a workspace, or omit it to use the provider workspace. The former computed tenant_id attribute is now workspace_id; existing state is migrated automatically, but configuration references to .tenant_id must be updated to .workspace_id. Import an existing deployment with <deployment_id> using the provider workspace, or <workspace_id>/<deployment_id> for another workspace, using the same LangSmith API URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit environment_variables, secrets, and secrets_version to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.
+  Use workspace_id to select a workspace, or omit it to use the provider workspace. The former computed tenant_id attribute is now workspace_id; existing state is migrated automatically, but configuration references to .tenant_id must be updated to .workspace_id. Import an existing deployment with <deployment_id> using the provider workspace, or <workspace_id>/<deployment_id> for another workspace, using the same LangSmith API URL. For an agent-targeted deployment, append /<agent_id>/<environment> to the import ID. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit environment_variables, secrets, and secrets_version to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.
+  Switching from name to a matching agent target preserves the deployment when other configuration is unchanged. Changing to a different agent or environment requires replacement and can delete managed runtime data; that data is not migrated.
 ---
 
 # langsmith_deployment (Resource)
@@ -14,7 +15,9 @@ Manages the desired state of a LangSmith deployment. Deployment revisions are cr
 
 The v2 API has one environment map. Terraform separates it into ordinary `environment_variables`, which appear in plans and state, and sensitive write-only `secrets`. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing `secrets` map, move ordinary entries into `environment_variables` without changing the combined keys or values; this records the public values in state without creating a revision.
 
-Use `workspace_id` to select a workspace, or omit it to use the provider workspace. The former computed `tenant_id` attribute is now `workspace_id`; existing state is migrated automatically, but configuration references to `.tenant_id` must be updated to `.workspace_id`. Import an existing deployment with `<deployment_id>` using the provider workspace, or `<workspace_id>/<deployment_id>` for another workspace, using the same LangSmith API URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.
+Use `workspace_id` to select a workspace, or omit it to use the provider workspace. The former computed `tenant_id` attribute is now `workspace_id`; existing state is migrated automatically, but configuration references to `.tenant_id` must be updated to `.workspace_id`. Import an existing deployment with `<deployment_id>` using the provider workspace, or `<workspace_id>/<deployment_id>` for another workspace, using the same LangSmith API URL. For an agent-targeted deployment, append `/<agent_id>/<environment>` to the import ID. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.
+
+Switching from `name` to a matching `agent` target preserves the deployment when other configuration is unchanged. Changing to a different agent or environment requires replacement and can delete managed runtime data; that data is not migrated.
 
 ## Example Usage
 
@@ -25,15 +28,24 @@ variable "deployment_secrets" {
   ephemeral = true
 }
 
+resource "langsmith_agent" "example" {
+  workspace_id = "00000000-0000-0000-0000-000000000000"
+  agent_id     = "example"
+  source_type  = "LSD"
+}
+
 resource "langsmith_deployment" "agent" {
   workspace_id = "00000000-0000-0000-0000-000000000000"
-  name         = "support-agent"
-  display_name = "Support Agent"
+  agent = {
+    agent_id    = langsmith_agent.example.id
+    environment = "staging"
+  }
+  display_name = "Example Agent"
   source       = "github"
 
   source_config = {
     integration_id  = var.github_integration_id
-    repo_url        = "https://github.com/example/support-agent"
+    repo_url        = "https://github.com/example/agent"
     deployment_type = "dev"
     build_on_push   = true
   }
@@ -59,7 +71,6 @@ resource "langsmith_deployment" "agent" {
 
 ### Required
 
-- `name` (String) Deployment name. A LangSmith tracing project of the same name is created alongside it. Changing this replaces the deployment.
 - `source` (String) Where the deployment builds from: `github`, `external_docker`, or `internal_template`. Self-hosted installs support `external_docker`. The `internal_docker` and `internal_source` sources require CLI image pushes or source uploads and cannot be created, updated, or imported with this resource. Use the CLI to manage them; the deployment revision data sources can still read their revisions. Changing this replaces the deployment.
 - `source_config` (Attributes) Configuration that applies to the deployment as a whole. (see [below for nested schema](#nestedatt--source_config))
 - `source_revision_config` (Attributes) Configuration for the code or image a revision builds from. Changing any argument here creates a new revision. (see [below for nested schema](#nestedatt--source_revision_config))
@@ -68,8 +79,10 @@ resource "langsmith_deployment" "agent" {
 
 > **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
 
+- `agent` (Attributes) Agent and environment to deploy into. Configure either agent or name. Adding the matching target to a name-based deployment preserves it. Changing an existing target replaces the deployment and can delete managed runtime data. Retained as configured; changes to the association outside Terraform are not detected. (see [below for nested schema](#nestedatt--agent))
 - `display_name` (String) Human-readable name. The service has no way to clear a display name once set, so removing this argument leaves the last value in place.
 - `environment_variables` (Map of String) Non-sensitive environment variables, stored in plaintext in Terraform plans and state. Together with `secrets`, this is the complete desired environment; updates replace the combined map. Keys must not overlap. Refresh reads only keys previously declared here and never discovers other API environment values. Keep credentials in `secrets`. Omit both maps to preserve the existing environment without managing it.
+- `name` (String) Deployment name. Specify either `name` or `agent`. Automatically generated when using `agent`. Changing a configured name replaces the deployment.
 - `secret_references` (Attributes List) References to existing Kubernetes Secrets to expose as environment variables. Only applicable to the `external_docker` source. Set this to `[]` to remove all references; removing the argument entirely leaves the previous revision's references in place. (see [below for nested schema](#nestedatt--secret_references))
 - `secrets` (Map of String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only sensitive environment variable values, merged with `environment_variables` before sending to the deployment. Supply the complete environment across both maps; keys must not overlap. The provider hashes the combined map to detect configuration changes and remote drift without storing secret values. Omit both maps to relinquish management and preserve existing values. Omitting only this map while `environment_variables` remains configured removes secret-only entries on the next revision. The v2 API currently treats an empty combined map on update as unchanged, so the provider rejects those updates. An empty map is allowed on initial creation.
 - `secrets_version` (String) Optional manual trigger for creating a revision carrying the current combined environment. Environment changes are detected automatically through `secrets_hash`; this argument is not required. Removing the trigger does not create a revision.
@@ -94,7 +107,7 @@ Optional:
 - `build_command` (String) Command used to build a JS deployment. Retained as desired configuration because older API versions do not return it.
 - `build_on_push` (Boolean) Rebuild automatically when the tracked git ref moves. Defaults to `false` when creating a GitHub deployment. Must be `false` when `source_revision_config.repo_ref` names a tag. The service has no way to clear this once set, so removing the argument leaves the last value in place.
 - `custom_url` (String) Custom hostname to serve the deployment on. The service has no way to clear this once set, so removing the argument leaves the last value in place.
-- `deployment_type` (String) Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. The provider defaults this to `prod` when creating a Cloud deployment. Omitted values on existing deployments retain the service's tier. Changing it replaces the deployment.
+- `deployment_type` (String) Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. Development tiers may resolve to serverless or free equivalents; Terraform retains the requested value. The provider defaults this to `prod` when creating a Cloud deployment. Omitted values on existing deployments retain the service's tier. Changing it replaces the deployment.
 - `install_command` (String) Command used to install dependencies during a JS build. Retained as desired configuration because older API versions do not return it.
 - `integration_id` (String) UUID of the GitHub integration to build through. Only applicable to the `github` source. Changing it moves the existing deployment to the repositories that integration can reach, keeping its URL and data. When omitted, a `repo_url` change uses whichever workspace integration can reach the new repository.
 - `listener_config` (Attributes) Listener settings. The service does not report these back, so Terraform is their source of truth. (see [below for nested schema](#nestedatt--source_config--listener_config))
@@ -138,6 +151,15 @@ Optional:
 - `repo_ref` (String) Git ref to build: a branch name, or a full ref path for a tag. Tags require `source_config.build_on_push` to be `false`. Only applicable to the `github` source.
 
 
+<a id="nestedatt--agent"></a>
+### Nested Schema for `agent`
+
+Required:
+
+- `agent_id` (String) Public agent ID in the deployment workspace.
+- `environment` (String) Agent environment: local, development, staging, or production.
+
+
 <a id="nestedatt--secret_references"></a>
 ### Nested Schema for `secret_references`
 
@@ -155,5 +177,5 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 
 ```shell
 # Configure the provider with the deployment's workspace and LangSmith API URL.
-terraform import langsmith_deployment.agent 11111111-1111-1111-1111-111111111111
+terraform import langsmith_deployment.agent 11111111-1111-1111-1111-111111111111/example/staging
 ```

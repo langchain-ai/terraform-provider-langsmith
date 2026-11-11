@@ -98,6 +98,19 @@ func TestDeploymentImportScopedID(t *testing.T) {
 			t.Fatalf("workspace header = %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if req.URL.Path == "/v2/deployments" {
+			query := req.URL.Query()
+			if query.Get("agent_environment") == "production" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			resources := []deploymentAPI{}
+			if query.Get("deployment_ids") == testDeploymentID && query.Get("agent_id") == "helper" && query.Get("agent_environment") == "staging" {
+				resources = append(resources, deploymentAPI{ID: testDeploymentID})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"resources": resources})
+			return
+		}
 		_, _ = w.Write([]byte(deploymentResponseJSON("READY")))
 	}))
 	defer server.Close()
@@ -106,20 +119,25 @@ func TestDeploymentImportScopedID(t *testing.T) {
 	var schemaResponse resource.SchemaResponse
 	r.Schema(ctx, resource.SchemaRequest{}, &schemaResponse)
 	for _, tc := range []struct {
-		id      string
-		invalid bool
+		id       string
+		targeted bool
+		invalid  bool
 	}{
 		{id: workspaceID + "/" + testDeploymentID},
+		{id: workspaceID + "/" + testDeploymentID + "/helper/staging", targeted: true},
+		{id: workspaceID + "/" + testDeploymentID + "/other/staging", invalid: true},
+		{id: workspaceID + "/" + testDeploymentID + "/helper/production", invalid: true},
 		{id: "", invalid: true},
 		{id: "/" + testDeploymentID, invalid: true},
 		{id: workspaceID + "/", invalid: true},
-		{id: workspaceID + "/" + testDeploymentID + "/extra", invalid: true},
+		{id: workspaceID + "/" + testDeploymentID + "/helper/", invalid: true},
+		{id: workspaceID + "/" + testDeploymentID + "/helper/staging/extra", invalid: true},
 	} {
 		response := resource.ImportStateResponse{State: tfsdk.State{Schema: schemaResponse.Schema, Raw: tftypes.NewValue(schemaResponse.Schema.Type().TerraformType(ctx), nil)}}
 		r.ImportState(ctx, resource.ImportStateRequest{ID: tc.id}, &response)
 		if tc.invalid {
 			if !response.Diagnostics.HasError() {
-				t.Fatalf("ImportState(%q) accepted malformed ID", tc.id)
+				t.Fatalf("ImportState(%q) accepted invalid ID or target", tc.id)
 			}
 			continue
 		}
@@ -127,10 +145,15 @@ func TestDeploymentImportScopedID(t *testing.T) {
 			t.Fatalf("ImportState(%q) diagnostics = %v", tc.id, response.Diagnostics)
 		}
 		var id, workspace types.String
+		var agent types.Object
 		response.Diagnostics.Append(response.State.GetAttribute(ctx, path.Root("id"), &id)...)
 		response.Diagnostics.Append(response.State.GetAttribute(ctx, path.Root("workspace_id"), &workspace)...)
+		response.Diagnostics.Append(response.State.GetAttribute(ctx, path.Root("agent"), &agent)...)
 		if response.Diagnostics.HasError() || id.ValueString() != testDeploymentID || workspace.ValueString() != workspaceID {
 			t.Fatalf("ImportState(%q) = id %q, workspace %q, diagnostics %v", tc.id, id.ValueString(), workspace.ValueString(), response.Diagnostics)
+		}
+		if agent.IsNull() == tc.targeted || (tc.targeted && deploymentAgentFromObject(agent) != (deploymentAgentAPI{"helper", "staging"})) {
+			t.Fatalf("ImportState(%q) target = %v", tc.id, agent)
 		}
 	}
 }
@@ -464,7 +487,7 @@ func testDeploymentResource(server *httptest.Server) *DeploymentResource {
 
 func testDeploymentModel() deploymentResourceModel {
 	return deploymentResourceModel{
-		Name: types.StringValue("orders"), Source: types.StringValue("external_docker"), DisplayName: types.StringValue("Orders"),
+		Agent: types.ObjectNull(deploymentAgentTypes), Name: types.StringValue("orders"), Source: types.StringValue("external_docker"), DisplayName: types.StringValue("Orders"),
 		SourceConfig:         &deploymentSourceConfigModel{CustomURL: types.StringValue("orders.example.com"), ListenerID: types.StringValue("listener"), ListenerConfig: &deploymentListenerConfigModel{K8sNamespace: types.StringValue("agents")}, ResourceSpec: &deploymentResourceSpecModel{MinScale: types.Int64Value(1), MaxScale: types.Int64Value(3), CPU: types.Float64Value(0.5), MemoryMB: types.Int64Value(1024), Labels: types.MapValueMust(types.StringType, map[string]attr.Value{"team": types.StringValue("agents")})}},
 		SourceRevisionConfig: &sourceRevisionConfigModel{ImageURI: types.StringValue("registry.example.com/orders:v1")},
 		EnvironmentVariables: types.MapNull(types.StringType),

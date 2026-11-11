@@ -284,6 +284,44 @@ func TestDeploymentCreatePreservesExplicitCloudSettings(t *testing.T) {
 	}
 }
 
+func TestDeploymentRefreshesDeploymentType(t *testing.T) {
+	for _, tc := range []struct{ requested, observed, want string }{
+		{"dev", "dev", "dev"},
+		{"dev", "dev_free", "dev"},
+		{"dev", "dev_zero", "dev"},
+		{"dev", "dev_free_zero", "dev"},
+		{"dev_free", "dev_free_zero", "dev_free"},
+		{"dev_free", "dev", "dev"},
+		{"dev_zero", "dev_free_zero", "dev_zero"},
+		{"prod", "prod", "prod"},
+		{"prod", "dev_zero", "dev_zero"},
+		{"dev", "prod", "prod"},
+		{"dev_zero", "dev", "dev"},
+		{"dev_free_zero", "dev_zero", "dev_zero"},
+		{"dev_free", "dev_zero", "dev_zero"},
+		{"dev", "unknown-tier", "unknown-tier"},
+		{"", "dev_free_zero", "dev_free_zero"},
+	} {
+		t.Run(tc.requested+"/"+tc.observed, func(t *testing.T) {
+			api := deploymentAPI{Source: "github", SourceConfig: map[string]any{"deployment_type": tc.observed}}
+			previous := deploymentResourceModel{Source: types.StringValue("github"), SourceConfig: &deploymentSourceConfigModel{
+				DeploymentType: nullableString(tc.requested),
+			}}
+			got := deploymentModelFromAPI(api, deploymentResourceRevisionAPI{}, previous)
+			if got.SourceConfig.DeploymentType.ValueString() != tc.want {
+				t.Fatalf("refreshed deployment type = %s, want %s", got.SourceConfig.DeploymentType, tc.want)
+			}
+		})
+	}
+	t.Run("import", func(t *testing.T) {
+		api := deploymentAPI{Source: "github", SourceConfig: map[string]any{"deployment_type": "dev_free_zero"}}
+		imported := deploymentModelFromAPI(api, deploymentResourceRevisionAPI{}, deploymentResourceModel{})
+		if imported.SourceConfig.DeploymentType.ValueString() != "dev_free_zero" {
+			t.Fatalf("imported deployment type = %s, want dev_free_zero", imported.SourceConfig.DeploymentType)
+		}
+	})
+}
+
 func TestDeploymentRefreshesManagedResourceFields(t *testing.T) {
 	api := deploymentAPI{
 		Name: "orders", Source: "external_docker",

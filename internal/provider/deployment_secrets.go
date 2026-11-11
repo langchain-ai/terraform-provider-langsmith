@@ -21,6 +21,10 @@ func (r *DeploymentResource) ModifyPlan(ctx context.Context, req resource.Modify
 	if req.Plan.Raw.IsNull() {
 		return
 	}
+	r.modifyAgentTargetPlan(ctx, req, resp)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	var secrets, environment types.Map
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("secrets"), &secrets)...)
 	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("environment_variables"), &environment)...)

@@ -9,7 +9,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/providerserver"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
@@ -120,6 +123,36 @@ func TestAccDeploymentOfflineRejectedRevisionRetry(t *testing.T) {
 			{Config: config2, PlanOnly: true, ExpectNonEmptyPlan: true},
 		},
 	})
+}
+
+func TestAccDeploymentOfflineRevisionTimeoutCleanup(t *testing.T) {
+	if os.Getenv("TF_ACC") != "1" {
+		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
+	}
+	backend := newDeploymentContractBackend(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/v2/deployments/"+offlineDeploymentID+"/revisions/") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": offlineRevisionOne, "status": "DEPLOYING"})
+			return
+		}
+		backend.ServeHTTP(w, req)
+	}))
+	defer server.Close()
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+			"langsmith": providerserver.NewProtocol6WithError(deploymentLiveTestProvider{Provider: New("test")(), waitTimeout: 100 * time.Millisecond}),
+		},
+		Steps: []resource.TestStep{{
+			Config:      deploymentAcceptanceConfig(server.URL, "", "registry.example.com/agent:v1", "1", offlineSecretOne),
+			ExpectError: regexp.MustCompile(`context deadline\s+exceeded`),
+		}},
+	})
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if !backend.deleted || backend.created {
+		t.Fatal("deployment was not deleted after revision timeout")
+	}
 }
 
 func TestAccDeploymentOfflineResourceSpecDrift(t *testing.T) {

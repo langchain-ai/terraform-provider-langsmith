@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
@@ -43,6 +44,7 @@ func TestAccDeploymentOffline(t *testing.T) {
 				Config: deploymentAcceptanceConfig(server.URL, `display_name = "Offline deployment"`, "registry.example.com/agent:v1", "1", offlineSecretOne),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "id", offlineDeploymentID),
+					resource.TestCheckNoResourceAttr("langsmith_deployment.test", "agent.agent_id"),
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "display_name", "Offline deployment"),
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "latest_revision_id", offlineRevisionOne),
 					resource.TestCheckResourceAttr("langsmith_deployment.test", "latest_revision_status", "DEPLOYED"),
@@ -144,6 +146,70 @@ func TestAccDeploymentOfflineWithoutDisplayName(t *testing.T) {
 	})
 }
 
+func TestAccDeploymentOfflineUpgradeFromReleasedProvider(t *testing.T) {
+	if os.Getenv("TF_ACC") != "1" {
+		t.Skip("set TF_ACC=1 to run the offline Terraform acceptance test")
+	}
+	t.Setenv(resource.EnvTfAccProviderNamespace, "langchain-ai")
+
+	backend := newDeploymentContractBackend(t)
+	server := httptest.NewServer(backend)
+	t.Cleanup(server.Close)
+	config := deploymentAcceptanceConfig(server.URL, "", "registry.example.com/agent:v1", "1", offlineSecretOne)
+	targeted := strings.Replace(config, `name   = "offline-agent"`, `agent = { agent_id = "offline-agent", environment = "production" }`, 1)
+	preserved := resource.ComposeAggregateTestCheckFunc(
+		resource.TestCheckResourceAttr("langsmith_deployment.test", "id", offlineDeploymentID),
+		resource.TestCheckResourceAttr("langsmith_deployment.test", "name", "offline-agent"),
+		resource.TestCheckResourceAttr("langsmith_deployment.test", "workspace_id", "offline-workspace"),
+		deploymentStateExcludesSecrets,
+		func(*terraform.State) error {
+			backend.mu.Lock()
+			defer backend.mu.Unlock()
+			if backend.createPosts != 1 || backend.revisionPosts != 0 || backend.patches != 0 || backend.deleted {
+				return fmt.Errorf("upgrade changed the deployment: creates=%d revisions=%d patches=%d deleted=%t", backend.createPosts, backend.revisionPosts, backend.patches, backend.deleted)
+			}
+			return nil
+		},
+	)
+
+	resource.Test(t, resource.TestCase{
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				ExternalProviders: map[string]resource.ExternalProvider{
+					"langsmith": {
+						Source:            "langchain-ai/langsmith",
+						VersionConstraint: "0.0.18",
+					},
+				},
+			},
+			{
+				Config:                   config,
+				ProtoV6ProviderFactories: offlineDeploymentFactories(),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectEmptyPlan(),
+				}},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					preserved,
+					resource.TestCheckNoResourceAttr("langsmith_deployment.test", "agent.agent_id"),
+				),
+			},
+			{
+				Config:                   targeted,
+				ProtoV6ProviderFactories: offlineDeploymentFactories(),
+				ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
+					plancheck.ExpectResourceAction("langsmith_deployment.test", plancheck.ResourceActionUpdate),
+				}},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					preserved,
+					resource.TestCheckResourceAttr("langsmith_deployment.test", "agent.agent_id", "offline-agent"),
+				),
+			},
+			{Config: targeted, ProtoV6ProviderFactories: offlineDeploymentFactories(), PlanOnly: true},
+		},
+	})
+}
+
 func offlineDeploymentFactories() map[string]func() (tfprotov6.ProviderServer, error) {
 	return map[string]func() (tfprotov6.ProviderServer, error){
 		"langsmith": providerserver.NewProtocol6WithError(New("test")()),
@@ -203,25 +269,38 @@ func deploymentStateExcludesSecrets(state *terraform.State) error {
 }
 
 type deploymentContractBackend struct {
-	t              *testing.T
-	mu             sync.Mutex
-	displayName    *string
-	image          string
-	latestRevision string
-	revisions      []string
-	revisionGets   map[string]int
-	created        bool
-	deleted        bool
-	createPosts    int
-	revisionPosts  int
-	secrets        []any
-	revisionSecret string
-	resourceSpec   map[string]any
+	deploymentID    string
+	workspaceID     string
+	agent           *deploymentAgentAPI
+	deploymentName  string
+	deletePolls     int
+	deleteRemaining int
+	occupied        bool
+	t               *testing.T
+	mu              sync.Mutex
+	displayName     *string
+	listenerID      *string
+	image           string
+	latestRevision  string
+	revisions       []string
+	revisionGets    map[string]int
+	created         bool
+	deleted         bool
+	createPosts     int
+	revisionPosts   int
+	patches         int
+	secrets         []any
+	revisionSecret  string
+	resourceSpec    map[string]any
+
+	deletingAgent     *deploymentAgentAPI
+	deletingWorkspace string
+	cleanupBlocked    bool
 }
 
 func newDeploymentContractBackend(t *testing.T) *deploymentContractBackend {
 	return &deploymentContractBackend{
-		t: t, revisionGets: map[string]int{}, revisionSecret: offlineSecretTwo,
+		t: t, deploymentID: offlineDeploymentID, workspaceID: "offline-workspace", deploymentName: "offline-agent", revisionGets: map[string]int{}, revisionSecret: offlineSecretTwo,
 		resourceSpec: map[string]any{
 			"min_scale": 1, "max_scale": 1, "cpu": 1, "cpu_limit": nil,
 			"memory_mb": 2048, "memory_limit_mb": nil,
@@ -249,8 +328,13 @@ func (b *deploymentContractBackend) ServeHTTP(w http.ResponseWriter, req *http.R
 		b.reject(w, req, "missing API key")
 		return
 	}
-	if req.Header.Get("X-Tenant-Id") != "offline-workspace" {
+	workspaceID := req.Header.Get("X-Tenant-Id")
+	if workspaceID != "offline-workspace" && workspaceID != "other-workspace" {
 		b.reject(w, req, "missing tenant ID")
+		return
+	}
+	if b.created && workspaceID != b.workspaceID && req.URL.Path != "/v2/deployments" {
+		b.reject(w, req, "deployment accessed in the wrong workspace")
 		return
 	}
 	if !strings.HasPrefix(req.URL.Path, "/v2/") {
@@ -271,21 +355,53 @@ func (b *deploymentContractBackend) ServeHTTP(w http.ResponseWriter, req *http.R
 	w.Header().Set("Content-Type", "application/json")
 	path := strings.TrimPrefix(req.URL.Path, "/")
 	switch {
+	case path == "v2/deployments" && req.Method == http.MethodGet:
+		query := req.URL.Query()
+		if id := query.Get("deployment_ids"); id != b.deploymentID && (id != "" || query.Get("agent_id") == "" || query.Get("agent_environment") == "") {
+			b.reject(w, req, "query must select a deployment or agent environment")
+			return
+		}
+		matches := func(agent *deploymentAgentAPI) bool {
+			return agent != nil && query.Get("agent_id") == agent.AgentID && query.Get("agent_environment") == agent.Environment
+		}
+		status := query.Get("status")
+		resources := []any{}
+		if status == "" {
+			if b.created && workspaceID == b.workspaceID && matches(b.agent) {
+				resources = append(resources, map[string]any{"id": b.deploymentID})
+			}
+		} else if b.deleteRemaining > 0 && workspaceID == b.deletingWorkspace && matches(b.deletingAgent) {
+			current := "AWAITING_FINAL_DELETE"
+			if b.deleteRemaining > 1 {
+				current = "AWAITING_DELETE"
+			}
+			if status == current {
+				resources = append(resources, map[string]any{"id": b.deploymentID, "status": current})
+			}
+			if status == "AWAITING_FINAL_DELETE" && !b.cleanupBlocked {
+				b.deleteRemaining--
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"resources": resources})
 	case path == "v2/deployments" && req.Method == http.MethodPost:
 		b.create(w, req, body)
-	case path == "v2/deployments/"+offlineDeploymentID && req.Method == http.MethodPatch:
+	case path == "v2/deployments/"+b.deploymentID && req.Method == http.MethodPatch:
+		b.patches++
 		b.patch(w, req, body)
-	case path == "v2/deployments/"+offlineDeploymentID && req.Method == http.MethodGet:
+	case path == "v2/deployments/"+b.deploymentID && req.Method == http.MethodGet:
 		b.readDeployment(w, req)
-	case path == "v2/deployments/"+offlineDeploymentID+"/revisions" && req.Method == http.MethodPost:
+	case path == "v2/deployments/"+b.deploymentID+"/revisions" && req.Method == http.MethodPost:
 		b.createRevision(w, req, body)
-	case path == "v2/deployments/"+offlineDeploymentID+"/revisions" && req.Method == http.MethodGet:
+	case path == "v2/deployments/"+b.deploymentID+"/revisions" && req.Method == http.MethodGet:
 		b.listRevisions(w, req)
-	case strings.HasPrefix(path, "v2/deployments/"+offlineDeploymentID+"/revisions/") && req.Method == http.MethodGet:
-		b.readRevision(w, req, strings.TrimPrefix(path, "v2/deployments/"+offlineDeploymentID+"/revisions/"))
-	case path == "v2/deployments/"+offlineDeploymentID && req.Method == http.MethodDelete:
+	case strings.HasPrefix(path, "v2/deployments/"+b.deploymentID+"/revisions/") && req.Method == http.MethodGet:
+		b.readRevision(w, req, strings.TrimPrefix(path, "v2/deployments/"+b.deploymentID+"/revisions/"))
+	case path == "v2/deployments/"+b.deploymentID && req.Method == http.MethodDelete:
 		b.deleted = true
 		b.created = false
+		b.deleteRemaining = b.deletePolls
+		b.deletingAgent = b.agent
+		b.deletingWorkspace = b.workspaceID
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		b.reject(w, req, "unexpected route")
@@ -297,7 +413,40 @@ func (b *deploymentContractBackend) create(w http.ResponseWriter, req *http.Requ
 	if !b.decode(w, req, body, &payload) {
 		return
 	}
-	if payload["name"] != "offline-agent" || payload["source"] != "external_docker" || deploymentNestedString(payload, "source_revision_config", "image_uri") != "registry.example.com/agent:v1" || !deploymentPayloadHasSecret(payload, offlineSecretOne) {
+	workspaceID := req.Header.Get("X-Tenant-Id")
+	var target deploymentAgentAPI
+	var deploymentName string
+	if raw, ok := payload["agent"]; ok {
+		agent, valid := raw.(map[string]any)
+		agentID, validID := agent["agent_id"].(string)
+		environment, validEnvironment := agent["environment"].(string)
+		if _, named := payload["name"]; named || !valid || !validID || !validEnvironment || agentID == "" || environment == "" {
+			b.reject(w, req, "invalid explicit deployment identity")
+			return
+		}
+		target = deploymentAgentAPI{AgentID: agentID, Environment: environment}
+		deploymentName = "generated-" + target.AgentID + "-" + target.Environment
+		if workspaceID != "offline-workspace" {
+			deploymentName += "-" + workspaceID
+		}
+	} else {
+		name, valid := payload["name"].(string)
+		if !valid || name == "" {
+			b.reject(w, req, "invalid legacy deployment identity")
+			return
+		}
+		deploymentName = name
+		target = deploymentAgentAPI{AgentID: name, Environment: "production"}
+	}
+	if b.occupied || b.created || (b.deleteRemaining > 0 && b.deletingAgent != nil && target == *b.deletingAgent && workspaceID == b.deletingWorkspace) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"detail":"A deployment already exists for this agent environment."}`))
+		return
+	}
+	b.agent = &target
+	b.workspaceID = workspaceID
+	b.deploymentName = deploymentName
+	if payload["source"] != "external_docker" || deploymentNestedString(payload, "source_revision_config", "image_uri") != "registry.example.com/agent:v1" || !deploymentPayloadHasSecret(payload, offlineSecretOne) {
 		b.reject(w, req, "invalid create payload")
 		return
 	}
@@ -305,6 +454,10 @@ func (b *deploymentContractBackend) create(w http.ResponseWriter, req *http.Requ
 	if !ok || sourceConfig["deployment_type"] != nil || sourceConfig["resource_spec"] == nil {
 		b.reject(w, req, "external_docker requires resource_spec and rejects deployment_type on create")
 		return
+	}
+	b.listenerID = nil
+	if listenerID, ok := sourceConfig["listener_id"].(string); ok {
+		b.listenerID = &listenerID
 	}
 	if spec, ok := sourceConfig["resource_spec"].(map[string]any); ok {
 		for key, value := range spec {
@@ -405,10 +558,10 @@ func (b *deploymentContractBackend) readDeployment(w http.ResponseWriter, req *h
 // Mirror API nulls, defaults, and the resource spec for external images.
 func (b *deploymentContractBackend) writeDeployment(w http.ResponseWriter) {
 	response := map[string]any{
-		"id": offlineDeploymentID, "name": "offline-agent", "source": "external_docker", "display_name": b.displayName,
+		"id": b.deploymentID, "name": b.deploymentName, "source": "external_docker", "display_name": b.displayName,
 		"source_config": map[string]any{
 			"integration_id": nil, "repo_url": nil, "deployment_type": "prod", "build_on_push": false,
-			"custom_url": nil, "listener_id": nil, "listener_config": nil,
+			"custom_url": nil, "listener_id": b.listenerID, "listener_config": nil,
 			"install_command": nil, "build_command": nil, "template_id": nil,
 			"resource_spec": b.resourceSpec,
 		},
@@ -416,7 +569,7 @@ func (b *deploymentContractBackend) writeDeployment(w http.ResponseWriter) {
 			"repo_ref": nil, "langgraph_config_path": nil, "image_uri": b.image,
 			"source_tarball_path": nil, "repo_commit_sha": nil,
 		},
-		"secret_references": []any{}, "tenant_id": "offline-workspace",
+		"secret_references": []any{}, "tenant_id": b.workspaceID,
 		"created_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-01T00:00:01Z", "status": "READY",
 		"latest_revision_id": b.latestRevision, "active_revision_id": b.latestRevision,
 		"image_version": nil, "is_managed_deep_agent": false,

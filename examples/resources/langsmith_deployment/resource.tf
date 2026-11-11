@@ -4,15 +4,24 @@ variable "deployment_secrets" {
   ephemeral = true
 }
 
+resource "langsmith_agent" "example" {
+  workspace_id = "00000000-0000-0000-0000-000000000000"
+  agent_id     = "example"
+  source_type  = "LSD"
+}
+
 resource "langsmith_deployment" "agent" {
   workspace_id = "00000000-0000-0000-0000-000000000000"
-  name         = "support-agent"
-  display_name = "Support Agent"
+  agent = {
+    agent_id    = langsmith_agent.example.id
+    environment = "staging"
+  }
+  display_name = "Example Agent"
   source       = "github"
 
   source_config = {
     integration_id  = var.github_integration_id
-    repo_url        = "https://github.com/example/support-agent"
+    repo_url        = "https://github.com/example/agent"
     deployment_type = "dev"
     build_on_push   = true
   }

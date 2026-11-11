@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ type DeploymentResource struct {
 type deploymentResourceModel struct {
 	ID                   types.String                     `tfsdk:"id"`
 	Name                 types.String                     `tfsdk:"name"`
+	Agent                types.Object                     `tfsdk:"agent"`
 	Source               types.String                     `tfsdk:"source"`
 	DisplayName          types.String                     `tfsdk:"display_name"`
 	SourceConfig         *deploymentSourceConfigModel     `tfsdk:"source_config"`
@@ -159,18 +161,20 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 	}
 	resp.Schema = schema.Schema{
 		Version:             1,
-		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.\n\nThe v2 API has one environment map. Terraform separates it into ordinary `environment_variables`, which appear in plans and state, and sensitive write-only `secrets`. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing `secrets` map, move ordinary entries into `environment_variables` without changing the combined keys or values; this records the public values in state without creating a revision.\n\nUse `workspace_id` to select a workspace, or omit it to use the provider workspace. The former computed `tenant_id` attribute is now `workspace_id`; existing state is migrated automatically, but configuration references to `.tenant_id` must be updated to `.workspace_id`. Import an existing deployment with `<deployment_id>` using the provider workspace, or `<workspace_id>/<deployment_id>` for another workspace, using the same LangSmith API URL. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.",
+		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.\n\nThe v2 API has one environment map. Terraform separates it into ordinary `environment_variables`, which appear in plans and state, and sensitive write-only `secrets`. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing `secrets` map, move ordinary entries into `environment_variables` without changing the combined keys or values; this records the public values in state without creating a revision.\n\nUse `workspace_id` to select a workspace, or omit it to use the provider workspace. The former computed `tenant_id` attribute is now `workspace_id`; existing state is migrated automatically, but configuration references to `.tenant_id` must be updated to `.workspace_id`. Import an existing deployment with `<deployment_id>` using the provider workspace, or `<workspace_id>/<deployment_id>` for another workspace, using the same LangSmith API URL. For an agent-targeted deployment, append `/<agent_id>/<environment>` to the import ID. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.\n\nSwitching from `name` to a matching `agent` target preserves the deployment when other configuration is unchanged. Changing to a different agent or environment requires replacement and can delete managed runtime data; that data is not migrated.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
 				PlanModifiers:       immutable,
 				MarkdownDescription: "Deployment UUID.",
 			},
+			"agent": deploymentAgentSchema(),
 			"name": schema.StringAttribute{
-				Required:            true,
-				PlanModifiers:       replace,
+				Optional:            true,
+				Computed:            true,
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplaceIfConfigured()},
 				Validators:          []frameworkvalidator.String{nonEmptyStringValidator{}},
-				MarkdownDescription: "Deployment name. A LangSmith tracing project of the same name is created alongside it. Changing this replaces the deployment.",
+				MarkdownDescription: "Deployment name. Specify either `name` or `agent`. Automatically generated when using `agent`. Changing a configured name replaces the deployment.",
 			},
 			"source": schema.StringAttribute{
 				Required:            true,
@@ -264,6 +268,7 @@ func (r *DeploymentResource) UpgradeState(ctx context.Context) map[int64]resourc
 	prior := response.Schema
 	prior.Version = 0
 	delete(prior.Attributes, "workspace_id")
+	delete(prior.Attributes, "agent")
 	prior.Attributes["tenant_id"] = schema.StringAttribute{Computed: true}
 	return map[int64]resource.StateUpgrader{0: {
 		PriorSchema: &prior,
@@ -274,7 +279,7 @@ func (r *DeploymentResource) UpgradeState(ctx context.Context) map[int64]resourc
 				return
 			}
 			upgraded := deploymentResourceModel{
-				ID: old.ID, Name: old.Name, Source: old.Source, DisplayName: old.DisplayName,
+				ID: old.ID, Name: old.Name, Agent: types.ObjectNull(deploymentAgentTypes), Source: old.Source, DisplayName: old.DisplayName,
 				SourceConfig: old.SourceConfig, SourceRevisionConfig: old.SourceRevisionConfig,
 				EnvironmentVariables: old.EnvironmentVariables, Secrets: old.Secrets, SecretsVersion: old.SecretsVersion,
 				SecretsHash: old.SecretsHash, SecretReferences: old.SecretReferences, WorkspaceID: old.TenantID,
@@ -327,7 +332,7 @@ func sourceConfigSchema() map[string]schema.Attribute {
 	return map[string]schema.Attribute{
 		"integration_id":  integrationID,
 		"repo_url":        serverOwnedString("URL of the repository to build from. Only applicable to the `github` source. Changing it moves the existing deployment to that repository, keeping its URL and data; the repository must contain `langgraph_config_path` at `repo_ref`.", false, nonEmptyStringValidator{}),
-		"deployment_type": serverOwnedString("Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. The provider defaults this to `prod` when creating a Cloud deployment. Omitted values on existing deployments retain the service's tier. Changing it replaces the deployment.", true, oneOfStringValidator{values: []string{"dev_free", "dev", "prod", "dev_zero", "dev_free_zero"}}),
+		"deployment_type": serverOwnedString("Deployment tier: `dev_free`, `dev`, `prod`, `dev_zero`, or `dev_free_zero`. Development tiers may resolve to serverless or free equivalents; Terraform retains the requested value. The provider defaults this to `prod` when creating a Cloud deployment. Omitted values on existing deployments retain the service's tier. Changing it replaces the deployment.", true, oneOfStringValidator{values: []string{"dev_free", "dev", "prod", "dev_zero", "dev_free_zero"}}),
 		"listener_id":     serverOwnedString("UUID of the listener to bind the deployment to. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
 		"template_id":     serverOwnedString("Identifier of the LangChain template to deploy. Only applicable to the `internal_template` source. Changing this replaces the deployment.", true, nonEmptyStringValidator{}),
 		"custom_url":      serverOwnedString("Custom hostname to serve the deployment on. The service has no way to clear this once set, so removing the argument leaves the last value in place.", false),
@@ -498,9 +503,14 @@ func (r *DeploymentResource) Delete(ctx context.Context, req resource.DeleteRequ
 
 func (r *DeploymentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	parts := strings.Split(req.ID, "/")
-	if (len(parts) != 1 && len(parts) != 2) || parts[0] == "" || (len(parts) == 2 && parts[1] == "") {
-		resp.Diagnostics.AddError("Invalid Deployment Import ID", "Use <deployment_id> or <workspace_id>/<deployment_id>.")
+	if len(parts) > 4 || slices.Contains(parts, "") {
+		resp.Diagnostics.AddError("Invalid Deployment Import ID", "Use <deployment_id> or <workspace_id>/<deployment_id>, optionally followed by /<agent_id>/<environment>.")
 		return
+	}
+	agent := types.ObjectNull(deploymentAgentTypes)
+	if len(parts) >= 3 {
+		agent = deploymentAgentObject(deploymentAgentAPI{AgentID: parts[len(parts)-2], Environment: parts[len(parts)-1]})
+		parts = parts[:len(parts)-2]
 	}
 	id := parts[len(parts)-1]
 	workspaceID := types.StringNull()
@@ -516,7 +526,14 @@ func (r *DeploymentResource) ImportState(ctx context.Context, req resource.Impor
 		resp.Diagnostics.AddError("Unsupported Deployment Source", err.Error())
 		return
 	}
+	if !agent.IsNull() {
+		if err := r.verifyAgentTarget(ctx, id, deploymentAgentFromObject(agent), workspaceID); err != nil {
+			resp.Diagnostics.AddError("Unable to Import LangSmith Deployment", err.Error())
+			return
+		}
+	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("agent"), agent)...)
 	if len(parts) == 2 {
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("workspace_id"), workspaceID)...)
 	} else {
@@ -538,8 +555,17 @@ func (r *DeploymentResource) create(ctx context.Context, plan deploymentResource
 	if err := validateDeploymentSource(plan.Source.ValueString()); err != nil {
 		return plan, err
 	}
+	if !plan.Agent.IsNull() && !plan.Agent.IsUnknown() {
+		if err := r.waitForAgentEnvironment(ctx, deploymentAgentFromObject(plan.Agent), plan.WorkspaceID); err != nil {
+			return plan, err
+		}
+	}
 	var result deploymentAPI
 	if err := r.client.Post(ctx, deploymentsPath, createPayload(plan), &result, workspaceOpts(plan.WorkspaceID)...); err != nil {
+		var apiErr *langsmith.Error
+		if !plan.Agent.IsNull() && errors.As(err, &apiErr) && apiErr.StatusCode == 409 {
+			return plan, fmt.Errorf("if this conflict is due to pending deployment cleanup, retry terraform apply: %w", err)
+		}
 		return plan, err
 	}
 	interim := deploymentModelFromAPI(result, deploymentResourceRevisionAPI{}, plan)
@@ -612,6 +638,11 @@ func (r *DeploymentResource) update(ctx context.Context, state, plan deploymentR
 		return state, err
 	}
 	id := state.ID.ValueString()
+	if state.Agent.IsNull() && !plan.Agent.IsNull() {
+		if err := r.verifyAgentTarget(ctx, id, deploymentAgentFromObject(plan.Agent), state.WorkspaceID); err != nil {
+			return state, err
+		}
+	}
 	needsRevision := revisionChanged(state, plan)
 	mutable := mutablePayload(state, plan)
 	repository := repositoryPayload(state, plan)
@@ -855,11 +886,15 @@ func createPayload(m deploymentResourceModel) map[string]any {
 		sourceConfig["build_on_push"] = false
 	}
 	p := map[string]any{
-		"name":                   m.Name.ValueString(),
 		"source":                 m.Source.ValueString(),
 		"source_config":          sourceConfig,
 		"source_revision_config": sourceRevisionPayload(m.SourceRevisionConfig),
 		"secrets":                secretsPayload(m.EnvironmentVariables, m.Secrets),
+	}
+	if !m.Agent.IsNull() && !m.Agent.IsUnknown() {
+		p["agent"] = deploymentAgentFromObject(m.Agent)
+	} else {
+		p["name"] = m.Name.ValueString()
 	}
 	if m.SecretReferences != nil {
 		p["secret_references"] = secretReferencesPayload(m.SecretReferences)
@@ -1075,9 +1110,12 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 	next.Source = types.StringValue(api.Source)
 	next.DisplayName = nullableStringPointer(api.DisplayName)
 
-	adopt := previous.Name.IsNull() || previous.Name.IsUnknown()
+	adopt := previous.Source.IsNull() || previous.Source.IsUnknown()
 	sourceConfig := sourceConfigModelFromAPI(api.SourceConfig)
 	if !adopt && previous.SourceConfig != nil {
+		if deploymentTypeWasNormalized(previous.SourceConfig.DeploymentType.ValueString(), sourceConfig.DeploymentType.ValueString()) {
+			sourceConfig.DeploymentType = previous.SourceConfig.DeploymentType
+		}
 		// Some API versions omit commands and listener settings.
 		sourceConfig.InstallCommand = previous.SourceConfig.InstallCommand
 		sourceConfig.BuildCommand = previous.SourceConfig.BuildCommand
@@ -1117,6 +1155,19 @@ func deploymentModelFromAPI(api deploymentAPI, revision deploymentResourceRevisi
 		next.SecretsHash = types.StringNull()
 	}
 	return next
+}
+
+func deploymentTypeWasNormalized(requested, observed string) bool {
+	switch requested {
+	case "dev":
+		return observed == "dev_free" || observed == "dev_zero" || observed == "dev_free_zero"
+	case "dev_free":
+		return observed == "dev_free_zero"
+	case "dev_zero":
+		return observed == "dev_free_zero"
+	default:
+		return false
+	}
 }
 
 func sourceConfigModelFromAPI(api map[string]any) *deploymentSourceConfigModel {
