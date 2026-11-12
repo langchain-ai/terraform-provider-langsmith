@@ -289,7 +289,9 @@ Required:
 
 Required:
 
-- `key` (String) Subject kind. Built-in: organization_id, workspace_id, user_id, or api_key_id.
+- `key` (String) Subject kind. Built-in: organization_id, team_id, workspace_id, user_id, or api_key_id.
+
+For team_id, use an organization-level team UUID, not a workspace child team UUID. Workspace child memberships match the organization parent team ID. Team IDs are not checked for existence.
 
 For a custom X-Gateway-* header, drop the "X-Gateway-" prefix and lowercase the rest, replacing any non [a-z0-9_] char with _ (e.g. header "X-Gateway-My-Internal-Team" matches as key "my_internal_team").
 - `value` (String) Subject id for that kind (e.g. workspace UUID), or the custom header value. Matched exactly (case-sensitive) against the request value. Must be empty string "" for default_* policy types

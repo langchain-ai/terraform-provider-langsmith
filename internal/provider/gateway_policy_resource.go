@@ -936,7 +936,9 @@ func (r *gatewayPolicyResource) Schema(_ context.Context, _ resource.SchemaReque
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"key": schema.StringAttribute{
-							MarkdownDescription: `Subject kind. Built-in: organization_id, workspace_id, user_id, or api_key_id.
+							MarkdownDescription: `Subject kind. Built-in: organization_id, team_id, workspace_id, user_id, or api_key_id.
+
+For team_id, use an organization-level team UUID, not a workspace child team UUID. Workspace child memberships match the organization parent team ID. Team IDs are not checked for existence.
 
 For a custom X-Gateway-* header, drop the "X-Gateway-" prefix and lowercase the rest, replacing any non [a-z0-9_] char with _ (e.g. header "X-Gateway-My-Internal-Team" matches as key "my_internal_team").`,
 							Required: true,
