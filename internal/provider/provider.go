@@ -142,6 +142,7 @@ func (p *LangSmithProvider) Resources(ctx context.Context) []func() resource.Res
 		NewOrgMembershipResource,
 		NewSandboxRegistryResource,
 		NewServiceKeyResource,
+		NewTracingKeyResource,
 		NewWorkspaceMembershipResource,
 		NewWorkspaceRoleResource,
 		NewWorkspaceSecretResource,
