@@ -1,0 +1,2 @@
+terraform import langsmith_oauth_connection.example connection_id
+terraform import langsmith_oauth_connection.example workspace_id/connection_id

@@ -30,8 +30,22 @@ The provider currently includes:
 - `langsmith_service_key`, which manages organization service keys (org-wide or workspace-scoped).
 - `langsmith_deployment`, which manages the desired state of a LangGraph deployment through the LangSmith API.
 - `data.langsmith_deployment_revision` and `data.langsmith_deployment_revisions`, which read the service-owned revision history of a deployment.
+- `langsmith_managed_tool_server`, which manages workspace MCP servers with public, OAuth, or API key header (`secret`) connections.
+- `langsmith_managed_tool_profile` and `langsmith_managed_tool_profile_credential`, which manage Managed Tools profiles for agents and their API key credentials.
+- `langsmith_managed_tool_kit`, which manages workspace tool kits exposed through one MCP endpoint.
+- `langsmith_oauth_connection`, which manages authorization-code OAuth apps without storing client secrets in state.
 - `langsmith_agent`, which manages LangSmith agents.
 - `data.langsmith_agent`, which reads existing agents and their environments.
+
+## Managed tools and OAuth connections
+
+Use `langsmith_oauth_connection` to register a manual authorization-code OAuth app and `langsmith_managed_tool_server` to expose an upstream MCP server through LangSmith Managed Tools. The [Gong example](examples/gong/) connects the resources and documents the Gong-side registration and user-consent steps.
+
+Managed Tools must be enabled for the organization. Catalog provisioning requires a user-owned API key with the appropriate workspace permissions; service-account keys cannot create or delete managed servers. Both resources support an optional `workspace_id` override.
+
+For agents and other non-user callers, create a `langsmith_managed_tool_profile`, store API key header values for each `secret` server with `langsmith_managed_tool_profile_credential`, and select tools with `langsmith_managed_tool_kit`. Callers use the kit with their LangSmith API key and the `X-LangSmith-Profile` header. LangSmith never returns credential values, so Terraform rewrites them only when the configured values change.
+
+OAuth client secrets are read from the environment variable named by `client_secret_env` and are not stored in Terraform state. Increment `client_secret_version` when rotating that environment value; the new secret is sent in place. Provider-setting changes update the owned OAuth app in place, so users keep their authorizations, except after a `client_id` change, whose refresh tokens no longer work; only `slug` and `workspace_id` changes replace the connection. Terraform does not complete user consent or store access tokens.
 
 ## Maintainer documentation
 
