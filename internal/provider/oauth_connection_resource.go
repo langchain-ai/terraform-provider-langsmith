@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -31,6 +32,11 @@ var (
 const oauthConnectionsPath = "v1/agent-auth/connections"
 const oauthProvidersPath = "v1/agent-auth/oauth-providers"
 
+const (
+	oauthGrantAuthorizationCode = "authorization_code"
+	oauthGrantClientCredentials = "client_credentials"
+)
+
 type oauthConnectionResource struct {
 	client *langsmith.Client
 }
@@ -44,6 +50,7 @@ type oauthConnectionModel struct {
 	ClientID                types.String `tfsdk:"client_id"`
 	ClientSecretEnv         types.String `tfsdk:"client_secret_env"`
 	ClientSecretVersion     types.String `tfsdk:"client_secret_version"`
+	GrantType               types.String `tfsdk:"grant_type"`
 	AuthorizationURL        types.String `tfsdk:"authorization_url"`
 	TokenURL                types.String `tfsdk:"token_url"`
 	TokenEndpointAuthMethod types.String `tfsdk:"token_endpoint_auth_method"`
@@ -99,20 +106,29 @@ func (r *oauthConnectionResource) Schema(_ context.Context, _ resource.SchemaReq
 	authMethod := inPlace("OAuth token endpoint authentication method. Updates the owned provider in place.")
 	authMethod.Validators = []validator.String{stringvalidator.OneOf("client_secret_basic", "client_secret_post", "none")}
 	displayName := inPlace("Connection display name. Updates in place without renaming the OAuth provider.")
+	authorizationURL := inPlace("OAuth authorization endpoint URL. Required for `authorization_code` and omitted for `client_credentials`. Updates the owned provider in place.")
+	authorizationURL.Required = false
+	authorizationURL.Optional = true
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages a workspace OAuth2 connection and its owned authorization-code OAuth app. This does not authorize a user or store user tokens. Register the LangSmith callback URL with your OAuth app before use. Provider settings update the owned provider in place: users keep their authorizations, and changes to token settings or the client secret make LangSmith refresh existing tokens. Changing `client_id` also updates in place, but refresh tokens issued to the old client do not work with the new one, so users must authorize again. Changing `slug` or `workspace_id` replaces the connection and deletes its linked credentials; do not use `create_before_destroy` with an unchanged slug.\n\n" +
+		MarkdownDescription: "Manages a workspace OAuth2 connection and its owned OAuth app. This does not authorize a user or store tokens. With `grant_type = \"authorization_code\"`, the default, register the LangSmith callback URL with your OAuth app before use; each owner then authorizes in a browser. With `client_credentials`, LangSmith acquires an owner's token from the client ID and secret alone, with no browser, and acquires it again when it expires; the client must be confidential. Provider settings update the owned provider in place: users keep their authorizations, and changes to token settings or the client secret make LangSmith refresh existing tokens. Changing `client_id` also updates in place, but refresh tokens issued to the old client do not work with the new one, so users must authorize again. Changing `slug` or `workspace_id` replaces the connection and deletes its linked credentials; do not use `create_before_destroy` with an unchanged slug.\n\n" +
 			"Client secrets are read locally from `client_secret_env` on creation and whenever `client_secret_env` or `client_secret_version` changes, and are never stored in Terraform state. Set `client_secret_version` to a nonsecret revision and change it after updating the environment variable to rotate the secret. Changing an environment variable alone is not detected.\n\n" +
 			"Import with `<connection_id>` or `<workspace_id>/<connection_id>`. Public provider configuration is recovered on refresh, but `client_secret_env` and `client_secret_version` cannot be recovered; configuring them after import sends the secret on the next apply. The API does not expose secret values, so secret-value drift cannot be detected.",
 		Attributes: map[string]schema.Attribute{
-			"id":                         schema.StringAttribute{Computed: true, Description: "Connection ID.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"oauth_provider_id":          schema.StringAttribute{Computed: true, Description: "ID of the OAuth provider owned by this connection.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"workspace_id":               schema.StringAttribute{Optional: true, Description: "Workspace owning the connection. Defaults to the provider workspace. Changes require replacement.", PlanModifiers: replace},
-			"slug":                       required("Connection slug, usable as a managed tool server's agent_auth_connection_slug. Changes require replacement."),
-			"display_name":               displayName,
-			"client_id":                  inPlace("OAuth app client ID. Updates the owned provider in place; users must authorize again, since their refresh tokens belong to the old client."),
-			"client_secret_env":          schema.StringAttribute{Optional: true, MarkdownDescription: "Name of the local environment variable containing the OAuth app secret, not the secret itself. Required for confidential client authentication. Changing it sends the named variable's value as the new secret.", Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
-			"client_secret_version":      schema.StringAttribute{Optional: true, MarkdownDescription: "Nonsecret rotation revision. Change this after updating the environment secret to send the new secret in place. The revision, but not the secret, is stored in state.", Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
-			"authorization_url":          inPlace("OAuth authorization endpoint URL. Updates the owned provider in place."),
+			"id":                    schema.StringAttribute{Computed: true, Description: "Connection ID.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"oauth_provider_id":     schema.StringAttribute{Computed: true, Description: "ID of the OAuth provider owned by this connection.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"workspace_id":          schema.StringAttribute{Optional: true, Description: "Workspace owning the connection. Defaults to the provider workspace. Changes require replacement.", PlanModifiers: replace},
+			"slug":                  required("Connection slug, usable as a managed tool server's agent_auth_connection_slug. Changes require replacement."),
+			"display_name":          displayName,
+			"client_id":             inPlace("OAuth app client ID. Updates the owned provider in place; users must authorize again, since their refresh tokens belong to the old client."),
+			"client_secret_env":     schema.StringAttribute{Optional: true, MarkdownDescription: "Name of the local environment variable containing the OAuth app secret, not the secret itself. Required for confidential client authentication. Changing it sends the named variable's value as the new secret.", Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
+			"client_secret_version": schema.StringAttribute{Optional: true, MarkdownDescription: "Nonsecret rotation revision. Change this after updating the environment secret to send the new secret in place. The revision, but not the secret, is stored in state.", Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
+			"grant_type": schema.StringAttribute{
+				Optional: true, Computed: true, Default: stringdefault.StaticString(oauthGrantAuthorizationCode),
+				MarkdownDescription: "OAuth grant: `authorization_code` (default) or `client_credentials`. Changes require replacement.",
+				Validators:          []validator.String{stringvalidator.OneOf(oauthGrantAuthorizationCode, oauthGrantClientCredentials)},
+				PlanModifiers:       replace,
+			},
+			"authorization_url":          authorizationURL,
 			"token_url":                  inPlace("OAuth token endpoint URL. Updates the owned provider in place."),
 			"token_endpoint_auth_method": authMethod,
 			"default_scopes":             scopes("Default OAuth scopes. Defaults to an empty set. Updates in place."),
@@ -124,7 +140,23 @@ func (r *oauthConnectionResource) Schema(_ context.Context, _ resource.SchemaReq
 func (r *oauthConnectionResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var config oauthConnectionModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
-	if resp.Diagnostics.HasError() || config.TokenEndpointAuthMethod.IsUnknown() || config.TokenEndpointAuthMethod.IsNull() || config.ClientSecretEnv.IsUnknown() {
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	clientCredentials := config.GrantType.ValueString() == oauthGrantClientCredentials
+	if !config.GrantType.IsUnknown() && !config.AuthorizationURL.IsUnknown() {
+		switch {
+		case clientCredentials && !config.AuthorizationURL.IsNull():
+			resp.Diagnostics.AddAttributeError(path.Root("authorization_url"), "Unexpected OAuth Authorization URL", errOAuthClientCredentialsAuthorizationURL.Error())
+		case !clientCredentials && config.AuthorizationURL.IsNull():
+			resp.Diagnostics.AddAttributeError(path.Root("authorization_url"), "Missing OAuth Authorization URL", errOAuthAuthorizationURL.Error())
+		}
+	}
+	if config.TokenEndpointAuthMethod.IsUnknown() || config.TokenEndpointAuthMethod.IsNull() || config.ClientSecretEnv.IsUnknown() {
+		return
+	}
+	if clientCredentials && config.TokenEndpointAuthMethod.ValueString() == "none" {
+		resp.Diagnostics.AddAttributeError(path.Root("token_endpoint_auth_method"), "Public Client Credentials Client", errOAuthClientCredentialsPublic.Error())
 		return
 	}
 	if config.TokenEndpointAuthMethod.ValueString() == "none" {
@@ -167,10 +199,12 @@ func (r *oauthConnectionResource) Create(ctx context.Context, req resource.Creat
 func (r *oauthConnectionResource) createOAuthConnection(ctx context.Context, plan oauthConnectionModel) (oauthConnectionModel, error) {
 	provider := map[string]any{
 		"client_id":                  plan.ClientID.ValueString(),
-		"authorization_url":          plan.AuthorizationURL.ValueString(),
 		"token_url":                  plan.TokenURL.ValueString(),
 		"token_endpoint_auth_method": plan.TokenEndpointAuthMethod.ValueString(),
-		"grant_type":                 "authorization_code",
+		"grant_type":                 plan.GrantType.ValueString(),
+	}
+	if !plan.AuthorizationURL.IsNull() {
+		provider["authorization_url"] = plan.AuthorizationURL.ValueString()
 	}
 	if plan.TokenEndpointAuthMethod.ValueString() != "none" {
 		secret, ok := os.LookupEnv(plan.ClientSecretEnv.ValueString())
@@ -235,11 +269,15 @@ func (r *oauthConnectionResource) readOAuthConnection(ctx context.Context, state
 		}
 		return state, err
 	}
-	if provider.GrantType != "authorization_code" {
+	if provider.GrantType != oauthGrantAuthorizationCode && provider.GrantType != oauthGrantClientCredentials {
 		return state, errOAuthGrantType
 	}
 	model.ClientID = types.StringValue(provider.ClientID)
-	model.AuthorizationURL = types.StringValue(provider.AuthorizationURL)
+	model.GrantType = types.StringValue(provider.GrantType)
+	model.AuthorizationURL = types.StringNull()
+	if provider.AuthorizationURL != "" {
+		model.AuthorizationURL = types.StringValue(provider.AuthorizationURL)
+	}
 	model.TokenURL = types.StringValue(provider.TokenURL)
 	model.TokenEndpointAuthMethod = types.StringValue(provider.TokenEndpointAuthMethod)
 	model.DefaultScopes = oauthScopeSet(provider.DefaultScopes)
@@ -311,11 +349,13 @@ func oauthProviderPatch(ctx context.Context, plan, state oauthConnectionModel) (
 	}
 	provider := map[string]any{
 		"client_id":                  plan.ClientID.ValueString(),
-		"authorization_url":          plan.AuthorizationURL.ValueString(),
 		"token_url":                  plan.TokenURL.ValueString(),
 		"token_endpoint_auth_method": plan.TokenEndpointAuthMethod.ValueString(),
 		"default_scopes":             defaultScopes,
 		"allowed_scopes":             allowedScopes,
+	}
+	if !plan.AuthorizationURL.IsNull() {
+		provider["authorization_url"] = plan.AuthorizationURL.ValueString()
 	}
 	public := plan.TokenEndpointAuthMethod.ValueString() == "none"
 	switch {
@@ -389,7 +429,10 @@ func oauthConnectionFromAPI(result oauthConnectionAPI, previous oauthConnectionM
 
 var errOAuthSecretEnv = errors.New("client_secret_env must name a nonempty environment variable for confidential client authentication")
 var errOAuthPublicClientSecret = errors.New("client_secret_env must be omitted when token_endpoint_auth_method is none")
-var errOAuthGrantType = errors.New("only authorization_code OAuth providers are supported by this resource")
+var errOAuthGrantType = errors.New("only authorization_code and client_credentials OAuth providers are supported by this resource")
+var errOAuthAuthorizationURL = errors.New("authorization_url is required for authorization_code")
+var errOAuthClientCredentialsAuthorizationURL = errors.New("authorization_url must be omitted for client_credentials")
+var errOAuthClientCredentialsPublic = errors.New("client_credentials requires client_secret_basic or client_secret_post")
 var errOAuthProviderMissing = errors.New("the connection's OAuth provider was not found; verify access or explicitly replace the connection")
 
 func oauthConnectionError(err error) string {

@@ -46,6 +46,14 @@ func managedToolProfileCredentialPath(profileID, serverID string) string {
 	return managedToolProfilePath(profileID) + "/servers/" + url.PathEscape(serverID) + "/credential"
 }
 
+func managedToolProfileCredentialSessionsPath(profileID, serverID string) string {
+	return managedToolProfilePath(profileID) + "/servers/" + url.PathEscape(serverID) + "/credential-sessions"
+}
+
+// errProfileCredentialNeedsBrowser reports a connection whose token an admin
+// must authorize in a browser, which Terraform cannot do.
+var errProfileCredentialNeedsBrowser = errors.New("the server's OAuth connection needs an admin to authorize it in a browser; only client_credentials connections can be connected by Terraform")
+
 func (r *managedToolProfileCredentialResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_managed_tool_profile_credential"
 }
@@ -54,17 +62,17 @@ func (r *managedToolProfileCredentialResource) Schema(_ context.Context, _ resou
 	nonblank := []validator.String{stringvalidator.RegexMatches(regexp.MustCompile(`^\S+$`), "must be nonblank without whitespace")}
 	replace := []planmodifier.String{stringplanmodifier.RequiresReplace()}
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Stores a Managed Tools profile's header credential for a secret-backed server (`connection_type = \"secret\"`). LangSmith never returns credential values, so Terraform cannot detect values changed outside Terraform; change `fields` to rewrite them. Requires a user-owned API key with `workspaces:credentials:manage` and `mcp-servers:invoke` for the server. A workspace credential on the server takes precedence over profile credentials.",
+		MarkdownDescription: "Stores a Managed Tools profile's credential for a server. For a secret-backed server (`connection_type = \"secret\"`), set `fields`. For an OAuth server whose connection uses `grant_type = \"client_credentials\"`, omit `fields`: LangSmith acquires the profile's token from the OAuth client with no browser, and acquires it again when it expires. LangSmith never returns credential values, so Terraform cannot detect values changed outside Terraform; change `fields` to rewrite them. Requires a user-owned API key with `workspaces:credentials:manage` and `mcp-servers:invoke` for the server. A workspace credential on the server takes precedence over profile credentials.",
 		Attributes: map[string]schema.Attribute{
 			"id":           schema.StringAttribute{Computed: true, MarkdownDescription: "`profile_id/server_id`.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"profile_id":   schema.StringAttribute{Required: true, MarkdownDescription: "Profile that owns the credential.", Validators: nonblank, PlanModifiers: replace},
-			"server_id":    schema.StringAttribute{Required: true, MarkdownDescription: "Secret-backed workspace server the credential authenticates to.", Validators: nonblank, PlanModifiers: replace},
+			"server_id":    schema.StringAttribute{Required: true, MarkdownDescription: "Workspace server the credential authenticates to.", Validators: nonblank, PlanModifiers: replace},
 			"workspace_id": schema.StringAttribute{Optional: true, MarkdownDescription: "Workspace that owns the profile and server. Defaults to the provider workspace. Use `workspace_id/profile_id/server_id` when importing into a workspace other than the provider default.", Validators: nonblank, PlanModifiers: replace},
 			"fields": schema.MapAttribute{
-				Required:            true,
+				Optional:            true,
 				Sensitive:           true,
 				ElementType:         types.StringType,
-				MarkdownDescription: "Header values keyed by the server's declared `secret_headers`, including any prefix such as `Bearer `. Every declared header must be present. Values are written on create and change and never read back.",
+				MarkdownDescription: "Header values keyed by a secret-backed server's declared `secret_headers`, including any prefix such as `Bearer `. Every declared header must be present. Values are written on create and change and never read back. Omit for an OAuth server with a `client_credentials` connection.",
 				Validators: []validator.Map{
 					mapvalidator.SizeAtLeast(1),
 					mapvalidator.ValueStringsAre(stringvalidator.RegexMatches(regexp.MustCompile(`^[^\r\n\x00]*\S[^\r\n\x00]*$`), "must be nonblank without line breaks; wrap file-sourced values in trimspace()")),
@@ -86,7 +94,12 @@ func (r *managedToolProfileCredentialResource) Configure(_ context.Context, req 
 	r.client = client
 }
 
+// put stores the profile's credential: the fields for a secret-backed server,
+// or, without fields, an OAuth token LangSmith acquires with no browser.
 func (r *managedToolProfileCredentialResource) put(ctx context.Context, plan *managedToolProfileCredentialModel) error {
+	if plan.Fields.IsNull() {
+		return r.connect(ctx, plan)
+	}
 	fields := map[string]string{}
 	if diags := plan.Fields.ElementsAs(ctx, &fields, false); diags.HasError() {
 		return errors.New("decode credential fields")
@@ -94,6 +107,22 @@ func (r *managedToolProfileCredentialResource) put(ctx context.Context, plan *ma
 	body := map[string]any{"fields": fields}
 	if err := r.client.Put(ctx, managedToolProfileCredentialPath(plan.ProfileID.ValueString(), plan.ServerID.ValueString()), body, nil, workspaceOpts(plan.WorkspaceID)...); err != nil {
 		return err
+	}
+	plan.ID = types.StringValue(plan.ProfileID.ValueString() + "/" + plan.ServerID.ValueString())
+	return nil
+}
+
+// connect starts a credential session, which completes in the request for a
+// client_credentials connection and otherwise returns a link to authorize.
+func (r *managedToolProfileCredentialResource) connect(ctx context.Context, plan *managedToolProfileCredentialModel) error {
+	var session struct {
+		VerificationURL string `json:"verification_url"`
+	}
+	if err := r.client.Post(ctx, managedToolProfileCredentialSessionsPath(plan.ProfileID.ValueString(), plan.ServerID.ValueString()), nil, &session, workspaceOpts(plan.WorkspaceID)...); err != nil {
+		return err
+	}
+	if session.VerificationURL != "" {
+		return errProfileCredentialNeedsBrowser
 	}
 	plan.ID = types.StringValue(plan.ProfileID.ValueString() + "/" + plan.ServerID.ValueString())
 	return nil
@@ -182,6 +211,9 @@ func (r *managedToolProfileCredentialResource) ImportState(ctx context.Context, 
 // managedToolCredentialError omits response bodies, which can describe the
 // rejected credential, and explains the common status codes instead.
 func managedToolCredentialError(err error) string {
+	if errors.Is(err, errProfileCredentialNeedsBrowser) {
+		return err.Error()
+	}
 	var apiErr *langsmith.Error
 	if !errors.As(err, &apiErr) {
 		return "LangSmith credential request failed. Details are suppressed to protect credentials; verify the configuration and connectivity."
@@ -189,13 +221,13 @@ func managedToolCredentialError(err error) string {
 	hint := ""
 	switch apiErr.StatusCode {
 	case 400:
-		hint = " The fields must name exactly the server's declared secret headers."
+		hint = " The fields must name exactly the server's declared secret headers; an OAuth connection must use client_credentials."
 	case 403:
 		hint = " The API key must be user-owned and hold workspaces:credentials:manage and mcp-servers:invoke."
 	case 404:
 		hint = " The profile or server was not found in this workspace."
 	case 409:
-		hint = " The server may not use API key credentials, or a workspace credential already covers it."
+		hint = " The server may be public, may not use the credential type given, or a workspace credential already covers it."
 	}
 	return fmt.Sprintf("LangSmith credential request failed (HTTP %d). Response details are suppressed to protect credentials.%s", apiErr.StatusCode, hint)
 }

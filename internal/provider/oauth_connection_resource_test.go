@@ -26,6 +26,7 @@ func oauthConnectionTestModel() oauthConnectionModel {
 		Slug: types.StringValue("example-oauth"), DisplayName: types.StringValue("Example OAuth"),
 		ClientID: types.StringValue("example-client"), ClientSecretEnv: types.StringValue("TF_TEST_OAUTH_CLIENT_SECRET"),
 		ClientSecretVersion:     types.StringValue("revision-1"),
+		GrantType:               types.StringValue(oauthGrantAuthorizationCode),
 		AuthorizationURL:        types.StringValue("https://identity.example.com/authorize"),
 		TokenURL:                types.StringValue("https://identity.example.com/token"),
 		TokenEndpointAuthMethod: types.StringValue("client_secret_basic"),
@@ -276,7 +277,7 @@ func TestOAuthConnectionMissingAndInvalidRead(t *testing.T) {
 					return
 				}
 				if strings.Contains(req.URL.Path, "oauth-providers") {
-					writeJSON(t, w, oauthProviderAPI{GrantType: "client_credentials"})
+					writeJSON(t, w, oauthProviderAPI{GrantType: "github_app"})
 					return
 				}
 				result := oauthConnectionTestAPI()
@@ -368,11 +369,18 @@ func TestOAuthConnectionImports(t *testing.T) {
 }
 
 func TestOAuthConnectionValidateConfig(t *testing.T) {
+	clientCredentials := types.StringValue(oauthGrantClientCredentials)
 	for _, tc := range []struct {
 		name        string
 		method, env types.String
+		grant       types.String
+		noURL       bool
 		wantError   bool
 	}{
+		{name: "client credentials", method: types.StringValue("client_secret_post"), env: types.StringValue("OAUTH_SECRET"), grant: clientCredentials, noURL: true},
+		{name: "client credentials rejects authorization URL", method: types.StringValue("client_secret_post"), env: types.StringValue("OAUTH_SECRET"), grant: clientCredentials, wantError: true},
+		{name: "client credentials rejects public client", method: types.StringValue("none"), env: types.StringNull(), grant: clientCredentials, noURL: true, wantError: true},
+		{name: "authorization code requires authorization URL", method: types.StringValue("client_secret_post"), env: types.StringValue("OAUTH_SECRET"), noURL: true, wantError: true},
 		{name: "confidential requires reference", method: types.StringValue("client_secret_basic"), env: types.StringNull(), wantError: true},
 		{name: "confidential configured", method: types.StringValue("client_secret_post"), env: types.StringValue("OAUTH_SECRET")},
 		{name: "public rejects reference", method: types.StringValue("none"), env: types.StringValue("OAUTH_SECRET"), wantError: true},
@@ -384,6 +392,12 @@ func TestOAuthConnectionValidateConfig(t *testing.T) {
 			model := oauthConnectionTestModel()
 			model.TokenEndpointAuthMethod = tc.method
 			model.ClientSecretEnv = tc.env
+			if !tc.grant.IsNull() {
+				model.GrantType = tc.grant
+			}
+			if tc.noURL {
+				model.AuthorizationURL = types.StringNull()
+			}
 			plan := oauthConnectionTestPlan(t, model)
 			config := tfsdk.Config(plan)
 			var response resource.ValidateConfigResponse
@@ -505,5 +519,71 @@ func TestOAuthConnectionUpdateSecret(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOAuthConnectionClientCredentials(t *testing.T) {
+	t.Setenv("TF_TEST_OAUTH_CLIENT_SECRET", "synthetic-oauth-client-secret")
+	ctx := context.Background()
+	res := oauthConnectionTestResource(t, func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method + " " + req.URL.Path {
+		case "POST /v1/agent-auth/connections":
+			var payload struct {
+				Credential struct {
+					Provider map[string]any `json:"provider"`
+				} `json:"credential"`
+			}
+			decodeJSON(t, req, &payload)
+			provider := payload.Credential.Provider
+			if _, ok := provider["authorization_url"]; ok || provider["grant_type"] != oauthGrantClientCredentials || provider["client_secret"] == nil {
+				t.Errorf("client credentials create = %v", provider)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			writeJSON(t, w, oauthConnectionTestAPI())
+		case "GET /v1/agent-auth/connections/connection-id":
+			writeJSON(t, w, oauthConnectionTestAPI())
+		case "GET /v1/agent-auth/oauth-providers/provider-id":
+			writeJSON(t, w, oauthProviderAPI{
+				ClientID: "example-client", TokenURL: "https://identity.example.com/token",
+				TokenEndpointAuthMethod: "client_secret_basic", GrantType: oauthGrantClientCredentials,
+			})
+		case "PATCH /v1/agent-auth/oauth-providers/provider-id":
+			var payload map[string]any
+			decodeJSON(t, req, &payload)
+			if _, ok := payload["authorization_url"]; ok {
+				t.Errorf("client credentials PATCH sent an authorization URL: %v", payload)
+			}
+			writeJSON(t, w, map[string]any{})
+		default:
+			t.Errorf("unexpected request %s %s", req.Method, req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	plan := oauthConnectionTestModel()
+	plan.GrantType = types.StringValue(oauthGrantClientCredentials)
+	plan.AuthorizationURL = types.StringNull()
+	created := resource.CreateResponse{State: tfsdk.State{Schema: oauthConnectionTestSchema()}}
+	res.Create(ctx, resource.CreateRequest{Plan: oauthConnectionTestPlan(t, plan)}, &created)
+	if created.Diagnostics.HasError() {
+		t.Fatal(created.Diagnostics)
+	}
+	read := resource.ReadResponse{State: created.State}
+	res.Read(ctx, resource.ReadRequest{State: created.State}, &read)
+	if read.Diagnostics.HasError() {
+		t.Fatal(read.Diagnostics)
+	}
+	var model oauthConnectionModel
+	if diags := read.State.Get(ctx, &model); diags.HasError() {
+		t.Fatal(diags)
+	}
+	if model.GrantType.ValueString() != oauthGrantClientCredentials || !model.AuthorizationURL.IsNull() {
+		t.Fatalf("read grant = %s, authorization URL = %s", model.GrantType, model.AuthorizationURL)
+	}
+	model.ClientID = types.StringValue("rotated-client")
+	updated := resource.UpdateResponse{State: read.State}
+	res.Update(ctx, resource.UpdateRequest{Plan: oauthConnectionTestPlan(t, model), State: read.State}, &updated)
+	if updated.Diagnostics.HasError() {
+		t.Fatal(updated.Diagnostics)
 	}
 }

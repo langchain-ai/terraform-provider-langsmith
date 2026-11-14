@@ -3,12 +3,12 @@
 page_title: "langsmith_managed_tool_profile_credential Resource - langsmith"
 subcategory: ""
 description: |-
-  Stores a Managed Tools profile's header credential for a secret-backed server (connection_type = "secret"). LangSmith never returns credential values, so Terraform cannot detect values changed outside Terraform; change fields to rewrite them. Requires a user-owned API key with workspaces:credentials:manage and mcp-servers:invoke for the server. A workspace credential on the server takes precedence over profile credentials.
+  Stores a Managed Tools profile's credential for a server. For a secret-backed server (connection_type = "secret"), set fields. For an OAuth server whose connection uses grant_type = "client_credentials", omit fields: LangSmith acquires the profile's token from the OAuth client with no browser, and acquires it again when it expires. LangSmith never returns credential values, so Terraform cannot detect values changed outside Terraform; change fields to rewrite them. Requires a user-owned API key with workspaces:credentials:manage and mcp-servers:invoke for the server. A workspace credential on the server takes precedence over profile credentials.
 ---
 
 # langsmith_managed_tool_profile_credential (Resource)
 
-Stores a Managed Tools profile's header credential for a secret-backed server (`connection_type = "secret"`). LangSmith never returns credential values, so Terraform cannot detect values changed outside Terraform; change `fields` to rewrite them. Requires a user-owned API key with `workspaces:credentials:manage` and `mcp-servers:invoke` for the server. A workspace credential on the server takes precedence over profile credentials.
+Stores a Managed Tools profile's credential for a server. For a secret-backed server (`connection_type = "secret"`), set `fields`. For an OAuth server whose connection uses `grant_type = "client_credentials"`, omit `fields`: LangSmith acquires the profile's token from the OAuth client with no browser, and acquires it again when it expires. LangSmith never returns credential values, so Terraform cannot detect values changed outside Terraform; change `fields` to rewrite them. Requires a user-owned API key with `workspaces:credentials:manage` and `mcp-servers:invoke` for the server. A workspace credential on the server takes precedence over profile credentials.
 
 ## Example Usage
 
@@ -32,12 +32,12 @@ resource "langsmith_managed_tool_profile_credential" "agent" {
 
 ### Required
 
-- `fields` (Map of String, Sensitive) Header values keyed by the server's declared `secret_headers`, including any prefix such as `Bearer `. Every declared header must be present. Values are written on create and change and never read back.
 - `profile_id` (String) Profile that owns the credential.
-- `server_id` (String) Secret-backed workspace server the credential authenticates to.
+- `server_id` (String) Workspace server the credential authenticates to.
 
 ### Optional
 
+- `fields` (Map of String, Sensitive) Header values keyed by a secret-backed server's declared `secret_headers`, including any prefix such as `Bearer `. Every declared header must be present. Values are written on create and change and never read back. Omit for an OAuth server with a `client_credentials` connection.
 - `workspace_id` (String) Workspace that owns the profile and server. Defaults to the provider workspace. Use `workspace_id/profile_id/server_id` when importing into a workspace other than the provider default.
 
 ### Read-Only

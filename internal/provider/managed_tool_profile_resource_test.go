@@ -232,6 +232,42 @@ func TestManagedToolProfileCredentialLifecycle(t *testing.T) {
 	}
 }
 
+func TestManagedToolProfileCredentialConnectsOAuthWithoutBrowser(t *testing.T) {
+	for _, tc := range []struct {
+		name, verificationURL string
+		wantError             bool
+	}{
+		{name: "client credentials complete in the request"},
+		{name: "a connection needing a browser fails", verificationURL: "https://identity.example.com/authorize", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			var calls []string
+			r := &managedToolProfileCredentialResource{client: newTagTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				calls = append(calls, req.Method+" "+req.URL.Path)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				writeJSON(t, w, map[string]string{"kind": "oauth", "verification_url": tc.verificationURL})
+			}))}
+			model := managedToolProfileCredentialTestModel()
+			model.Fields = types.MapNull(types.StringType)
+			state := managedToolTestState(t, r, &model)
+			created := resource.CreateResponse{State: tfsdk.State{Schema: state.Schema}}
+			r.Create(ctx, resource.CreateRequest{Plan: tfsdk.Plan(state)}, &created)
+			if created.Diagnostics.HasError() != tc.wantError {
+				t.Fatalf("diagnostics = %v, want error %t", created.Diagnostics, tc.wantError)
+			}
+			if tc.wantError && !strings.Contains(created.Diagnostics.Errors()[0].Detail(), "browser") {
+				t.Fatalf("error must say the connection needs a browser: %v", created.Diagnostics)
+			}
+			want := "POST /v1/managed-tools/profiles/profile-id/servers/server-id/credential-sessions"
+			if got := strings.Join(calls, ","); got != want {
+				t.Fatalf("calls = %s", got)
+			}
+		})
+	}
+}
+
 func TestManagedToolProfileCredentialErrorsSuppressResponse(t *testing.T) {
 	r := &managedToolProfileCredentialResource{client: newTagTestClientWithOptions(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

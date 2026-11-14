@@ -3,14 +3,14 @@
 page_title: "langsmith_oauth_connection Resource - langsmith"
 subcategory: ""
 description: |-
-  Manages a workspace OAuth2 connection and its owned authorization-code OAuth app. This does not authorize a user or store user tokens. Register the LangSmith callback URL with your OAuth app before use. Provider settings update the owned provider in place: users keep their authorizations, and changes to token settings or the client secret make LangSmith refresh existing tokens. Changing client_id also updates in place, but refresh tokens issued to the old client do not work with the new one, so users must authorize again. Changing slug or workspace_id replaces the connection and deletes its linked credentials; do not use create_before_destroy with an unchanged slug.
+  Manages a workspace OAuth2 connection and its owned OAuth app. This does not authorize a user or store tokens. With grant_type = "authorization_code", the default, register the LangSmith callback URL with your OAuth app before use; each owner then authorizes in a browser. With client_credentials, LangSmith acquires an owner's token from the client ID and secret alone, with no browser, and acquires it again when it expires; the client must be confidential. Provider settings update the owned provider in place: users keep their authorizations, and changes to token settings or the client secret make LangSmith refresh existing tokens. Changing client_id also updates in place, but refresh tokens issued to the old client do not work with the new one, so users must authorize again. Changing slug or workspace_id replaces the connection and deletes its linked credentials; do not use create_before_destroy with an unchanged slug.
   Client secrets are read locally from client_secret_env on creation and whenever client_secret_env or client_secret_version changes, and are never stored in Terraform state. Set client_secret_version to a nonsecret revision and change it after updating the environment variable to rotate the secret. Changing an environment variable alone is not detected.
   Import with <connection_id> or <workspace_id>/<connection_id>. Public provider configuration is recovered on refresh, but client_secret_env and client_secret_version cannot be recovered; configuring them after import sends the secret on the next apply. The API does not expose secret values, so secret-value drift cannot be detected.
 ---
 
 # langsmith_oauth_connection (Resource)
 
-Manages a workspace OAuth2 connection and its owned authorization-code OAuth app. This does not authorize a user or store user tokens. Register the LangSmith callback URL with your OAuth app before use. Provider settings update the owned provider in place: users keep their authorizations, and changes to token settings or the client secret make LangSmith refresh existing tokens. Changing `client_id` also updates in place, but refresh tokens issued to the old client do not work with the new one, so users must authorize again. Changing `slug` or `workspace_id` replaces the connection and deletes its linked credentials; do not use `create_before_destroy` with an unchanged slug.
+Manages a workspace OAuth2 connection and its owned OAuth app. This does not authorize a user or store tokens. With `grant_type = "authorization_code"`, the default, register the LangSmith callback URL with your OAuth app before use; each owner then authorizes in a browser. With `client_credentials`, LangSmith acquires an owner's token from the client ID and secret alone, with no browser, and acquires it again when it expires; the client must be confidential. Provider settings update the owned provider in place: users keep their authorizations, and changes to token settings or the client secret make LangSmith refresh existing tokens. Changing `client_id` also updates in place, but refresh tokens issued to the old client do not work with the new one, so users must authorize again. Changing `slug` or `workspace_id` replaces the connection and deletes its linked credentials; do not use `create_before_destroy` with an unchanged slug.
 
 Client secrets are read locally from `client_secret_env` on creation and whenever `client_secret_env` or `client_secret_version` changes, and are never stored in Terraform state. Set `client_secret_version` to a nonsecret revision and change it after updating the environment variable to rotate the secret. Changing an environment variable alone is not detected.
 
@@ -47,7 +47,6 @@ output "oauth_provider_id" {
 
 ### Required
 
-- `authorization_url` (String) OAuth authorization endpoint URL. Updates the owned provider in place.
 - `client_id` (String) OAuth app client ID. Updates the owned provider in place; users must authorize again, since their refresh tokens belong to the old client.
 - `display_name` (String) Connection display name. Updates in place without renaming the OAuth provider.
 - `slug` (String) Connection slug, usable as a managed tool server's agent_auth_connection_slug. Changes require replacement.
@@ -57,9 +56,11 @@ output "oauth_provider_id" {
 ### Optional
 
 - `allowed_scopes` (Set of String) Allowed OAuth scopes. Defaults to an empty set. Updates in place.
+- `authorization_url` (String) OAuth authorization endpoint URL. Required for `authorization_code` and omitted for `client_credentials`. Updates the owned provider in place.
 - `client_secret_env` (String) Name of the local environment variable containing the OAuth app secret, not the secret itself. Required for confidential client authentication. Changing it sends the named variable's value as the new secret.
 - `client_secret_version` (String) Nonsecret rotation revision. Change this after updating the environment secret to send the new secret in place. The revision, but not the secret, is stored in state.
 - `default_scopes` (Set of String) Default OAuth scopes. Defaults to an empty set. Updates in place.
+- `grant_type` (String) OAuth grant: `authorization_code` (default) or `client_credentials`. Changes require replacement.
 - `workspace_id` (String) Workspace owning the connection. Defaults to the provider workspace. Changes require replacement.
 
 ### Read-Only
