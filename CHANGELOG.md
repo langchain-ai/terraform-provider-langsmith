@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.0.20](https://github.com/langchain-ai/terraform-provider-langsmith/compare/v0.0.19...v0.0.20) (2026-11-18)
+
+
+### Features
+
+* add team subjects to LLM gateway policies ([7b36072](https://github.com/langchain-ai/terraform-provider-langsmith/commit/7b36072985b67699c954b3ba02999c20ff422b52))
+* **deployments:** give Robin's bot kit Linear through Robin's own Linear app ([137a771](https://github.com/langchain-ai/terraform-provider-langsmith/commit/137a77169a06ace70e39e06a4be17bb04ea54779))
+* manage LangSmith Managed Tools servers, profiles and kits with Terraform; set up Robin's bot kit ([5cb1162](https://github.com/langchain-ai/terraform-provider-langsmith/commit/5cb1162849c949a844e844e4bedcc292eafdf5d1))
+* **terraform:** add tracing key lifecycle resource ([3e053e2](https://github.com/langchain-ai/terraform-provider-langsmith/commit/3e053e2bc2a22d53eea45ac1d9c9756db656742d))
+* **terraform:** target deployments to agent environments ([2e42df1](https://github.com/langchain-ai/terraform-provider-langsmith/commit/2e42df150fa5526a6546985a2806ad8b17b834db))
+
+
+### Bug Fixes
+
+* **terraform:** keep prior state when the API masks deployment environment values ([314d69e](https://github.com/langchain-ai/terraform-provider-langsmith/commit/314d69e49fd34d07b1b4bef4e27cf911f9c76a09))
+
 ## [0.0.19](https://github.com/langchain-ai/terraform-provider-langsmith/compare/v0.0.18...v0.0.19) (2026-11-08)
 
 
