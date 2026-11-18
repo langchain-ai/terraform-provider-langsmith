@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -15,6 +16,40 @@ import (
 type deploymentSecretAPI struct {
 	Name  string  `json:"name"`
 	Value *string `json:"value"`
+}
+
+// maskedSecretValue stands in for a stored value the caller can't read. Reads
+// return it exactly.
+const maskedSecretValue = "***"
+
+func isMaskedSecretValue(value string) bool {
+	return value == maskedSecretValue
+}
+
+func deploymentAPISecretsMasked(secrets []deploymentSecretAPI) bool {
+	for _, secret := range secrets {
+		if secret.Value != nil && isMaskedSecretValue(*secret.Value) {
+			return true
+		}
+	}
+	return false
+}
+
+// publicEnvironmentChanged reports a declared public value that state lacks or
+// holds with a different value. A masked read keeps the previous digest, so a
+// value the API still returns can drift, or a key can be deleted, while the
+// digest matches.
+func publicEnvironmentChanged(state, plan types.Map) bool {
+	if state.IsNull() || state.IsUnknown() || plan.IsNull() || plan.IsUnknown() {
+		return false
+	}
+	current := state.Elements()
+	for name, planned := range plan.Elements() {
+		if prior, ok := current[name]; !planned.IsUnknown() && (!ok || !prior.Equal(planned)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *DeploymentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
@@ -29,8 +64,10 @@ func (r *DeploymentResource) ModifyPlan(ctx context.Context, req resource.Modify
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("secrets"), &secrets)...)
 	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("environment_variables"), &environment)...)
 	var previous types.String
+	priorEnvironment := types.MapNull(types.StringType)
 	if !req.State.Raw.IsNull() {
 		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("secrets_hash"), &previous)...)
+		resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("environment_variables"), &priorEnvironment)...)
 	}
 	if resp.Diagnostics.HasError() {
 		return
@@ -48,7 +85,7 @@ func (r *DeploymentResource) ModifyPlan(ctx context.Context, req resource.Modify
 		}
 	}
 	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("secrets_hash"), hash)...)
-	if managed && !hash.Equal(previous) {
+	if managed && (!hash.Equal(previous) || publicEnvironmentChanged(priorEnvironment, environment)) {
 		// Write-only edits do not cause the framework to invalidate computed
 		// fields. A revision will change them even when every other input matches.
 		for _, name := range []string{"updated_at", "status", "latest_revision_id", "active_revision_id", "latest_revision_status"} {
@@ -71,6 +108,11 @@ func deploymentSecretsHash(maps ...types.Map) (types.String, error) {
 			}
 			if _, duplicate := values[name]; duplicate {
 				return types.StringNull(), errors.New("environment_variables and secrets must not contain overlapping keys")
+			}
+			if strings.TrimSpace(text.ValueString()) == maskedSecretValue {
+				// The API trims a written value and keeps the stored one for the
+				// mask, while state would record the mask.
+				return types.StringNull(), fmt.Errorf("%s is set to %q, which is reserved for values the API masks on read; set the real value", name, maskedSecretValue)
 			}
 			unknown = unknown || text.IsUnknown()
 			values[name] = text.ValueString()

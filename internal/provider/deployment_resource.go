@@ -161,7 +161,7 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 	}
 	resp.Schema = schema.Schema{
 		Version:             1,
-		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.\n\nThe v2 API has one environment map. Terraform separates it into ordinary `environment_variables`, which appear in plans and state, and sensitive write-only `secrets`. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing `secrets` map, move ordinary entries into `environment_variables` without changing the combined keys or values; this records the public values in state without creating a revision.\n\nUse `workspace_id` to select a workspace, or omit it to use the provider workspace. The former computed `tenant_id` attribute is now `workspace_id`; existing state is migrated automatically, but configuration references to `.tenant_id` must be updated to `.workspace_id`. Import an existing deployment with `<deployment_id>` using the provider workspace, or `<workspace_id>/<deployment_id>` for another workspace, using the same LangSmith API URL. For an agent-targeted deployment, append `/<agent_id>/<environment>` to the import ID. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.\n\nSwitching from `name` to a matching `agent` target preserves the deployment when other configuration is unchanged. Changing to a different agent or environment requires replacement and can delete managed runtime data; that data is not migrated.",
+		MarkdownDescription: "Manages the desired state of a LangSmith deployment. Deployment revisions are created and tracked by the service; use the `langsmith_deployment_revision` data source to read one.\n\nThe v2 API has one environment map. Terraform separates it into ordinary `environment_variables`, which appear in plans and state, and sensitive write-only `secrets`. Their union replaces the entire API environment whenever either map is configured. Keys must not overlap. To migrate an existing `secrets` map, move ordinary entries into `environment_variables` without changing the combined keys or values; this records the public values in state without creating a revision. Moving a key from `secrets` into `environment_variables` later, once `environment_variables` is in state, creates one revision.\n\nUse `workspace_id` to select a workspace, or omit it to use the provider workspace. The former computed `tenant_id` attribute is now `workspace_id`; existing state is migrated automatically, but configuration references to `.tenant_id` must be updated to `.workspace_id`. Import an existing deployment with `<deployment_id>` using the provider workspace, or `<workspace_id>/<deployment_id>` for another workspace, using the same LangSmith API URL. For an agent-targeted deployment, append `/<agent_id>/<environment>` to the import ID. GitHub imports retain the configured branch when the API returns it and exclude the built image URI from writable inputs. Import does not populate either environment map because the API does not distinguish public values from secrets. Omit `environment_variables`, `secrets`, and `secrets_version` to preserve the existing environment without copying values into state. Configuring both maps after import records the public map in state; if their combined digest matches the remote environment, applying that plan creates no revision. When the API masks environment values, the digest cannot be compared and that first apply creates a revision. Subsequent plans are empty until configuration or remote values change. Review the plan after import before applying changes.\n\nSwitching from `name` to a matching `agent` target preserves the deployment when other configuration is unchanged. Changing to a different agent or environment requires replacement and can delete managed runtime data; that data is not migrated.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -218,7 +218,7 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 			"secrets_hash": schema.StringAttribute{
 				Computed:            true,
 				Sensitive:           true,
-				MarkdownDescription: "SHA-256 digest of the combined `environment_variables` and `secrets` maps, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Secret values remain write-only; ordinary environment values are also stored in state. Remote environment drift is detectable only after the first revision exists and when the API returns secrets. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.",
+				MarkdownDescription: "SHA-256 digest of the combined `environment_variables` and `secrets` maps, encoded as JSON with sorted keys. Used to compare configured values with values returned by the v2 API during refresh. Secret values remain write-only; ordinary environment values are also stored in state. Remote environment drift is detectable only after the first revision exists and when the API returns unmasked values. When the API masks any value, refresh keeps the previous digest, and masked `environment_variables` keep their previous values; drift in masked values is not detected. A declared value the API still returns is compared with configuration, and a difference, or a declared key the API no longer returns, creates a revision. While values are masked, secrets and undeclared keys added or removed outside Terraform are not detected. A configured value of `***` is rejected, because the API reserves it for masked reads. A deterministic digest can still permit guesses if the entire map is predictable; protect access to state.",
 			},
 			"secret_references": schema.ListNestedAttribute{
 				Optional:            true,
@@ -612,18 +612,28 @@ func (r *DeploymentResource) read(ctx context.Context, id string, previous deplo
 	// Before the first revision, the API returns [] even when project secrets
 	// were accepted at creation. Only revisions expose the stored environment.
 	if result.LatestRevisionID != nil && result.Secrets != nil {
-		hash, err := deploymentAPISecretsHash(result.Secrets)
-		if err != nil {
-			return previous, err
+		// A masked value hides the stored one, so the remote digest cannot be
+		// computed and the previous digest stands.
+		if !deploymentAPISecretsMasked(result.Secrets) {
+			hash, err := deploymentAPISecretsHash(result.Secrets)
+			if err != nil {
+				return previous, err
+			}
+			model.SecretsHash = hash
 		}
-		model.SecretsHash = hash
 		if !previous.EnvironmentVariables.IsNull() && !previous.EnvironmentVariables.IsUnknown() {
 			// The API does not distinguish public and secret entries. Only keys
 			// already classified as public may be copied into ordinary state.
 			public := make(map[string]attr.Value)
 			declared := previous.EnvironmentVariables.Elements()
 			for _, entry := range result.Secrets {
-				if _, ok := declared[entry.Name]; ok {
+				prior, ok := declared[entry.Name]
+				if !ok || entry.Value == nil {
+					continue
+				}
+				if isMaskedSecretValue(*entry.Value) {
+					public[entry.Name] = prior
+				} else {
 					public[entry.Name] = types.StringValue(*entry.Value)
 				}
 			}
@@ -986,7 +996,8 @@ func changedValue(state, plan types.String) bool {
 }
 
 func revisionChanged(state, plan deploymentResourceModel) bool {
-	if changedValue(state.SecretsVersion, plan.SecretsVersion) || changedValue(state.SecretsHash, plan.SecretsHash) {
+	if changedValue(state.SecretsVersion, plan.SecretsVersion) || changedValue(state.SecretsHash, plan.SecretsHash) ||
+		publicEnvironmentChanged(state.EnvironmentVariables, plan.EnvironmentVariables) {
 		return true
 	}
 	if !reflect.DeepEqual(state.SourceRevisionConfig, plan.SourceRevisionConfig) {
