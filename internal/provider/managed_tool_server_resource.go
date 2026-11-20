@@ -15,6 +15,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
@@ -32,6 +34,7 @@ var (
 	_ resource.ResourceWithConfigure      = &managedToolServerResource{}
 	_ resource.ResourceWithImportState    = &managedToolServerResource{}
 	_ resource.ResourceWithValidateConfig = &managedToolServerResource{}
+	_ resource.ResourceWithModifyPlan     = &managedToolServerResource{}
 )
 
 type managedToolServerResource struct {
@@ -49,6 +52,8 @@ type managedToolServerModel struct {
 	URL                     types.String `tfsdk:"url"`
 	Enabled                 types.Bool   `tfsdk:"enabled"`
 	OAuthSetup              types.Object `tfsdk:"oauth_setup"`
+	LogoPath                types.String `tfsdk:"logo_path"`
+	LogoSHA256              types.String `tfsdk:"logo_sha256"`
 }
 
 type managedToolServerAPI struct {
@@ -59,6 +64,7 @@ type managedToolServerAPI struct {
 	Scope       string                         `json:"scope"`
 	URL         string                         `json:"url"`
 	Enabled     bool                           `json:"enabled"`
+	IconSource  string                         `json:"icon_source"`
 	Connection  managedToolServerConnectionAPI `json:"connection"`
 }
 
@@ -125,9 +131,11 @@ func (r *managedToolServerResource) Schema(_ context.Context, _ resource.SchemaR
 			"agent_auth_connection_slug": schema.StringAttribute{Optional: true, MarkdownDescription: "Existing Agent Auth OAuth connection slug. Only valid with `connection_type = \"oauth\"`. Omit for automatic OAuth discovery and dynamic client registration where supported.", Validators: []validator.String{stringvalidator.LengthBetween(1, 100), stringvalidator.RegexMatches(regexp.MustCompile(`^\S+$`), "must not contain whitespace")}, PlanModifiers: replace},
 			"secret_headers":             schema.SetAttribute{Optional: true, ElementType: types.StringType, MarkdownDescription: "Upstream HTTP header names each caller supplies, such as `Authorization`. Required with `connection_type = \"secret\"` and invalid otherwise. Credential values include any prefix, such as `Bearer `.", Validators: []validator.Set{setvalidator.SizeAtLeast(1), setvalidator.ValueStringsAre(stringvalidator.RegexMatches(regexp.MustCompile(`^[!#$%&'*+.^_`+"`"+`|~0-9A-Za-z-]+$`), "must be an HTTP header name"))}, PlanModifiers: []planmodifier.Set{setplanmodifier.RequiresReplace()}},
 			"workspace_id":               schema.StringAttribute{Optional: true, MarkdownDescription: "Workspace that owns this server. Defaults to the provider workspace. Use `workspace_id/server_id` when importing into a workspace other than the provider default.", Validators: []validator.String{stringvalidator.RegexMatches(regexp.MustCompile(`^\S+$`), "must be nonblank without whitespace")}, PlanModifiers: replace},
-			"url":                        schema.StringAttribute{Computed: true, MarkdownDescription: "Managed Tools MCP endpoint returned by LangSmith; may be a relative path."},
-			"enabled":                    schema.BoolAttribute{Computed: true, MarkdownDescription: "Whether the server is enabled. Workspace servers are always enabled; the API cannot change this setting."},
-			"oauth_setup": schema.SingleNestedAttribute{Computed: true, MarkdownDescription: "Non-secret OAuth registration metadata, when returned by LangSmith. Null for public servers and connections without setup metadata. Register an OAuth app manually using the callback URL if dynamic client registration is unavailable.", Attributes: map[string]schema.Attribute{
+			"url":                        schema.StringAttribute{Computed: true, MarkdownDescription: "Managed Tools MCP endpoint returned by LangSmith; may be a relative path.", PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"enabled":                    schema.BoolAttribute{Computed: true, MarkdownDescription: "Whether the server is enabled. Workspace servers are always enabled; the API cannot change this setting.", PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()}},
+			"logo_path":                  schema.StringAttribute{Optional: true, MarkdownDescription: "Path to a PNG or JPEG logo of at most 1 MiB and 2048 by 2048 pixels, shown in place of the icon the server advertises. LangSmith stores it as a PNG of at most 128 by 128 pixels. Changing the file uploads it again without replacing the server; removing the attribute removes the uploaded logo.", Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
+			"logo_sha256":                schema.StringAttribute{Computed: true, MarkdownDescription: "SHA-256 of the file at `logo_path` when it was uploaded. Null without a logo, or when the uploaded logo was removed outside Terraform, which uploads it again on the next apply."},
+			"oauth_setup": schema.SingleNestedAttribute{Computed: true, PlanModifiers: []planmodifier.Object{objectplanmodifier.UseStateForUnknown()}, MarkdownDescription: "Non-secret OAuth registration metadata, when returned by LangSmith. Null for public servers and connections without setup metadata. Register an OAuth app manually using the callback URL if dynamic client registration is unavailable.", Attributes: map[string]schema.Attribute{
 				"provider_slug":              schema.StringAttribute{Computed: true, MarkdownDescription: "Discovered OAuth provider slug."},
 				"callback_url":               schema.StringAttribute{Computed: true, MarkdownDescription: "Redirect URI to register with the upstream OAuth provider."},
 				"authorization_url":          schema.StringAttribute{Computed: true, MarkdownDescription: "OAuth authorization endpoint."},
@@ -208,6 +216,15 @@ func (r *managedToolServerResource) Create(ctx context.Context, req resource.Cre
 		resp.Diagnostics.AddError("Unable to Read Created Managed Tool Server", err.Error())
 		return
 	}
+	if !plan.LogoPath.IsNull() {
+		if err := r.putServerLogo(ctx, plan.WorkspaceID, server.ID, plan.LogoPath.ValueString(), plan.LogoSHA256.ValueString()); err != nil {
+			// The server exists, so keep it in state; the error taints it.
+			next.LogoSHA256 = types.StringNull()
+			resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
+			resp.Diagnostics.AddError("Unable to Upload Managed Tool Server Logo", err.Error())
+			return
+		}
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
 
@@ -230,6 +247,10 @@ func (r *managedToolServerResource) Read(ctx context.Context, req resource.ReadR
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to Read Managed Tool Server", err.Error())
 		return
+	}
+	if server.IconSource != "custom" {
+		// The uploaded logo is gone, so the next plan uploads it again.
+		next.LogoSHA256 = types.StringNull()
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
@@ -323,8 +344,67 @@ func managedToolServerModelFromAPI(ctx context.Context, server managedToolServer
 	return next, nil
 }
 
-func (r *managedToolServerResource) Update(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
-	resp.Diagnostics.AddError("Managed Tool Server Requires Replacement", "The API does not support updating workspace servers. Change a configured attribute to replace the server.")
+// ModifyPlan records the SHA-256 of the configured logo file, so a changed
+// file plans an in-place upload and a bad one fails before apply.
+func (r *managedToolServerResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var logoPath types.String
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("logo_path"), &logoPath)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	sum := types.StringNull()
+	switch {
+	case logoPath.IsUnknown():
+		sum = types.StringUnknown()
+	case !logoPath.IsNull():
+		_, value, err := readServerLogo(logoPath.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("logo_path"), "Invalid Managed Tool Server Logo", err.Error())
+			return
+		}
+		sum = types.StringValue(value)
+	}
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("logo_sha256"), sum)...)
+}
+
+// Update changes only the logo: every other configured attribute replaces the
+// server.
+func (r *managedToolServerResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state managedToolServerModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	serverID := state.ID.ValueString()
+	var err error
+	if plan.LogoPath.IsNull() {
+		err = r.deleteServerLogo(ctx, state.WorkspaceID, serverID)
+	} else if !plan.LogoSHA256.Equal(state.LogoSHA256) {
+		err = r.putServerLogo(ctx, state.WorkspaceID, serverID, plan.LogoPath.ValueString(), plan.LogoSHA256.ValueString())
+	}
+	if err != nil {
+		resp.State.Raw = req.State.Raw
+		resp.Diagnostics.AddError("Unable to Update Managed Tool Server Logo", err.Error())
+		return
+	}
+	server, found, err := r.findServer(ctx, state)
+	if err == nil && !found {
+		err = errors.New("the server no longer exists")
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to Read Updated Managed Tool Server", err.Error())
+		return
+	}
+	next, err := managedToolServerModelFromAPI(ctx, server, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to Read Updated Managed Tool Server", err.Error())
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
 
 func (r *managedToolServerResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

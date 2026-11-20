@@ -16,6 +16,8 @@ Registers a workspace-scoped MCP server with LangSmith Managed Tools. Requires a
 resource "langsmith_managed_tool_server" "public" {
   name         = "public-mcp"
   upstream_url = "https://mcp.example.com/mcp"
+  # Shown in place of the icon the server advertises.
+  logo_path = "${path.module}/logos/public-mcp.png"
 }
 
 resource "langsmith_managed_tool_server" "oauth" {
@@ -54,6 +56,7 @@ resource "langsmith_managed_tool_server" "api_key" {
 
 - `agent_auth_connection_slug` (String) Existing Agent Auth OAuth connection slug. Only valid with `connection_type = "oauth"`. Omit for automatic OAuth discovery and dynamic client registration where supported.
 - `connection_type` (String) Upstream authentication: `none` (default), `oauth`, or `secret` (caller-supplied headers declared in `secret_headers`).
+- `logo_path` (String) Path to a PNG or JPEG logo of at most 1 MiB and 2048 by 2048 pixels, shown in place of the icon the server advertises. LangSmith stores it as a PNG of at most 128 by 128 pixels. Changing the file uploads it again without replacing the server; removing the attribute removes the uploaded logo.
 - `secret_headers` (Set of String) Upstream HTTP header names each caller supplies, such as `Authorization`. Required with `connection_type = "secret"` and invalid otherwise. Credential values include any prefix, such as `Bearer `.
 - `workspace_id` (String) Workspace that owns this server. Defaults to the provider workspace. Use `workspace_id/server_id` when importing into a workspace other than the provider default.
 
@@ -61,6 +64,7 @@ resource "langsmith_managed_tool_server" "api_key" {
 
 - `enabled` (Boolean) Whether the server is enabled. Workspace servers are always enabled; the API cannot change this setting.
 - `id` (String) Registered server ID.
+- `logo_sha256` (String) SHA-256 of the file at `logo_path` when it was uploaded. Null without a logo, or when the uploaded logo was removed outside Terraform, which uploads it again on the next apply.
 - `oauth_setup` (Attributes) Non-secret OAuth registration metadata, when returned by LangSmith. Null for public servers and connections without setup metadata. Register an OAuth app manually using the callback URL if dynamic client registration is unavailable. (see [below for nested schema](#nestedatt--oauth_setup))
 - `url` (String) Managed Tools MCP endpoint returned by LangSmith; may be a relative path.
 

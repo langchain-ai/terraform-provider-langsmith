@@ -1,6 +1,8 @@
 resource "langsmith_managed_tool_server" "public" {
   name         = "public-mcp"
   upstream_url = "https://mcp.example.com/mcp"
+  # Shown in place of the icon the server advertises.
+  logo_path = "${path.module}/logos/public-mcp.png"
 }
 
 resource "langsmith_managed_tool_server" "oauth" {
