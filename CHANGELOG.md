@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.21](https://github.com/langchain-ai/terraform-provider-langsmith/compare/v0.0.20...v0.0.21) (2026-11-23)
+
+
+### Features
+
+* add logo_path to langsmith_managed_tool_server to upload a server logo ([e116280](https://github.com/langchain-ai/terraform-provider-langsmith/commit/e1162804873a9106941c93ab71b8b366ac30a824))
+* **terraform:** add langsmith_tunnel and langsmith_relay resources ([3ded432](https://github.com/langchain-ai/terraform-provider-langsmith/commit/3ded432687267283d19011b45a72c3cfbbee2164))
+
 ## [0.0.20](https://github.com/langchain-ai/terraform-provider-langsmith/compare/v0.0.19...v0.0.20) (2026-11-18)
 
 
