@@ -28,6 +28,7 @@ The provider currently includes:
 - `langsmith_access_policy_attachment`, which attaches an access policy to a workspace role.
 - `langsmith_gateway_policy`, which manages LLM Gateway policies.
 - `langsmith_service_key`, which manages organization service keys (org-wide or workspace-scoped).
+- `langsmith_tunnel` and `langsmith_relay`, which manage organization private network connections.
 - `langsmith_deployment`, which manages the desired state of a LangGraph deployment through the LangSmith API.
 - `data.langsmith_deployment_revision` and `data.langsmith_deployment_revisions`, which read the service-owned revision history of a deployment.
 - `langsmith_managed_tool_server`, which manages workspace MCP servers with public, OAuth, or API key header (`secret`) connections.

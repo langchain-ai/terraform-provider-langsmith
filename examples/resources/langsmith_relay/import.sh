@@ -1,0 +1,1 @@
+terraform import langsmith_relay.example relay_id

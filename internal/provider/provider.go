@@ -154,6 +154,8 @@ func (p *LangSmithProvider) Resources(ctx context.Context) []func() resource.Res
 		NewManagedToolProfileCredentialResource,
 		NewManagedToolKitResource,
 		NewOAuthConnectionResource,
+		NewTunnelResource,
+		NewRelayResource,
 		NewDeploymentResource,
 	}
 }
